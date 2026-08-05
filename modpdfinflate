@@ -1,4 +1,3 @@
-
 '==============================================================================
 ' Module      : modPdfReport
 ' Purpose     : One-run PDF layout analyser. Reads a PDF, decompresses every
@@ -27,7 +26,10 @@ Private Const MAX_CODES      As Long = 316
 Private Const FIXED_LIT      As Long = 288
 
 '--- analysis -----------------------------------------------------------------
-Private Const TOL           As Double = 0.6    ' coordinate clustering tolerance
+Private Const TOL           As Double = 1#     ' coordinate clustering tolerance
+                                               ' 0.6 was too tight: Oracle jitters
+                                               ' baselines by 0.76 pt, which split
+                                               ' every text row into two clusters
 Private Const RULE_MAX_THICK As Double = 2#    ' a thinner "re" counts as a rule
 Private Const MAX_ROW_ITEMS As Long = 40       ' items printed for one text row
 Private Const ERR_BASE      As Long = vbObjectError + 3000
@@ -596,7 +598,13 @@ Private Sub AnalyseContent(ByVal content As String)
                     AddRule m_hRuleY, m_hRuleN, y1
                     AddSegment x1, y1, x1 + w, y1
                 Else
+                    ' Oracle Reports draws every table cell as a rectangle, so the
+                    ' four edges are the real column and row grid.
                     AddRect x1, y1, w, hgt
+                    AddRule m_vRuleX, m_vRuleN, x1
+                    AddRule m_vRuleX, m_vRuleN, x1 + w
+                    AddRule m_hRuleY, m_hRuleN, y1
+                    AddRule m_hRuleY, m_hRuleN, y1 + hgt
                 End If
 
             Case "cm"
@@ -1063,7 +1071,7 @@ End Function
 '------------------------------------------------------------------------------
 Private Function RefList(ByVal dict As String, ByVal key As String) As String
 
-    Dim k As Long, i As Long, stopAt As Long
+    Dim k As Long, i As Long, j As Long, stopAt As Long
     Dim seg As String
     Dim parts() As String
     Dim result As String
@@ -1082,7 +1090,17 @@ Private Function RefList(ByVal dict As String, ByVal key As String) As String
         If stopAt = 0 Then stopAt = i + 200
         seg = Mid$(dict, i + 1, stopAt - i - 1)
     Else
+        ' Single reference: "/Contents 2 0 R/CropBox[...]" - PDF puts no space
+        ' before the next key, so cut the segment at the first delimiter.
         seg = Mid$(dict, i, 20)
+        stopAt = 0
+        For j = 1 To Len(seg)
+            If InStr("/>]", Mid$(seg, j, 1)) > 0 Then
+                stopAt = j
+                Exit For
+            End If
+        Next j
+        If stopAt > 0 Then seg = Left$(seg, stopAt - 1)
     End If
 
     Do While InStr(seg, "  ") > 0
