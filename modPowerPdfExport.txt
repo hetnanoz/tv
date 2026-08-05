@@ -2468,3 +2468,67 @@ ErrorHandler:
     errorManager.save
     Resume ExitSub
 End Sub
+
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    ---
+' Returns:       ---
+' Description:   Tests direct Power PDF output to a supplied file path.
+'-------------------------------------------------------------------------------
+Public Sub TestPowerPdfDirectFileName()
+    Const METHOD_NAME As String = "TestPowerPdfDirectFileName"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strOutputPath As String
+    Dim wksSource As Excel.Worksheet
+
+    On Error GoTo ErrorHandler
+
+    strOutputPath = Environ$("TEMP") & _
+                    "\Tradeversand_PowerPdf_Direct_Test.pdf"
+
+    If Len(Dir$(strOutputPath)) > 0 Then
+        Kill strOutputPath
+    End If
+
+    Set wksSource = ThisWorkbook.Worksheets("Tradeversand")
+
+    wksSource.PrintOut _
+        Copies:=1, _
+        ActivePrinter:="Power PDF on NUL", _
+        PrintToFile:=True, _
+        PrToFileName:=strOutputPath, _
+        Collate:=True, _
+        IgnorePrintAreas:=False
+
+    MsgBox _
+        "Test completed." & vbCrLf & _
+        "Expected file:" & vbCrLf & _
+        strOutputPath, _
+        vbInformation, _
+        "Power PDF test"
+
+ExitSub:
+    Set wksSource = Nothing
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "outputPath", _
+        strOutputPath
+
+    errorManager.save
+    errorManager.display _
+        "The direct Power PDF test failed."
+    Resume ExitSub
+End Sub
