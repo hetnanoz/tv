@@ -2,8 +2,9 @@ Option Explicit
 
 Private Const CLASS_NAME As String = "modPowerPdfExport"
 Private Const POWER_PDF_PRINTER As String = "Power PDF on NUL"
-Private Const POWER_PDF_STAGING_RANGE As String = "power_pdf_staging_path"
-Private Const POWER_PDF_DEFAULT_STAGING_FOLDER_NAME As String = "TradeversandPowerPdf"
+Private Const POWER_PDF_DEFAULT_RELATIVE_STAGING_PATH As String = "\BAT\Tradeversand\PowerPDF_Staging\"
+Private Const POWER_PDF_CONFIG_RELATIVE_FOLDER As String = "\BAT\Tradeversand\"
+Private Const POWER_PDF_CONFIG_FILE_NAME As String = "PowerPdfStagingPath.txt"
 Private Const POWER_PDF_PUMP_INTERVAL_SECONDS As Long = 2
 Private Const POWER_PDF_DELAY_WARNING_SECONDS As Long = 120
 Private Const POWER_PDF_SPOOL_FOLDER_NAME As String = "TradeversandPowerPdfSpool"
@@ -38,7 +39,7 @@ Private gstrCompletionCallback As String
 ' Creation date: 2026-08-05
 ' Parameters:    ---
 ' Returns:       ---
-' Description:   Lets the user select and store the Power PDF staging folder.
+' Description:   Lets the current Windows user select a local Power PDF staging folder.
 '-------------------------------------------------------------------------------
 Public Sub BrowsePowerPdfStagingFolder()
     Const METHOD_NAME As String = "BrowsePowerPdfStagingFolder"
@@ -51,7 +52,11 @@ Public Sub BrowsePowerPdfStagingFolder()
 
     On Error GoTo ErrorHandler
 
-    strDefaultFolder = Environ$("TEMP") & "\" & POWER_PDF_DEFAULT_STAGING_FOLDER_NAME & "\"
+    strDefaultFolder = GetPowerPdfStagingFolder()
+
+    If Len(strDefaultFolder) = 0 Then
+        Err.Raise 1022, METHOD_NAME, "The Power PDF staging folder could not be resolved."
+    End If
 
     If Not EnsureFolderExists(strDefaultFolder) Then
         Err.Raise 1022, METHOD_NAME, "The default Power PDF staging folder could not be created."
@@ -60,7 +65,7 @@ Public Sub BrowsePowerPdfStagingFolder()
     Set dlgFolder = Application.FileDialog(msoFileDialogFolderPicker)
 
     With dlgFolder
-        .Title = "Select the Power PDF staging folder"
+        .Title = "Select the Power PDF staging folder for this Windows user"
         .AllowMultiSelect = False
         .InitialFileName = strDefaultFolder
 
@@ -71,22 +76,20 @@ Public Sub BrowsePowerPdfStagingFolder()
         strSelectedFolder = CStr(.SelectedItems(1))
     End With
 
-    If Right$(strSelectedFolder, 1) <> "\" Then
-        strSelectedFolder = strSelectedFolder & "\"
-    End If
+    strSelectedFolder = EnsureTrailingBackslash(strSelectedFolder)
 
     If Not EnsureFolderExists(strSelectedFolder) Then
         Err.Raise 1022, METHOD_NAME, "The selected Power PDF staging folder could not be created or accessed."
     End If
 
     If Not SavePowerPdfStagingFolderSetting(strSelectedFolder) Then
-        Err.Raise 1022, METHOD_NAME, "The selected Power PDF staging folder could not be stored in the workbook."
+        Err.Raise 1022, METHOD_NAME, "The selected Power PDF staging folder could not be stored for the current Windows user."
     End If
 
     MsgBox _
-        "Power PDF staging folder:" & vbCrLf & _
+        "Power PDF staging folder for the current Windows user:" & vbCrLf & _
         strSelectedFolder & vbCrLf & vbCrLf & _
-        "Select the same folder in the global Power PDF printer preferences.", _
+        "Select exactly the same folder in the global Power PDF printer preferences.", _
         vbInformation, _
         "Power PDF configuration"
 
@@ -907,48 +910,28 @@ End Function
 ' Creation date: 2026-08-05
 ' Parameters:    ---
 ' Returns:       String
-' Description:   Reads the dedicated automatic-output folder configured for the Power PDF printer.
+' Description:   Resolves a per-user Power PDF staging folder and creates it when required.
 '-------------------------------------------------------------------------------
 Private Function GetPowerPdfStagingFolder() As String
     Const METHOD_NAME As String = "GetPowerPdfStagingFolder"
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
-    Dim lngRangeReadError As Long
     Dim strFolderPath As String
-    Dim strTempFolder As String
-    Dim wksConfig As Excel.Worksheet
 
     On Error GoTo ErrorHandler
 
-    strTempFolder = Environ$("TEMP")
-
-    If Len(strTempFolder) = 0 Then
-        Err.Raise 1022, METHOD_NAME, "Windows TEMP folder could not be resolved."
-    End If
-
-    Set wksConfig = ThisWorkbook.Worksheets("Tradeversand")
-
-    On Error Resume Next
-    strFolderPath = Trim$(CStr(wksConfig.Range(POWER_PDF_STAGING_RANGE).Value))
-    lngRangeReadError = VBA.Err.Number
-    VBA.Err.Clear
-
-    If lngRangeReadError <> 0 Or Len(strFolderPath) = 0 Then
-        strFolderPath = Trim$(CStr(Application.Evaluate( _
-            ThisWorkbook.Names(POWER_PDF_STAGING_RANGE).RefersTo)))
-        VBA.Err.Clear
-    End If
-    On Error GoTo ErrorHandler
+    strFolderPath = ReadPowerPdfStagingFolderSetting()
 
     If Len(strFolderPath) = 0 Then
-        strFolderPath = strTempFolder & "\" & POWER_PDF_DEFAULT_STAGING_FOLDER_NAME
-    ElseIf InStr(1, strFolderPath, "%TEMP%", vbTextCompare) > 0 Then
-        strFolderPath = Replace$(strFolderPath, "%TEMP%", strTempFolder, 1, -1, vbTextCompare)
+        strFolderPath = GetDefaultPowerPdfStagingFolder()
     End If
 
-    If Right$(strFolderPath, 1) <> "\" Then
-        strFolderPath = strFolderPath & "\"
+    strFolderPath = ExpandEnvironmentPath(strFolderPath)
+    strFolderPath = EnsureTrailingBackslash(strFolderPath)
+
+    If Len(strFolderPath) = 0 Then
+        Err.Raise 1022, METHOD_NAME, "Power PDF staging folder could not be resolved."
     End If
 
     If Not EnsureFolderExists(strFolderPath) Then
@@ -958,7 +941,6 @@ Private Function GetPowerPdfStagingFolder() As String
     GetPowerPdfStagingFolder = strFolderPath
 
 ExitFunction:
-    Set wksConfig = Nothing
     Exit Function
 
 ErrorHandler:
@@ -971,9 +953,116 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "folderPath;rangeName", _
-        strFolderPath, _
-        POWER_PDF_STAGING_RANGE
+        "folderPath", _
+        strFolderPath
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    ---
+' Returns:       String
+' Description:   Returns the default Power PDF staging folder for the current Windows user.
+'-------------------------------------------------------------------------------
+Private Function GetDefaultPowerPdfStagingFolder() As String
+    Const METHOD_NAME As String = "GetDefaultPowerPdfStagingFolder"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strBaseFolder As String
+
+    On Error GoTo ErrorHandler
+
+    strBaseFolder = Trim$(Environ$("LOCALAPPDATA"))
+
+    If Len(strBaseFolder) = 0 Then
+        strBaseFolder = Trim$(Environ$("TEMP"))
+    End If
+
+    If Len(strBaseFolder) = 0 Then
+        Err.Raise 1022, METHOD_NAME, "Neither LOCALAPPDATA nor TEMP could be resolved."
+    End If
+
+    GetDefaultPowerPdfStagingFolder = _
+        EnsureTrailingBackslash(strBaseFolder & POWER_PDF_DEFAULT_RELATIVE_STAGING_PATH)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetDefaultPowerPdfStagingFolder = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "baseFolder", _
+        strBaseFolder
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    ---
+' Returns:       String
+' Description:   Reads the current user's optional local Power PDF staging folder setting.
+'-------------------------------------------------------------------------------
+Private Function ReadPowerPdfStagingFolderSetting() As String
+    Const METHOD_NAME As String = "ReadPowerPdfStagingFolderSetting"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngFileNumber As Long
+    Dim strConfigFilePath As String
+    Dim strFolderPath As String
+
+    On Error GoTo ErrorHandler
+
+    strConfigFilePath = GetPowerPdfConfigFilePath()
+
+    If Len(strConfigFilePath) = 0 Then
+        GoTo ExitFunction
+    End If
+
+    If Len(Dir$(strConfigFilePath)) = 0 Then
+        GoTo ExitFunction
+    End If
+
+    lngFileNumber = FreeFile
+    Open strConfigFilePath For Input As #lngFileNumber
+    Line Input #lngFileNumber, strFolderPath
+    Close #lngFileNumber
+    lngFileNumber = 0
+
+    ReadPowerPdfStagingFolderSetting = Trim$(strFolderPath)
+
+ExitFunction:
+    If lngFileNumber > 0 Then
+        On Error Resume Next
+        Close #lngFileNumber
+        On Error GoTo 0
+    End If
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ReadPowerPdfStagingFolderSetting = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "configFilePath", _
+        strConfigFilePath
     errorManager.save
     Resume ExitFunction
 End Function
@@ -983,54 +1072,202 @@ End Function
 ' Creation date: 2026-08-05
 ' Parameters:    ByVal strFolderPath As String
 ' Returns:       Boolean
-' Description:   Stores the Power PDF staging folder in an existing range or workbook name.
+' Description:   Stores the Power PDF staging folder in the current user's local configuration.
 '-------------------------------------------------------------------------------
 Private Function SavePowerPdfStagingFolderSetting(ByVal strFolderPath As String) As Boolean
     Const METHOD_NAME As String = "SavePowerPdfStagingFolderSetting"
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
-    Dim lngRangeError As Long
-    Dim rngSetting As Excel.Range
-    Dim strNameFormula As String
-    Dim wksConfig As Excel.Worksheet
+    Dim lngFileNumber As Long
+    Dim strConfigFilePath As String
+    Dim strNormalizedFolder As String
 
     On Error GoTo ErrorHandler
 
     SavePowerPdfStagingFolderSetting = False
-    Set wksConfig = ThisWorkbook.Worksheets("Tradeversand")
+    strNormalizedFolder = EnsureTrailingBackslash(ExpandEnvironmentPath(strFolderPath))
 
-    On Error Resume Next
-    Set rngSetting = wksConfig.Range(POWER_PDF_STAGING_RANGE)
-    lngRangeError = VBA.Err.Number
-    VBA.Err.Clear
-    On Error GoTo ErrorHandler
-
-    If lngRangeError = 0 And Not rngSetting Is Nothing Then
-        rngSetting.Value = strFolderPath
-    Else
-        On Error Resume Next
-        ThisWorkbook.Names(POWER_PDF_STAGING_RANGE).Delete
-        VBA.Err.Clear
-        On Error GoTo ErrorHandler
-
-        strNameFormula = "=""" & strFolderPath & """"
-        ThisWorkbook.Names.Add _
-            Name:=POWER_PDF_STAGING_RANGE, _
-            RefersTo:=strNameFormula
+    If Len(strNormalizedFolder) = 0 Then
+        Err.Raise 1022, METHOD_NAME, "Power PDF staging folder is empty."
     End If
+
+    If Not EnsureFolderExists(strNormalizedFolder) Then
+        Err.Raise 1022, METHOD_NAME, "Power PDF staging folder could not be created or accessed."
+    End If
+
+    strConfigFilePath = GetPowerPdfConfigFilePath()
+
+    If Len(strConfigFilePath) = 0 Then
+        Err.Raise 1022, METHOD_NAME, "Power PDF local configuration file could not be resolved."
+    End If
+
+    lngFileNumber = FreeFile
+    Open strConfigFilePath For Output As #lngFileNumber
+    Print #lngFileNumber, strNormalizedFolder
+    Close #lngFileNumber
+    lngFileNumber = 0
 
     SavePowerPdfStagingFolderSetting = True
 
 ExitFunction:
-    Set rngSetting = Nothing
-    Set wksConfig = Nothing
+    If lngFileNumber > 0 Then
+        On Error Resume Next
+        Close #lngFileNumber
+        On Error GoTo 0
+    End If
     Exit Function
 
 ErrorHandler:
     errNumber = VBA.Err.Number
     errDescription = VBA.Err.Description
     SavePowerPdfStagingFolderSetting = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "folderPath;configFilePath", _
+        strFolderPath, _
+        strConfigFilePath
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    ---
+' Returns:       String
+' Description:   Returns the current user's local Power PDF configuration file path.
+'-------------------------------------------------------------------------------
+Private Function GetPowerPdfConfigFilePath() As String
+    Const METHOD_NAME As String = "GetPowerPdfConfigFilePath"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strBaseFolder As String
+    Dim strConfigFolder As String
+
+    On Error GoTo ErrorHandler
+
+    strBaseFolder = Trim$(Environ$("LOCALAPPDATA"))
+
+    If Len(strBaseFolder) = 0 Then
+        strBaseFolder = Trim$(Environ$("TEMP"))
+    End If
+
+    If Len(strBaseFolder) = 0 Then
+        Err.Raise 1022, METHOD_NAME, "Neither LOCALAPPDATA nor TEMP could be resolved."
+    End If
+
+    strConfigFolder = EnsureTrailingBackslash(strBaseFolder & POWER_PDF_CONFIG_RELATIVE_FOLDER)
+
+    If Not EnsureFolderExists(strConfigFolder) Then
+        Err.Raise 1022, METHOD_NAME, "Power PDF local configuration folder could not be created."
+    End If
+
+    GetPowerPdfConfigFilePath = strConfigFolder & POWER_PDF_CONFIG_FILE_NAME
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetPowerPdfConfigFilePath = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "baseFolder;configFolder", _
+        strBaseFolder, _
+        strConfigFolder
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    ByVal strPath As String
+' Returns:       String
+' Description:   Expands Windows environment variables in a configured folder path.
+'-------------------------------------------------------------------------------
+Private Function ExpandEnvironmentPath(ByVal strPath As String) As String
+    Const METHOD_NAME As String = "ExpandEnvironmentPath"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim objShell As Object
+
+    On Error GoTo ErrorHandler
+
+    If Len(Trim$(strPath)) = 0 Then
+        GoTo ExitFunction
+    End If
+
+    Set objShell = CreateObject("WScript.Shell")
+    ExpandEnvironmentPath = CStr(objShell.ExpandEnvironmentStrings(Trim$(strPath)))
+
+ExitFunction:
+    Set objShell = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ExpandEnvironmentPath = strPath
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "path", _
+        strPath
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    ByVal strFolderPath As String
+' Returns:       String
+' Description:   Ensures that a folder path ends with one backslash.
+'-------------------------------------------------------------------------------
+Private Function EnsureTrailingBackslash(ByVal strFolderPath As String) As String
+    Const METHOD_NAME As String = "EnsureTrailingBackslash"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strResult As String
+
+    On Error GoTo ErrorHandler
+
+    strResult = Trim$(strFolderPath)
+
+    Do While Len(strResult) > 0 And Right$(strResult, 1) = "\"
+        strResult = Left$(strResult, Len(strResult) - 1)
+    Loop
+
+    If Len(strResult) > 0 Then
+        strResult = strResult & "\"
+    End If
+
+    EnsureTrailingBackslash = strResult
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    EnsureTrailingBackslash = strFolderPath
 
     errorManager.addError _
         CLASS_NAME, _
@@ -2466,69 +2703,5 @@ ErrorHandler:
         errNumber, _
         errDescription
     errorManager.save
-    Resume ExitSub
-End Sub
-
-
-'-------------------------------------------------------------------------------
-' Author:        Pawel Ligezka
-' Creation date: 2026-08-05
-' Parameters:    ---
-' Returns:       ---
-' Description:   Tests direct Power PDF output to a supplied file path.
-'-------------------------------------------------------------------------------
-Public Sub TestPowerPdfDirectFileName()
-    Const METHOD_NAME As String = "TestPowerPdfDirectFileName"
-    Dim errorManager As New ErrorManager
-    Dim errDescription As String
-    Dim errNumber As Long
-    Dim strOutputPath As String
-    Dim wksSource As Excel.Worksheet
-
-    On Error GoTo ErrorHandler
-
-    strOutputPath = Environ$("TEMP") & _
-                    "\Tradeversand_PowerPdf_Direct_Test.pdf"
-
-    If Len(Dir$(strOutputPath)) > 0 Then
-        Kill strOutputPath
-    End If
-
-    Set wksSource = ThisWorkbook.Worksheets("Tradeversand")
-
-    wksSource.PrintOut _
-        Copies:=1, _
-        ActivePrinter:="Power PDF on NUL", _
-        PrintToFile:=True, _
-        PrToFileName:=strOutputPath, _
-        Collate:=True, _
-        IgnorePrintAreas:=False
-
-    MsgBox _
-        "Test completed." & vbCrLf & _
-        "Expected file:" & vbCrLf & _
-        strOutputPath, _
-        vbInformation, _
-        "Power PDF test"
-
-ExitSub:
-    Set wksSource = Nothing
-    Exit Sub
-
-ErrorHandler:
-    errNumber = VBA.Err.Number
-    errDescription = VBA.Err.Description
-
-    errorManager.addError _
-        CLASS_NAME, _
-        METHOD_NAME, _
-        errNumber, _
-        errDescription, _
-        "outputPath", _
-        strOutputPath
-
-    errorManager.save
-    errorManager.display _
-        "The direct Power PDF test failed."
     Resume ExitSub
 End Sub
