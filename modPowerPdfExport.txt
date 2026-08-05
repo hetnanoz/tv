@@ -38,6 +38,84 @@ Private gstrCompletionCallback As String
 ' Creation date: 2026-08-05
 ' Parameters:    ---
 ' Returns:       ---
+' Description:   Lets the user select and store the Power PDF staging folder.
+'-------------------------------------------------------------------------------
+Public Sub BrowsePowerPdfStagingFolder()
+    Const METHOD_NAME As String = "BrowsePowerPdfStagingFolder"
+    Dim dlgFolder As Office.FileDialog
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strDefaultFolder As String
+    Dim strSelectedFolder As String
+
+    On Error GoTo ErrorHandler
+
+    strDefaultFolder = Environ$("TEMP") & "\" & POWER_PDF_DEFAULT_STAGING_FOLDER_NAME & "\"
+
+    If Not EnsureFolderExists(strDefaultFolder) Then
+        Err.Raise 1022, METHOD_NAME, "The default Power PDF staging folder could not be created."
+    End If
+
+    Set dlgFolder = Application.FileDialog(msoFileDialogFolderPicker)
+
+    With dlgFolder
+        .Title = "Select the Power PDF staging folder"
+        .AllowMultiSelect = False
+        .InitialFileName = strDefaultFolder
+
+        If .Show <> -1 Then
+            GoTo ExitSub
+        End If
+
+        strSelectedFolder = CStr(.SelectedItems(1))
+    End With
+
+    If Right$(strSelectedFolder, 1) <> "\" Then
+        strSelectedFolder = strSelectedFolder & "\"
+    End If
+
+    If Not EnsureFolderExists(strSelectedFolder) Then
+        Err.Raise 1022, METHOD_NAME, "The selected Power PDF staging folder could not be created or accessed."
+    End If
+
+    If Not SavePowerPdfStagingFolderSetting(strSelectedFolder) Then
+        Err.Raise 1022, METHOD_NAME, "The selected Power PDF staging folder could not be stored in the workbook."
+    End If
+
+    MsgBox _
+        "Power PDF staging folder:" & vbCrLf & _
+        strSelectedFolder & vbCrLf & vbCrLf & _
+        "Select the same folder in the global Power PDF printer preferences.", _
+        vbInformation, _
+        "Power PDF configuration"
+
+ExitSub:
+    Set dlgFolder = Nothing
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "defaultFolder;selectedFolder", _
+        strDefaultFolder, _
+        strSelectedFolder
+    errorManager.save
+    errorManager.display "The Power PDF staging folder could not be configured."
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    ---
+' Returns:       ---
 ' Description:   Initializes the asynchronous Power PDF queue before reports are submitted.
 '-------------------------------------------------------------------------------
 Public Sub BeginPowerPdfBatch()
@@ -855,9 +933,15 @@ Private Function GetPowerPdfStagingFolder() As String
     strFolderPath = Trim$(CStr(wksConfig.Range(POWER_PDF_STAGING_RANGE).Value))
     lngRangeReadError = VBA.Err.Number
     VBA.Err.Clear
-    On Error GoTo ErrorHandler
 
     If lngRangeReadError <> 0 Or Len(strFolderPath) = 0 Then
+        strFolderPath = Trim$(CStr(Application.Evaluate( _
+            ThisWorkbook.Names(POWER_PDF_STAGING_RANGE).RefersTo)))
+        VBA.Err.Clear
+    End If
+    On Error GoTo ErrorHandler
+
+    If Len(strFolderPath) = 0 Then
         strFolderPath = strTempFolder & "\" & POWER_PDF_DEFAULT_STAGING_FOLDER_NAME
     ElseIf InStr(1, strFolderPath, "%TEMP%", vbTextCompare) > 0 Then
         strFolderPath = Replace$(strFolderPath, "%TEMP%", strTempFolder, 1, -1, vbTextCompare)
@@ -890,6 +974,71 @@ ErrorHandler:
         "folderPath;rangeName", _
         strFolderPath, _
         POWER_PDF_STAGING_RANGE
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    ByVal strFolderPath As String
+' Returns:       Boolean
+' Description:   Stores the Power PDF staging folder in an existing range or workbook name.
+'-------------------------------------------------------------------------------
+Private Function SavePowerPdfStagingFolderSetting(ByVal strFolderPath As String) As Boolean
+    Const METHOD_NAME As String = "SavePowerPdfStagingFolderSetting"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngRangeError As Long
+    Dim rngSetting As Excel.Range
+    Dim strNameFormula As String
+    Dim wksConfig As Excel.Worksheet
+
+    On Error GoTo ErrorHandler
+
+    SavePowerPdfStagingFolderSetting = False
+    Set wksConfig = ThisWorkbook.Worksheets("Tradeversand")
+
+    On Error Resume Next
+    Set rngSetting = wksConfig.Range(POWER_PDF_STAGING_RANGE)
+    lngRangeError = VBA.Err.Number
+    VBA.Err.Clear
+    On Error GoTo ErrorHandler
+
+    If lngRangeError = 0 And Not rngSetting Is Nothing Then
+        rngSetting.Value = strFolderPath
+    Else
+        On Error Resume Next
+        ThisWorkbook.Names(POWER_PDF_STAGING_RANGE).Delete
+        VBA.Err.Clear
+        On Error GoTo ErrorHandler
+
+        strNameFormula = "=""" & strFolderPath & """"
+        ThisWorkbook.Names.Add _
+            Name:=POWER_PDF_STAGING_RANGE, _
+            RefersTo:=strNameFormula
+    End If
+
+    SavePowerPdfStagingFolderSetting = True
+
+ExitFunction:
+    Set rngSetting = Nothing
+    Set wksConfig = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    SavePowerPdfStagingFolderSetting = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "folderPath", _
+        strFolderPath
     errorManager.save
     Resume ExitFunction
 End Function
