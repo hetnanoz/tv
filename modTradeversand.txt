@@ -614,7 +614,9 @@ nextRow:
     fullPdfPath = pPdf & pdfName & ".pdf"
 
     If Not QueueWorksheetForPowerPdf(wsOut, fullPdfPath) Then
-        Err.Raise 1015, METHOD_NAME, "Power PDF print job could not be queued for fund " & fundId & "."
+        Err.Raise 1015, METHOD_NAME, _
+                  "Power PDF print job could not be queued for fund " & fundId & ". " & _
+                  GetPowerPdfLastErrorDescription()
     End If
 
 ExitSub:
@@ -3093,7 +3095,9 @@ Public Sub convertFfyCsvToPdf(ByVal csvFullPath As String, ByVal pdfFullPath As 
     Call ApplySensitivityLabel(wbCsv, "8ffbc0b8-e97b-47d1-beac-cb0955d66f3b")
 
     If Not QueueWorksheetForPowerPdf(wsCsv, pdfFullPath) Then
-        Err.Raise 1015, METHOD_NAME, "Power PDF print job could not be queued for FFY PDF."
+        Err.Raise 1015, METHOD_NAME, _
+                  "Power PDF print job could not be queued for FFY PDF. " & _
+                  GetPowerPdfLastErrorDescription()
     End If
 
 ExitSub:
