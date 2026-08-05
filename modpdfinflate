@@ -1,3 +1,4 @@
+Attribute VB_Name = "modPdfReport"
 '==============================================================================
 ' Module      : modPdfReport
 ' Purpose     : One-run PDF layout analyser. Reads a PDF, decompresses every
@@ -109,8 +110,8 @@ End Sub
 Public Sub PdfAnalyse(ByVal pdfPath As String, ByVal outFolder As String)
 
     Dim baseName As String
-    Dim pathStreams As String, pathLayout As String, pathSpec As String
-    Dim fStreams As Integer, fLayout As Integer, fSpec As Integer
+    Dim pathStreams As String, pathLayout As String, pathSpec As String, pathCells As String
+    Dim fStreams As Integer, fLayout As Integer, fSpec As Integer, fCells As Integer
     Dim pageRefs As String
     Dim refs() As String
     Dim i As Long, objIdx As Long
@@ -125,10 +126,16 @@ Public Sub PdfAnalyse(ByVal pdfPath As String, ByVal outFolder As String)
     pathStreams = outFolder & baseName & "_streams.txt"
     pathLayout = outFolder & baseName & "_layout.txt"
     pathSpec = outFolder & baseName & "_spec.txt"
+    pathCells = outFolder & baseName & "_columns.txt"
 
     fStreams = OpenNew(pathStreams)
     fLayout = OpenNew(pathLayout)
     fSpec = OpenNew(pathSpec)
+    fCells = OpenNew(pathCells)
+
+    EmitLine fCells, "TABLE GEOMETRY - human readable cell map"
+    EmitLine fCells, "source : " & pdfPath
+    EmitLine fCells, "units  : PDF points (1/72 inch), origin bottom-left"
 
     WriteHeaders fStreams, fLayout, fSpec, pdfPath
 
@@ -152,6 +159,7 @@ Public Sub PdfAnalyse(ByVal pdfPath As String, ByVal outFolder As String)
                 AnalyseContent content
                 EmitLayoutFull fLayout, pageCount, CLng(refs(i)), pageDict, Len(content)
                 EmitSpecShort fSpec, pageCount, CLng(refs(i)), pageDict, Len(content)
+                EmitCellMap fCells, pageCount, CLng(refs(i)), pageDict
             End If
         Next i
     End If
@@ -159,11 +167,13 @@ Public Sub PdfAnalyse(ByVal pdfPath As String, ByVal outFolder As String)
     Close #fStreams
     Close #fLayout
     Close #fSpec
+    Close #fCells
 
     MsgBox "Done - " & CStr(pageCount) & " page(s) analysed." & vbCrLf & vbCrLf & _
            "1) " & pathStreams & vbCrLf & _
            "2) " & pathLayout & vbCrLf & _
-           "3) " & pathSpec & "   <- short one, paste this", _
+           "3) " & pathSpec & vbCrLf & _
+           "4) " & pathCells & "   <- the readable one", _
            vbInformation, "modPdfReport"
 
 End Sub
@@ -1822,5 +1832,290 @@ Private Function FindBytes(ByRef data() As Byte, ByVal startAt As Long, ByVal pa
     Next i
 
     FindBytes = -1
+
+End Function
+
+
+'==============================================================================
+' REPORT 4 - HUMAN READABLE CELL MAP
+' Oracle Reports draws every table cell as a rectangle, so the rectangles ARE
+' the grid. Cells are grouped into horizontal bands, each band is printed once
+' with its column widths and the text sitting inside, and identical consecutive
+' bands are collapsed into "repeats xN, pitch ...".
+'==============================================================================
+
+Private Sub EmitCellMap(ByVal fileNum As Integer, ByVal pageNo As Long, _
+                        ByVal objNo As Long, ByVal pageDict As String)
+
+    Dim bandY() As Double
+    Dim bandN As Long
+    Dim idx() As Long
+    Dim n As Long, i As Long, j As Long, b As Long, t As Long
+    Dim sig As String, prevSig As String
+    Dim repeatCount As Long, printed As Long
+    Dim pitch As Double, prevY As Double
+    Dim txt As String, tx As Double, dx As Double
+    Dim frameI As Long
+    Dim area As Double, bestArea As Double
+    Dim mbW As Double, mbH As Double
+
+    If fileNum = 0 Then Exit Sub
+
+    EmitLine fileNum, ""
+    EmitLine fileNum, String$(78, "=")
+    EmitLine fileNum, "PAGE " & CStr(pageNo) & "   (object " & CStr(objNo) & ")"
+    EmitLine fileNum, String$(78, "=")
+
+    '--- page and font settings ------------------------------------------------
+    MediaBoxSize pageDict, mbW, mbH
+    EmitLine fileNum, "PAGE SIZE   : " & NumTxt(mbW) & " x " & NumTxt(mbH) & " pt" & _
+                      "   =  " & NumTxt(mbW / 72) & " x " & NumTxt(mbH / 72) & " in" & _
+                      "   =  " & NumTxt(mbW * 25.4 / 72) & " x " & NumTxt(mbH * 25.4 / 72) & " mm"
+    EmitLine fileNum, "ORIENTATION : " & IIf(mbW > mbH, "landscape", "portrait") & _
+                      "   Rotate " & DictValue(pageDict, "/Rotate")
+    EmitLine fileNum, "FONTS       : " & FontMap(pageDict)
+    EmitLine fileNum, "SIZES USED  : " & JoinCollection(m_fonts, " ; ")
+    EmitLine fileNum, "LINE WIDTH  : " & JoinCollection(m_widths, " ; ") & _
+                      "   (0 = hairline, thinnest the device can draw)"
+    EmitLine fileNum, "INK EXTENT  : x " & NumTxt(m_minX) & " .. " & NumTxt(m_maxX) & _
+                      "    y " & NumTxt(m_minY) & " .. " & NumTxt(m_maxY)
+    EmitLine fileNum, "MARGINS     : left " & NumTxt(m_minX) & _
+                      "   right " & NumTxt(mbW - m_maxX) & _
+                      "   top " & NumTxt(mbH - m_maxY) & _
+                      "   bottom " & NumTxt(m_minY)
+    EmitLine fileNum, "IMAGES      : " & JoinCollection(m_images, " | ")
+
+    If m_recN = 0 Then
+        EmitLine fileNum, ""
+        EmitLine fileNum, "(no rectangles on this page - nothing to map)"
+        Exit Sub
+    End If
+
+    '--- outer frame = largest rectangle ---------------------------------------
+    frameI = 0: bestArea = -1
+    For i = 0 To m_recN - 1
+        area = Abs(m_recW(i)) * Abs(m_recH(i))
+        If area > bestArea Then
+            bestArea = area
+            frameI = i
+        End If
+    Next i
+    EmitLine fileNum, "TABLE FRAME : x " & NumTxt(m_recX(frameI)) & " .. " & _
+                      NumTxt(m_recX(frameI) + m_recW(frameI)) & _
+                      "    y " & NumTxt(m_recY(frameI)) & " .. " & _
+                      NumTxt(m_recY(frameI) + m_recH(frameI)) & _
+                      "    (" & NumTxt(m_recW(frameI)) & " x " & NumTxt(m_recH(frameI)) & ")"
+
+    '--- bands ----------------------------------------------------------------
+    bandN = ClusterValues(m_recY, m_recN, bandY, False)
+
+    EmitLine fileNum, ""
+    EmitLine fileNum, "HORIZONTAL BANDS : " & CStr(bandN) & _
+                      "   (a band = all cells sharing one bottom edge)"
+    EmitLine fileNum, String$(78, "-")
+
+    prevSig = vbNullString
+    repeatCount = 0
+    pitch = 0
+
+    For b = 0 To bandN - 1
+
+        ReDim idx(0 To m_recN)
+        n = 0
+        For i = 0 To m_recN - 1
+            If Abs(m_recY(i) - bandY(b)) <= TOL Then
+                idx(n) = i
+                n = n + 1
+            End If
+        Next i
+        If n = 0 Then GoTo NextBand
+
+        For i = 0 To n - 2                                  ' sort cells left to right
+            For j = i + 1 To n - 1
+                If m_recX(idx(j)) < m_recX(idx(i)) Then
+                    t = idx(i): idx(i) = idx(j): idx(j) = t
+                End If
+            Next j
+        Next i
+
+        sig = vbNullString
+        For i = 0 To n - 1
+            sig = sig & NumTxt(m_recX(idx(i))) & "/" & NumTxt(m_recW(idx(i))) & " "
+        Next i
+
+        If sig = prevSig Then
+            repeatCount = repeatCount + 1
+            If pitch = 0 Then pitch = prevY - bandY(b)
+        Else
+            FlushRepeat fileNum, repeatCount, pitch
+            repeatCount = 0
+            pitch = 0
+
+            If printed < 8 Then
+                printed = printed + 1
+                EmitLine fileNum, ""
+                EmitLine fileNum, "BAND at y = " & NumTxt(bandY(b)) & _
+                                  "   height " & NumTxt(m_recH(idx(0))) & _
+                                  "   cells " & CStr(n)
+                EmitLine fileNum, "   #  X start    width     X end     text at   offset  content"
+                For i = 0 To n - 1
+                    txt = CellText(m_recX(idx(i)), m_recY(idx(i)), _
+                                   m_recW(idx(i)), m_recH(idx(i)), tx)
+                    If tx < 0 Then
+                        dx = 0
+                        txt = "-"
+                    Else
+                        dx = tx - m_recX(idx(i))
+                    End If
+                    EmitLine fileNum, "  " & PadL(CStr(i + 1), 2) & "  " & _
+                             PadL(NumTxt(m_recX(idx(i))), 8) & "  " & _
+                             PadL(NumTxt(m_recW(idx(i))), 8) & "  " & _
+                             PadL(NumTxt(m_recX(idx(i)) + m_recW(idx(i))), 8) & "  " & _
+                             PadL(IIf(tx < 0, "-", NumTxt(tx)), 8) & "  " & _
+                             PadL(IIf(tx < 0, "-", NumTxt(dx)), 6) & "  " & Left$(txt, 30)
+                Next i
+            ElseIf printed = 8 Then
+                printed = printed + 1
+                EmitLine fileNum, ""
+                EmitLine fileNum, "... further bands not expanded, see the repeat notes below"
+            End If
+
+            prevSig = sig
+        End If
+
+        prevY = bandY(b)
+NextBand:
+    Next b
+
+    FlushRepeat fileNum, repeatCount, pitch
+
+End Sub
+
+'------------------------------------------------------------------------------
+Private Sub FlushRepeat(ByVal fileNum As Integer, ByVal repeatCount As Long, _
+                        ByVal pitch As Double)
+
+    If repeatCount > 0 Then
+        EmitLine fileNum, "      ^ this band repeats " & CStr(repeatCount) & _
+                          " more time(s), pitch " & NumTxt(pitch) & " pt"
+    End If
+
+End Sub
+
+'------------------------------------------------------------------------------
+' The leftmost text run whose baseline falls inside the given rectangle.
+'------------------------------------------------------------------------------
+Private Function CellText(ByVal rx As Double, ByVal ry As Double, _
+                          ByVal rw As Double, ByVal rh As Double, _
+                          ByRef textX As Double) As String
+
+    Dim i As Long, best As Long
+    Dim bestX As Double
+
+    best = -1
+    bestX = 1E+30
+
+    For i = 0 To m_txN - 1
+        If m_txY(i) >= ry - 1 And m_txY(i) <= ry + rh + 1 Then
+            If m_txX(i) >= rx - 0.5 And m_txX(i) <= rx + rw Then
+                If m_txX(i) < bestX Then
+                    bestX = m_txX(i)
+                    best = i
+                End If
+            End If
+        End If
+    Next i
+
+    If best >= 0 Then
+        textX = m_txX(best)
+        CellText = m_txStr(best)
+    Else
+        textX = -1
+        CellText = vbNullString
+    End If
+
+End Function
+
+'------------------------------------------------------------------------------
+' "/F0 12 0 R/F1 14 0 R" -> "F0=Times-Bold ; F1=Times-Roman"
+'------------------------------------------------------------------------------
+Private Function FontMap(ByVal pageDict As String) As String
+
+    Dim fd As String, entry As String, s As String
+    Dim parts() As String, bits() As String
+    Dim i As Long, objIdx As Long
+
+    fd = DictValue(pageDict, "/Font")
+    If Len(fd) = 0 Or fd = "(absent)" Then
+        FontMap = "(absent)"
+        Exit Function
+    End If
+
+    fd = Replace(Replace(fd, "<<", ""), ">>", "")
+    parts = Split(fd, "/")
+
+    For i = LBound(parts) To UBound(parts)
+        entry = Trim$(parts(i))
+        If Len(entry) > 0 Then
+            bits = Split(entry, " ")
+            If UBound(bits) >= 1 Then
+                If IsNumeric(bits(1)) Then
+                    objIdx = IndexOfObject(CLng(bits(1)))
+                    If Len(s) > 0 Then s = s & " ; "
+                    s = s & bits(0) & "="
+                    If objIdx >= 0 Then
+                        s = s & Replace(DictValue(ObjectDict(m_objPos(objIdx)), "/BaseFont"), "/", "")
+                    Else
+                        s = s & "?"
+                    End If
+                End If
+            End If
+        End If
+    Next i
+
+    FontMap = s
+
+End Function
+
+'------------------------------------------------------------------------------
+Private Sub MediaBoxSize(ByVal pageDict As String, ByRef w As Double, ByRef h As Double)
+
+    Dim v As String
+    Dim parts() As String
+    Dim i As Long, n As Long
+    Dim num(0 To 3) As Double
+
+    v = DictValue(pageDict, "/MediaBox")
+    v = Replace(Replace(v, "[", " "), "]", " ")
+
+    Do While InStr(v, "  ") > 0
+        v = Replace(v, "  ", " ")
+    Loop
+
+    parts = Split(Trim$(v), " ")
+    For i = LBound(parts) To UBound(parts)
+        If n <= 3 Then
+            If IsNumeric(parts(i)) Then
+                num(n) = Val(parts(i))
+                n = n + 1
+            End If
+        End If
+    Next i
+
+    If n = 4 Then
+        w = num(2) - num(0)
+        h = num(3) - num(1)
+    End If
+
+End Sub
+
+'------------------------------------------------------------------------------
+Private Function PadL(ByVal s As String, ByVal widthChars As Long) As String
+
+    If Len(s) >= widthChars Then
+        PadL = s
+    Else
+        PadL = Space$(widthChars - Len(s)) & s
+    End If
 
 End Function
