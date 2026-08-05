@@ -2,6 +2,7 @@ Option Explicit
 
 Private Const CLASS_NAME As String = "modMasterController"
 Private Const LAST_TRANSACTION_COLUMN As Long = 110
+Private Const ARCHIVE_INPUT_FILES_AFTER_LOAD As Boolean = False ' Set to True after testing.
 
 Private gblnDeferredCompletionPending As Boolean
 Private gblnDeferredRunAll As Boolean
@@ -88,7 +89,7 @@ Public Sub executeMasterProcess()
 
     destFolder = getRangeValueSafe(wsMacro, "cfg_DestFolder")
 
-    If Len(destFolder) > 0 Then
+    If ARCHIVE_INPUT_FILES_AFTER_LOAD And Len(destFolder) > 0 Then
         DoEvents
         Application.Wait Now + TimeValue("0:00:01")
 
