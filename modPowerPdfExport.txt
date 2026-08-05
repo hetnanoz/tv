@@ -2304,7 +2304,7 @@ End Function
 ' Creation date: 2026-08-05
 ' Parameters:    ByVal strFilePath As String, ByRef strValidationDetails As String
 ' Returns:       Boolean
-' Description:   Verifies PDF 1.4 and the required MediaBox and CropBox dimensions.
+' Description:   Verifies PDF 1.4 and the effective page dimensions; an omitted CropBox inherits MediaBox.
 '-------------------------------------------------------------------------------
 Private Function IsClientPdfCompatible(ByVal strFilePath As String, _
                                        ByRef strValidationDetails As String) As Boolean
@@ -2348,8 +2348,8 @@ Private Function IsClientPdfCompatible(ByVal strFilePath As String, _
     End If
 
     If Not blnCropBoxFound Then
-        strValidationDetails = "CropBox was not found in the Power PDF preflight output."
-        GoTo ExitFunction
+        dblCropWidth = dblMediaWidth
+        dblCropHeight = dblMediaHeight
     End If
 
     If Abs(dblMediaWidth - CLIENT_PDF_MEDIA_WIDTH_POINTS) > CLIENT_PDF_PAGE_TOLERANCE_POINTS _
