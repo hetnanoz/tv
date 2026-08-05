@@ -25,6 +25,8 @@ Private gdictSpoolFiles As Object
 Private gdictTargetPaths As Object
 Private gdtNextPump As Date
 Private glngJobCounter As Long
+Private glngLastPowerPdfErrorNumber As Long
+Private gstrLastPowerPdfErrorDescription As String
 Private gstrPreviousPrinter As String
 Private gstrSpoolFolder As String
 Private gstrStagingFolder As String
@@ -45,7 +47,14 @@ Public Sub BeginPowerPdfBatch()
 
     On Error GoTo ErrorHandler
 
+    glngLastPowerPdfErrorNumber = 0
+    gstrLastPowerPdfErrorDescription = vbNullString
+
     If Not EnsurePowerPdfBatch() Then
+        If glngLastPowerPdfErrorNumber <> 0 Then
+            Err.Raise glngLastPowerPdfErrorNumber, METHOD_NAME, gstrLastPowerPdfErrorDescription
+        End If
+
         Err.Raise 1021, METHOD_NAME, "Power PDF batch could not be initialized."
     End If
 
@@ -55,6 +64,8 @@ ExitSub:
 ErrorHandler:
     errNumber = VBA.Err.Number
     errDescription = VBA.Err.Description
+    glngLastPowerPdfErrorNumber = errNumber
+    gstrLastPowerPdfErrorDescription = errDescription
 
     errorManager.addError _
         CLASS_NAME, _
@@ -92,6 +103,8 @@ Public Function QueueWorksheetForPowerPdf(ByVal wksSource As Excel.Worksheet, _
     On Error GoTo ErrorHandler
 
     QueueWorksheetForPowerPdf = False
+    glngLastPowerPdfErrorNumber = 0
+    gstrLastPowerPdfErrorDescription = vbNullString
 
     If wksSource Is Nothing Then
         Err.Raise 1001, METHOD_NAME, "Source worksheet is required."
@@ -102,6 +115,10 @@ Public Function QueueWorksheetForPowerPdf(ByVal wksSource As Excel.Worksheet, _
     End If
 
     If Not EnsurePowerPdfBatch() Then
+        If glngLastPowerPdfErrorNumber <> 0 Then
+            Err.Raise glngLastPowerPdfErrorNumber, METHOD_NAME, gstrLastPowerPdfErrorDescription
+        End If
+
         Err.Raise 1021, METHOD_NAME, "Power PDF batch is not available."
     End If
 
@@ -173,6 +190,8 @@ ErrorHandler:
     errNumber = VBA.Err.Number
     errDescription = VBA.Err.Description
     QueueWorksheetForPowerPdf = False
+    glngLastPowerPdfErrorNumber = errNumber
+    gstrLastPowerPdfErrorDescription = errDescription
 
     If blnJobRegistered Then
         Call RemovePowerPdfJob(strJobId, False)
@@ -328,6 +347,40 @@ End Sub
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-05
 ' Parameters:    ---
+' Returns:       String
+' Description:   Returns the most recent Power PDF initialization or queue failure description.
+'-------------------------------------------------------------------------------
+Public Function GetPowerPdfLastErrorDescription() As String
+    Const METHOD_NAME As String = "GetPowerPdfLastErrorDescription"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    GetPowerPdfLastErrorDescription = gstrLastPowerPdfErrorDescription
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetPowerPdfLastErrorDescription = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    ---
 ' Returns:       Long
 ' Description:   Returns the number of Power PDF files still waiting to be completed and moved.
 '-------------------------------------------------------------------------------
@@ -472,6 +525,8 @@ ErrorHandler:
     errNumber = VBA.Err.Number
     errDescription = VBA.Err.Description
     EnsurePowerPdfBatch = False
+    glngLastPowerPdfErrorNumber = errNumber
+    gstrLastPowerPdfErrorDescription = errDescription
 
     Call RestorePreviousPrinter
     Call ResetPowerPdfState
