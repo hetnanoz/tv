@@ -3,6 +3,7 @@ Option Explicit
 Private Const CLASS_NAME As String = "modPowerPdfExport"
 Private Const POWER_PDF_PRINTER As String = "Power PDF on NUL"
 Private Const POWER_PDF_STAGING_RANGE As String = "power_pdf_staging_path"
+Private Const POWER_PDF_DEFAULT_STAGING_FOLDER_NAME As String = "TradeversandPowerPdf"
 Private Const POWER_PDF_PUMP_INTERVAL_SECONDS As Long = 2
 Private Const POWER_PDF_DELAY_WARNING_SECONDS As Long = 120
 Private Const POWER_PDF_SPOOL_FOLDER_NAME As String = "TradeversandPowerPdfSpool"
@@ -835,20 +836,39 @@ Private Function GetPowerPdfStagingFolder() As String
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
+    Dim lngRangeReadError As Long
     Dim strFolderPath As String
+    Dim strTempFolder As String
     Dim wksConfig As Excel.Worksheet
 
     On Error GoTo ErrorHandler
 
-    Set wksConfig = ThisWorkbook.Worksheets("Tradeversand")
-    strFolderPath = Trim$(CStr(wksConfig.Range(POWER_PDF_STAGING_RANGE).Value))
+    strTempFolder = Environ$("TEMP")
 
-    If Len(strFolderPath) = 0 Then
-        Err.Raise 1021, METHOD_NAME, "Named range power_pdf_staging_path is empty."
+    If Len(strTempFolder) = 0 Then
+        Err.Raise 1022, METHOD_NAME, "Windows TEMP folder could not be resolved."
+    End If
+
+    Set wksConfig = ThisWorkbook.Worksheets("Tradeversand")
+
+    On Error Resume Next
+    strFolderPath = Trim$(CStr(wksConfig.Range(POWER_PDF_STAGING_RANGE).Value))
+    lngRangeReadError = VBA.Err.Number
+    VBA.Err.Clear
+    On Error GoTo ErrorHandler
+
+    If lngRangeReadError <> 0 Or Len(strFolderPath) = 0 Then
+        strFolderPath = strTempFolder & "\" & POWER_PDF_DEFAULT_STAGING_FOLDER_NAME
+    ElseIf InStr(1, strFolderPath, "%TEMP%", vbTextCompare) > 0 Then
+        strFolderPath = Replace$(strFolderPath, "%TEMP%", strTempFolder, 1, -1, vbTextCompare)
     End If
 
     If Right$(strFolderPath, 1) <> "\" Then
         strFolderPath = strFolderPath & "\"
+    End If
+
+    If Not EnsureFolderExists(strFolderPath) Then
+        Err.Raise 1022, METHOD_NAME, "Power PDF staging folder could not be created or accessed: " & strFolderPath
     End If
 
     GetPowerPdfStagingFolder = strFolderPath
@@ -867,7 +887,8 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "rangeName", _
+        "folderPath;rangeName", _
+        strFolderPath, _
         POWER_PDF_STAGING_RANGE
     errorManager.save
     Resume ExitFunction
