@@ -587,9 +587,11 @@ Private Function BuildSinglePageContent( _
 
     Const METHOD_NAME As String = "BuildSinglePageContent"
     Dim arrBottomColumns As Variant
+    Dim arrBottomHeaderTextX As Variant
     Dim arrBottomWidths As Variant
     Dim arrBottomX As Variant
     Dim arrTopColumns As Variant
+    Dim arrTopHeaderTextX As Variant
     Dim arrTopWidths As Variant
     Dim arrTopX As Variant
     Dim blnFirstPage As Boolean
@@ -631,6 +633,8 @@ Private Function BuildSinglePageContent( _
     arrBottomWidths = GetBottomGridWidths()
     arrTopColumns = GetTopSourceColumns()
     arrBottomColumns = GetBottomSourceColumns()
+    arrTopHeaderTextX = GetTopHeaderTextX()
+    arrBottomHeaderTextX = GetBottomHeaderTextX()
 
     If blnFirstPage Then
         dblHeaderTopY = FIRST_PAGE_HEADER_TOP_Y
@@ -661,7 +665,8 @@ Private Function BuildSinglePageContent( _
         arrTopWidths, _
         dblHeaderTopY, _
         IIf(blnFirstPage, 540.76, 594.76), _
-        True)
+        True, _
+        arrTopHeaderTextX)
 
     strContent = strContent & BuildGridRowContent( _
         wksSource, _
@@ -671,7 +676,8 @@ Private Function BuildSinglePageContent( _
         arrBottomWidths, _
         dblHeaderBottomY, _
         IIf(blnFirstPage, 522.76, 576.76), _
-        True)
+        True, _
+        arrBottomHeaderTextX)
 
     lngSlot = 0
 
@@ -761,7 +767,7 @@ End Function
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-05
-' Parameters:    wksSource As Excel.Worksheet, lngSourceRow As Long, arrSourceColumns As Variant, arrX As Variant, arrWidths As Variant, dblRowY As Double, dblBaselineY As Double, blnHeader As Boolean
+' Parameters:    wksSource As Excel.Worksheet, lngSourceRow As Long, arrSourceColumns As Variant, arrX As Variant, arrWidths As Variant, dblRowY As Double, dblBaselineY As Double, blnHeader As Boolean, varFixedTextX As Variant
 ' Returns:       String
 ' Description:   Draws one complete 12-column or 13-column row.
 '-------------------------------------------------------------------------------
@@ -773,12 +779,14 @@ Private Function BuildGridRowContent( _
     ByVal arrWidths As Variant, _
     ByVal dblRowY As Double, _
     ByVal dblBaselineY As Double, _
-    ByVal blnHeader As Boolean) As String
+    ByVal blnHeader As Boolean, _
+    Optional ByVal varFixedTextX As Variant) As String
 
     Const METHOD_NAME As String = "BuildGridRowContent"
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
+    Dim dblFixedTextX As Double
     Dim lngIndex As Long
     Dim rngSource As Excel.Range
     Dim strContent As String
@@ -791,8 +799,22 @@ Private Function BuildGridRowContent( _
         Err.Raise 1024, METHOD_NAME, "The row geometry arrays do not have matching dimensions."
     End If
 
+    If Not IsMissing(varFixedTextX) Then
+        If Not IsArray(varFixedTextX) Then
+            Err.Raise 1024, METHOD_NAME, "The fixed text anchor configuration is not an array."
+        End If
+        If UBound(varFixedTextX) <> UBound(arrX) Then
+            Err.Raise 1024, METHOD_NAME, "The fixed text anchor array does not match the row geometry."
+        End If
+    End If
+
     For lngIndex = LBound(arrX) To UBound(arrX)
         Set rngSource = wksSource.Cells(lngSourceRow, CLng(arrSourceColumns(lngIndex)))
+
+        dblFixedTextX = -1#
+        If Not IsMissing(varFixedTextX) Then
+            dblFixedTextX = CDbl(varFixedTextX(lngIndex))
+        End If
 
         strContent = strContent & BuildCellContent( _
             rngSource, _
@@ -801,7 +823,8 @@ Private Function BuildGridRowContent( _
             CDbl(arrWidths(lngIndex)), _
             DATA_ROW_HEIGHT, _
             dblBaselineY, _
-            blnHeader)
+            blnHeader, _
+            dblFixedTextX)
     Next lngIndex
 
     BuildGridRowContent = strContent
@@ -833,7 +856,7 @@ End Function
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-05
-' Parameters:    rngSource As Excel.Range, dblX As Double, dblY As Double, dblWidth As Double, dblHeight As Double, dblBaselineY As Double, blnHeader As Boolean
+' Parameters:    rngSource As Excel.Range, dblX As Double, dblY As Double, dblWidth As Double, dblHeight As Double, dblBaselineY As Double, blnHeader As Boolean, dblFixedTextX As Double
 ' Returns:       String
 ' Description:   Draws one explicit PDF rectangle and the worksheet text inside it.
 '-------------------------------------------------------------------------------
@@ -844,7 +867,8 @@ Private Function BuildCellContent( _
     ByVal dblWidth As Double, _
     ByVal dblHeight As Double, _
     ByVal dblBaselineY As Double, _
-    ByVal blnHeader As Boolean) As String
+    ByVal blnHeader As Boolean, _
+    Optional ByVal dblFixedTextX As Double = -1#) As String
 
     Const METHOD_NAME As String = "BuildCellContent"
     Dim dblFontSize As Double
@@ -886,20 +910,24 @@ Private Function BuildCellContent( _
         GoTo ExitFunction
     End If
 
-    dblFontSize = FitFontSize(strText, strFont, dblFontSize, dblWidth - (2# * TEXT_HORIZONTAL_PADDING))
-    dblTextWidth = EstimateBase14TextWidth(strText, strFont, dblFontSize)
+    If blnHeader And dblFixedTextX >= 0# Then
+        dblTextX = dblFixedTextX
+    Else
+        dblFontSize = FitFontSize(strText, strFont, dblFontSize, dblWidth - (2# * TEXT_HORIZONTAL_PADDING))
+        dblTextWidth = EstimateBase14TextWidth(strText, strFont, dblFontSize)
 
-    Select Case lngAlignment
-        Case xlCenter
-            dblTextX = dblX + ((dblWidth - dblTextWidth) / 2#)
-        Case xlRight
-            dblTextX = dblX + dblWidth - TEXT_HORIZONTAL_PADDING - dblTextWidth
-        Case Else
-            dblTextX = dblX + TEXT_HORIZONTAL_PADDING
-    End Select
+        Select Case lngAlignment
+            Case xlCenter
+                dblTextX = dblX + ((dblWidth - dblTextWidth) / 2#)
+            Case xlRight
+                dblTextX = dblX + dblWidth - TEXT_HORIZONTAL_PADDING - dblTextWidth
+            Case Else
+                dblTextX = dblX + TEXT_HORIZONTAL_PADDING
+        End Select
 
-    If dblTextX < dblX + 0.5 Then
-        dblTextX = dblX + 0.5
+        If dblTextX < dblX + 0.5 Then
+            dblTextX = dblX + 0.5
+        End If
     End If
 
     strContent = strContent & BuildAbsoluteTextCommand( _
@@ -924,12 +952,13 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "x;y;width;height;header", _
+        "x;y;width;height;header;fixedTextX", _
         dblX, _
         dblY, _
         dblWidth, _
         dblHeight, _
-        blnHeader
+        blnHeader, _
+        dblFixedTextX
 
     errorManager.save
     Resume ExitFunction
@@ -1515,6 +1544,91 @@ ErrorHandler:
     errNumber = VBA.Err.Number
     errDescription = VBA.Err.Description
     GetBottomGridWidths = Array()
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    ---
+' Returns:       Variant
+' Description:   Returns the exact Oracle Reports text anchors for the 12 upper header labels.
+'-------------------------------------------------------------------------------
+Private Function GetTopHeaderTextX() As Variant
+    Const METHOD_NAME As String = "GetTopHeaderTextX"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    GetTopHeaderTextX = Array( _
+        66.36, _
+        193.12, _
+        339.76, _
+        440.24, _
+        509.64, _
+        561#, _
+        627#, _
+        735.36, _
+        923.64, _
+        1030.52, _
+        1106.64, _
+        1226.64)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetTopHeaderTextX = Array()
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    ---
+' Returns:       Variant
+' Description:   Returns the exact Oracle Reports text anchors for the 13 lower header labels.
+'-------------------------------------------------------------------------------
+Private Function GetBottomHeaderTextX() As Variant
+    Const METHOD_NAME As String = "GetBottomHeaderTextX"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    GetBottomHeaderTextX = Array( _
+        52.12, _
+        183#, _
+        298.88, _
+        384.76, _
+        478.88, _
+        528.36, _
+        649.88, _
+        780.36, _
+        861.36, _
+        932.64, _
+        1058.24, _
+        1185.36, _
+        1260.36)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetBottomHeaderTextX = Array()
 
     errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
     errorManager.save
