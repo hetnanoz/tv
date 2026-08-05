@@ -202,12 +202,6 @@ NextRow:
 
     If GetPowerPdfPendingCount() > 0 Then
         Call FinishPowerPdfBatch
-        MsgBox _
-            "Report data has been prepared. Power PDF is finishing " & _
-            CStr(GetPowerPdfPendingCount()) & _
-            " PDF files in the background. E-mails will be created automatically after all PDF files are ready.", _
-            vbInformation, _
-            "Power PDF queue"
     Else
         Call CompleteTradeversandAfterPowerPdf
     End If
