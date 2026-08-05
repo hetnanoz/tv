@@ -481,10 +481,12 @@ Public Sub processFundZeroTemplate(fundId As String, ByRef inputArr As Variant, 
     Dim errDescription As String
     Dim errNumber As Long
     Dim blnPreviousDisplayAlerts As Boolean
+    Dim blnRawOraclePdfEnabled As Boolean
     Dim blnPreviousEnableEvents As Boolean
     Dim blnSettingsCaptured As Boolean
     Dim wbOut As Excel.Workbook
     Dim wsOut As Excel.Worksheet
+    Dim wksMacro As Excel.Worksheet
     Dim r As Long
     Dim outRow As Long
     Dim tradeCount As Long
@@ -612,11 +614,20 @@ nextRow:
     End If
 
     fullPdfPath = pPdf & pdfName & ".pdf"
+    Set wksMacro = ThisWorkbook.Worksheets("Tradeversand")
+    blnRawOraclePdfEnabled = IsRawOraclePdfEnabled(wksMacro)
 
-    If Not QueueWorksheetForPowerPdf(wsOut, fullPdfPath) Then
-        Err.Raise 1015, METHOD_NAME, _
-                  "Power PDF print job could not be queued for fund " & fundId & ". " & _
-                  GetPowerPdfLastErrorDescription()
+    If blnRawOraclePdfEnabled Then
+        If Not GenerateRawOraclePdfFromWorksheet(fullPdfPath, wsOut, logoPath) Then
+            Err.Raise 1026, METHOD_NAME, _
+                      "The raw Oracle-compatible PDF could not be generated for fund " & fundId & "."
+        End If
+    Else
+        If Not QueueWorksheetForPowerPdf(wsOut, fullPdfPath) Then
+            Err.Raise 1015, METHOD_NAME, _
+                      "Power PDF print job could not be queued for fund " & fundId & ". " & _
+                      GetPowerPdfLastErrorDescription()
+        End If
     End If
 
 ExitSub:
@@ -625,6 +636,7 @@ ExitSub:
         wbOut.Close SaveChanges:=False
         On Error GoTo 0
     End If
+    Set wksMacro = Nothing
     Set wsOut = Nothing
     Set wbOut = Nothing
     If blnSettingsCaptured Then
@@ -646,10 +658,11 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "fundId;pXlsx;pPdf", _
+        "fundId;pXlsx;pPdf;rawOraclePdfEnabled", _
         fundId, _
         pXlsx, _
-        pPdf
+        pPdf, _
+        blnRawOraclePdfEnabled
     errorManager.save
     Resume ExitSub
 End Sub
