@@ -1,6 +1,7 @@
 Option Explicit
 
 Private Const CLASS_NAME As String = "ErrorManager"
+Private Const ERROR_LOG_SHEET_NAME As String = "Error_Log"
 
 Private mConnection As Object
 Private mConnectionPassword As String
@@ -306,6 +307,7 @@ Public Sub save()
 
     EnsureErrors
     toImmediate
+    logToWorksheet
     If mLogToTextFileMode Then
         logToTextFile
     End If
@@ -357,6 +359,154 @@ ErrorHandler:
     HandleInternalFailure METHOD_NAME, errNumber, errDescription
     Resume ExitSub
 End Sub
+
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    ---
+' Returns:       ---
+' Description:   Appends stored errors to a dedicated worksheet in this workbook.
+'-------------------------------------------------------------------------------
+Public Sub logToWorksheet()
+    Const METHOD_NAME As String = "logToWorksheet"
+    Dim arrEntry As Variant
+    Dim arrOutput(1 To 1, 1 To 6) As Variant
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim lngNextRow As Long
+    Dim lngPart As Long
+    Dim strContext As String
+    Dim wksLog As Excel.Worksheet
+
+    On Error GoTo ErrorHandler
+
+    EnsureErrors
+    If mErrors.Count = 0 Then GoTo ExitSub
+
+    Set wksLog = GetOrCreateErrorLogWorksheet()
+    If wksLog Is Nothing Then GoTo ExitSub
+
+    For lngIndex = 1 To mErrors.Count
+        arrEntry = Split(CStr(mErrors(lngIndex)), vbTab)
+        strContext = vbNullString
+
+        If UBound(arrEntry) >= 5 Then
+            For lngPart = 5 To UBound(arrEntry)
+                If Len(strContext) > 0 Then
+                    strContext = strContext & " | "
+                End If
+                strContext = strContext & CStr(arrEntry(lngPart))
+            Next lngPart
+        End If
+
+        lngNextRow = wksLog.Cells(wksLog.Rows.Count, 1).End(xlUp).Row + 1
+        If lngNextRow < 2 Then lngNextRow = 2
+
+        arrOutput(1, 1) = GetArrayValue(arrEntry, 0)
+        arrOutput(1, 2) = GetArrayValue(arrEntry, 1)
+        arrOutput(1, 3) = GetArrayValue(arrEntry, 2)
+        arrOutput(1, 4) = GetArrayValue(arrEntry, 3)
+        arrOutput(1, 5) = GetArrayValue(arrEntry, 4)
+        arrOutput(1, 6) = strContext
+
+        wksLog.Cells(lngNextRow, 1).Resize(1, 6).Value = arrOutput
+    Next lngIndex
+
+ExitSub:
+    Set wksLog = Nothing
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    HandleInternalFailure METHOD_NAME, errNumber, errDescription
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    ---
+' Returns:       Excel.Worksheet
+' Description:   Returns the error-log worksheet and creates it when it does not exist.
+'-------------------------------------------------------------------------------
+Private Function GetOrCreateErrorLogWorksheet() As Excel.Worksheet
+    Const METHOD_NAME As String = "GetOrCreateErrorLogWorksheet"
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim wksLog As Excel.Worksheet
+
+    On Error GoTo ErrorHandler
+
+    On Error Resume Next
+    Set wksLog = ThisWorkbook.Worksheets(ERROR_LOG_SHEET_NAME)
+    VBA.Err.Clear
+    On Error GoTo ErrorHandler
+
+    If wksLog Is Nothing Then
+        Set wksLog = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+        wksLog.Name = ERROR_LOG_SHEET_NAME
+        wksLog.Cells(1, 1).Value = "Timestamp"
+        wksLog.Cells(1, 2).Value = "Module/Class"
+        wksLog.Cells(1, 3).Value = "Procedure"
+        wksLog.Cells(1, 4).Value = "Error Number"
+        wksLog.Cells(1, 5).Value = "Description"
+        wksLog.Cells(1, 6).Value = "Context"
+        wksLog.Range("A1:F1").Font.Bold = True
+        wksLog.Range("A1:F1").AutoFilter
+        wksLog.Columns("A").ColumnWidth = 20
+        wksLog.Columns("B:C").ColumnWidth = 28
+        wksLog.Columns("D").ColumnWidth = 14
+        wksLog.Columns("E:F").ColumnWidth = 50
+        wksLog.Columns("E:F").WrapText = True
+    End If
+
+    Set GetOrCreateErrorLogWorksheet = wksLog
+
+ExitFunction:
+    Set wksLog = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    Set GetOrCreateErrorLogWorksheet = Nothing
+    HandleInternalFailure METHOD_NAME, errNumber, errDescription
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    arrValues As Variant, lngIndex As Long
+' Returns:       String
+' Description:   Returns one split-array value without raising an index error.
+'-------------------------------------------------------------------------------
+Private Function GetArrayValue(ByVal arrValues As Variant, ByVal lngIndex As Long) As String
+    Const METHOD_NAME As String = "GetArrayValue"
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If IsArray(arrValues) Then
+        If lngIndex >= LBound(arrValues) And lngIndex <= UBound(arrValues) Then
+            GetArrayValue = CStr(arrValues(lngIndex))
+        End If
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetArrayValue = vbNullString
+    HandleInternalFailure METHOD_NAME, errNumber, errDescription
+    Resume ExitFunction
+End Function
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
