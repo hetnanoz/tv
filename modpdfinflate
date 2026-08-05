@@ -1,0 +1,1015 @@
+Attribute VB_Name = "modPdfInflate"
+'==============================================================================
+' Module      : modPdfInflate
+' Purpose     : Pure-VBA DEFLATE (RFC 1951) decoder plus a PDF content-stream
+'               extractor. Decompresses /FlateDecode streams so that the page
+'               description operators (Tf, Td, Tm, re, m, l, cm) become readable
+'               plain text, then derives the column / row coordinate vectors.
+' Dependencies: none - no references, no external tools, no admin rights
+' Entry points: RunPdfAnalysis   - edit the three paths and press F5
+'               PdfDumpStreams   - dump every stream of a PDF into a text file
+'               PdfLayoutSummary - build column / row vectors from that dump
+' Algorithm   : port of the public-domain "puff" reference inflate implementation
+' Notes       : the decoder handles stored, fixed-Huffman and dynamic-Huffman
+'               blocks; it was verified against zlib output at levels 0/1/6/9
+'==============================================================================
+Option Explicit
+
+' --- DEFLATE constants -------------------------------------------------------
+Private Const MAX_BITS       As Long = 15     ' maximum bits in a Huffman code
+Private Const MAX_LIT_CODES  As Long = 286    ' maximum literal/length codes
+Private Const MAX_DIST_CODES As Long = 30     ' maximum distance codes
+Private Const MAX_CODES      As Long = 316    ' MAX_LIT_CODES + MAX_DIST_CODES
+Private Const FIXED_LIT      As Long = 288    ' literal codes in a fixed block
+Private Const ERR_BASE       As Long = vbObjectError + 3000
+
+Private Type tHuffman
+    Cnt(0 To MAX_BITS) As Long                ' symbols per code length
+    Sym(0 To FIXED_LIT - 1) As Long           ' canonically ordered symbols
+End Type
+
+' --- bit reader state --------------------------------------------------------
+Private m_in() As Byte
+Private m_inPos As Long
+Private m_inEnd As Long
+Private m_bitBuf As Long
+Private m_bitCnt As Long
+
+' --- output buffer -----------------------------------------------------------
+Private m_out() As Byte
+Private m_outLen As Long
+Private m_outCap As Long
+
+' --- static tables -----------------------------------------------------------
+Private m_pow2(0 To 30) As Long
+Private m_lenBase(0 To 28) As Long
+Private m_lenExtra(0 To 28) As Long
+Private m_distBase(0 To 29) As Long
+Private m_distExtra(0 To 29) As Long
+Private m_clOrder(0 To 18) As Long
+Private m_tablesReady As Boolean
+
+
+'==============================================================================
+' PUBLIC ENTRY POINTS
+'==============================================================================
+
+'------------------------------------------------------------------------------
+' Convenience wrapper - edit the three constants, then press F5.
+'------------------------------------------------------------------------------
+Public Sub RunPdfAnalysis()
+
+    Const SRC_PDF    As String = "C:\Temp\Helaba_current.pdf"
+    Const OUT_PLAIN  As String = "C:\Temp\pdf_plain.txt"
+    Const OUT_LAYOUT As String = "C:\Temp\pdf_layout.txt"
+
+    PdfDumpStreams SRC_PDF, OUT_PLAIN
+    PdfLayoutSummary OUT_PLAIN, OUT_LAYOUT
+
+    MsgBox "Done." & vbCrLf & vbCrLf & _
+           "Decompressed streams : " & OUT_PLAIN & vbCrLf & _
+           "Layout vectors       : " & OUT_LAYOUT, vbInformation, "modPdfInflate"
+
+End Sub
+
+'------------------------------------------------------------------------------
+' Walks the whole PDF, decompresses every /FlateDecode stream and writes the
+' result - preceded by the owning object header - to a plain text file.
+'------------------------------------------------------------------------------
+Public Sub PdfDumpStreams(ByVal pdfPath As String, ByVal outPath As String)
+
+    Dim pdf() As Byte
+    Dim plain() As Byte
+    Dim fileNum As Integer
+    Dim scanPos As Long
+    Dim sPos As Long
+    Dim dStart As Long
+    Dim dEnd As Long
+    Dim dictTxt As String
+    Dim errText As String
+    Dim plainLen As Long
+    Dim streamNo As Long
+
+    pdf = ReadAllBytes(pdfPath)
+
+    If Len(Dir$(outPath)) > 0 Then Kill outPath
+    fileNum = FreeFile
+    Open outPath For Binary Access Write As #fileNum
+
+    WriteText fileNum, "PDF stream dump" & vbCrLf
+    WriteText fileNum, "source    : " & pdfPath & vbCrLf
+    WriteText fileNum, "file size : " & CStr(UBound(pdf) + 1) & " bytes" & vbCrLf
+    WriteText fileNum, String$(78, "=") & vbCrLf
+
+    scanPos = 0
+    Do
+        sPos = FindPattern(pdf, scanPos, "stream")
+        If sPos < 0 Then Exit Do
+
+        If IsEndStreamKeyword(pdf, sPos) Then
+            scanPos = sPos + 6                       ' this was "endstream", skip it
+        Else
+            dictTxt = ObjectHeader(pdf, sPos)
+            dStart = sPos + 6                        ' first byte after the keyword
+            If dStart <= UBound(pdf) Then
+                If pdf(dStart) = 13 Then dStart = dStart + 1     ' CR
+            End If
+            If dStart <= UBound(pdf) Then
+                If pdf(dStart) = 10 Then dStart = dStart + 1     ' LF
+            End If
+            dEnd = StreamEnd(pdf, dStart, dictTxt)
+            streamNo = streamNo + 1
+
+            WriteText fileNum, vbCrLf & String$(78, "-") & vbCrLf
+            WriteText fileNum, "[" & CStr(streamNo) & "] " & Trim$(dictTxt) & vbCrLf
+            WriteText fileNum, "raw stream bytes: " & CStr(dEnd - dStart + 1) & vbCrLf
+            WriteText fileNum, String$(78, "-") & vbCrLf
+
+            If InStr(1, dictTxt, "/FlateDecode", vbTextCompare) > 0 Then
+                If TryInflate(pdf, dStart + ZlibHeaderSize(pdf, dStart), dEnd, _
+                              plain, plainLen, errText) Then
+                    WriteBytes fileNum, plain, plainLen
+                    WriteText fileNum, vbCrLf
+                Else
+                    WriteText fileNum, "*** inflate failed: " & errText & " ***" & vbCrLf
+                End If
+            ElseIf InStr(1, dictTxt, "/DCTDecode", vbTextCompare) > 0 Then
+                WriteText fileNum, "*** JPEG image stream - binary, not dumped ***" & vbCrLf
+            Else
+                WriteText fileNum, "*** uncompressed stream - raw copy ***" & vbCrLf
+                WriteRange fileNum, pdf, dStart, dEnd
+                WriteText fileNum, vbCrLf
+            End If
+
+            scanPos = dEnd + 1
+        End If
+    Loop
+
+    WriteText fileNum, vbCrLf & String$(78, "=") & vbCrLf
+    WriteText fileNum, "streams processed: " & CStr(streamNo) & vbCrLf
+    Close #fileNum
+
+End Sub
+
+'------------------------------------------------------------------------------
+' Reads the dump produced above and extracts the geometry: font sizes, line
+' widths, text origins (column / row vectors), rectangles and line segments.
+'------------------------------------------------------------------------------
+Public Sub PdfLayoutSummary(ByVal plainPath As String, ByVal outPath As String)
+
+    Dim txt As String
+    Dim parts() As String
+    Dim i As Long
+    Dim tok As String
+    Dim t1 As String, t2 As String, t3 As String, t4 As String
+    Dim textX As Collection, textY As Collection
+    Dim gridX As Collection, gridY As Collection
+    Dim fontSizes As Collection, lineWidths As Collection
+    Dim rects As Collection, segments As Collection, transforms As Collection
+    Dim lastMoveX As Double, lastMoveY As Double
+    Dim fileNum As Integer
+
+    Set textX = New Collection: Set textY = New Collection
+    Set gridX = New Collection: Set gridY = New Collection
+    Set fontSizes = New Collection: Set lineWidths = New Collection
+    Set rects = New Collection: Set segments = New Collection
+    Set transforms = New Collection
+
+    txt = ReadAllText(plainPath)
+    txt = Replace(txt, vbCr, " ")
+    txt = Replace(txt, vbLf, " ")
+    txt = Replace(txt, vbTab, " ")
+    parts = Split(txt, " ")
+
+    For i = LBound(parts) To UBound(parts)
+        tok = parts(i)
+        If Len(tok) > 0 Then
+
+            Select Case tok
+                Case "Tf"                                   ' /F1 <size> Tf
+                    AddUnique fontSizes, ToNum(t1)
+
+                Case "w"                                    ' <width> w
+                    AddUnique lineWidths, ToNum(t1)
+
+                Case "Td", "TD"                             ' <x> <y> Td
+                    AddUnique textX, ToNum(t2)
+                    AddUnique textY, ToNum(t1)
+
+                Case "Tm"                                   ' a b c d <x> <y> Tm
+                    AddUnique textX, ToNum(t2)
+                    AddUnique textY, ToNum(t1)
+
+                Case "re"                                   ' <x> <y> <w> <h> re
+                    AddUnique gridX, ToNum(t4)
+                    AddUnique gridX, ToNum(t4) + ToNum(t2)
+                    AddUnique gridY, ToNum(t3)
+                    AddUnique gridY, ToNum(t3) + ToNum(t1)
+                    rects.Add NumTxt(ToNum(t4)) & "  " & NumTxt(ToNum(t3)) & "  w=" & _
+                              NumTxt(ToNum(t2)) & "  h=" & NumTxt(ToNum(t1))
+
+                Case "m"                                    ' <x> <y> m
+                    lastMoveX = ToNum(t2)
+                    lastMoveY = ToNum(t1)
+                    AddUnique gridX, lastMoveX
+                    AddUnique gridY, lastMoveY
+
+                Case "l"                                    ' <x> <y> l
+                    AddUnique gridX, ToNum(t2)
+                    AddUnique gridY, ToNum(t1)
+                    segments.Add NumTxt(lastMoveX) & "," & NumTxt(lastMoveY) & _
+                                 "  ->  " & NumTxt(ToNum(t2)) & "," & NumTxt(ToNum(t1))
+
+                Case "cm"                                   ' a b c d <x> <y> cm
+                    transforms.Add "translate " & NumTxt(ToNum(t2)) & "," & NumTxt(ToNum(t1))
+            End Select
+
+            t4 = t3: t3 = t2: t2 = t1: t1 = tok             ' shift the token history
+        End If
+    Next i
+
+    If Len(Dir$(outPath)) > 0 Then Kill outPath
+    fileNum = FreeFile
+    Open outPath For Binary Access Write As #fileNum
+
+    WriteText fileNum, "LAYOUT SUMMARY - " & plainPath & vbCrLf
+    WriteText fileNum, "all values in PDF points (1/72 inch), origin = bottom left" & vbCrLf
+    WriteText fileNum, String$(78, "=") & vbCrLf & vbCrLf
+
+    WriteText fileNum, "FONT SIZES (Tf)" & vbCrLf & DumpSorted(fontSizes, True) & vbCrLf
+    WriteText fileNum, "LINE WIDTHS (w)" & vbCrLf & DumpSorted(lineWidths, True) & vbCrLf
+
+    WriteText fileNum, "COLUMN VECTOR - text origins X, ascending" & vbCrLf
+    WriteText fileNum, DumpSorted(textX, True) & vbCrLf
+    WriteText fileNum, "column steps (differences)" & vbCrLf
+    WriteText fileNum, DumpDiffs(textX) & vbCrLf
+
+    WriteText fileNum, "ROW VECTOR - text origins Y, descending (top of page first)" & vbCrLf
+    WriteText fileNum, DumpSorted(textY, False) & vbCrLf
+    WriteText fileNum, "row steps (leading)" & vbCrLf
+    WriteText fileNum, DumpDiffs(textY) & vbCrLf
+
+    WriteText fileNum, "GRID X - vertical rules / rectangle edges" & vbCrLf
+    WriteText fileNum, DumpSorted(gridX, True) & vbCrLf
+    WriteText fileNum, "GRID Y - horizontal rules / rectangle edges" & vbCrLf
+    WriteText fileNum, DumpSorted(gridY, False) & vbCrLf
+
+    WriteText fileNum, "RECTANGLES (re)" & vbCrLf & DumpList(rects) & vbCrLf
+    WriteText fileNum, "SEGMENTS (m / l)" & vbCrLf & DumpList(segments) & vbCrLf
+    WriteText fileNum, "TRANSFORMS (cm) - image / form placement" & vbCrLf & DumpList(transforms) & vbCrLf
+
+    Close #fileNum
+
+End Sub
+
+
+'==============================================================================
+' DEFLATE DECODER
+'==============================================================================
+
+'------------------------------------------------------------------------------
+' Inflates srcData(fromIdx .. toIdx) into destData. Returns the byte count.
+' Raises an error on malformed input.
+'------------------------------------------------------------------------------
+Public Function InflateStream(ByRef srcData() As Byte, ByVal fromIdx As Long, _
+                              ByVal toIdx As Long, ByRef destData() As Byte) As Long
+
+    Dim isLast As Long
+    Dim blockType As Long
+    Dim litHuff As tHuffman
+    Dim distHuff As tHuffman
+    Dim i As Long
+
+    InitTables
+
+    m_in = srcData
+    m_inPos = fromIdx
+    m_inEnd = toIdx
+    m_bitBuf = 0
+    m_bitCnt = 0
+
+    m_outCap = 65536
+    ReDim m_out(0 To m_outCap - 1)
+    m_outLen = 0
+
+    Do
+        isLast = GetBits(1)
+        blockType = GetBits(2)
+
+        Select Case blockType
+            Case 0
+                InflateStored
+            Case 1
+                BuildFixedTables litHuff, distHuff
+                InflateCodes litHuff, distHuff
+            Case 2
+                BuildDynamicTables litHuff, distHuff
+                InflateCodes litHuff, distHuff
+            Case Else
+                Err.Raise ERR_BASE + 1, "InflateStream", "Invalid DEFLATE block type"
+        End Select
+    Loop While isLast = 0
+
+    If m_outLen = 0 Then
+        ReDim destData(0 To 0)
+    Else
+        ReDim destData(0 To m_outLen - 1)
+        For i = 0 To m_outLen - 1
+            destData(i) = m_out(i)
+        Next i
+    End If
+
+    InflateStream = m_outLen
+
+End Function
+
+'------------------------------------------------------------------------------
+Private Function TryInflate(ByRef srcData() As Byte, ByVal fromIdx As Long, _
+                            ByVal toIdx As Long, ByRef destData() As Byte, _
+                            ByRef outLen As Long, ByRef errText As String) As Boolean
+
+    On Error GoTo ErrHandler
+
+    errText = vbNullString
+    outLen = InflateStream(srcData, fromIdx, toIdx, destData)
+    TryInflate = True
+    Exit Function
+
+ErrHandler:
+    errText = Err.Description
+    outLen = 0
+    TryInflate = False
+
+End Function
+
+'------------------------------------------------------------------------------
+Private Sub InflateStored()
+
+    Dim blockLen As Long
+    Dim i As Long
+
+    m_bitBuf = 0                                   ' stored blocks are byte aligned
+    m_bitCnt = 0
+
+    If m_inPos + 3 > m_inEnd Then
+        Err.Raise ERR_BASE + 2, "InflateStored", "Truncated stored block"
+    End If
+
+    blockLen = CLng(m_in(m_inPos)) + CLng(m_in(m_inPos + 1)) * 256
+    m_inPos = m_inPos + 4                          ' skip LEN and NLEN
+
+    For i = 1 To blockLen
+        If m_inPos > m_inEnd Then
+            Err.Raise ERR_BASE + 3, "InflateStored", "Stored block runs past end of data"
+        End If
+        OutByte m_in(m_inPos)
+        m_inPos = m_inPos + 1
+    Next i
+
+End Sub
+
+'------------------------------------------------------------------------------
+Private Sub InflateCodes(ByRef litHuff As tHuffman, ByRef distHuff As tHuffman)
+
+    Dim symbol As Long
+    Dim matchLen As Long
+    Dim dist As Long
+    Dim i As Long
+
+    Do
+        symbol = HuffDecode(litHuff)
+
+        If symbol < 256 Then
+            OutByte CByte(symbol)
+
+        ElseIf symbol = 256 Then
+            Exit Do                                ' end of block
+
+        Else
+            symbol = symbol - 257
+            If symbol >= 29 Then
+                Err.Raise ERR_BASE + 4, "InflateCodes", "Invalid length code"
+            End If
+            matchLen = m_lenBase(symbol) + GetBits(m_lenExtra(symbol))
+
+            symbol = HuffDecode(distHuff)
+            If symbol > 29 Then
+                Err.Raise ERR_BASE + 5, "InflateCodes", "Invalid distance code"
+            End If
+            dist = m_distBase(symbol) + GetBits(m_distExtra(symbol))
+            If dist > m_outLen Then
+                Err.Raise ERR_BASE + 6, "InflateCodes", "Distance points before start of output"
+            End If
+
+            For i = 1 To matchLen
+                OutByte m_out(m_outLen - dist)     ' overlapping copy is intentional
+            Next i
+        End If
+    Loop
+
+End Sub
+
+'------------------------------------------------------------------------------
+Private Sub BuildFixedTables(ByRef litHuff As tHuffman, ByRef distHuff As tHuffman)
+
+    Dim lengths(0 To FIXED_LIT - 1) As Long
+    Dim distLengths(0 To MAX_DIST_CODES - 1) As Long
+    Dim i As Long
+
+    For i = 0 To 143:  lengths(i) = 8: Next i
+    For i = 144 To 255: lengths(i) = 9: Next i
+    For i = 256 To 279: lengths(i) = 7: Next i
+    For i = 280 To 287: lengths(i) = 8: Next i
+    HuffConstruct litHuff, lengths, FIXED_LIT
+
+    For i = 0 To MAX_DIST_CODES - 1
+        distLengths(i) = 5
+    Next i
+    HuffConstruct distHuff, distLengths, MAX_DIST_CODES
+
+End Sub
+
+'------------------------------------------------------------------------------
+Private Sub BuildDynamicTables(ByRef litHuff As tHuffman, ByRef distHuff As tHuffman)
+
+    Dim lengths(0 To MAX_CODES - 1) As Long
+    Dim distLengths(0 To MAX_DIST_CODES - 1) As Long
+    Dim lenHuff As tHuffman
+    Dim nLen As Long, nDist As Long, nCode As Long
+    Dim idx As Long, symbol As Long, repeat As Long, prevLen As Long
+
+    nLen = GetBits(5) + 257
+    nDist = GetBits(5) + 1
+    nCode = GetBits(4) + 4
+
+    If nLen > MAX_LIT_CODES Or nDist > MAX_DIST_CODES Then
+        Err.Raise ERR_BASE + 7, "BuildDynamicTables", "Too many length or distance codes"
+    End If
+
+    For idx = 0 To nCode - 1
+        lengths(m_clOrder(idx)) = GetBits(3)
+    Next idx
+    For idx = nCode To 18
+        lengths(m_clOrder(idx)) = 0
+    Next idx
+    HuffConstruct lenHuff, lengths, 19
+
+    idx = 0
+    Do While idx < nLen + nDist
+        symbol = HuffDecode(lenHuff)
+
+        If symbol < 16 Then
+            lengths(idx) = symbol
+            idx = idx + 1
+        Else
+            prevLen = 0
+            If symbol = 16 Then
+                If idx = 0 Then
+                    Err.Raise ERR_BASE + 8, "BuildDynamicTables", "No previous code length to repeat"
+                End If
+                prevLen = lengths(idx - 1)
+                repeat = 3 + GetBits(2)
+            ElseIf symbol = 17 Then
+                repeat = 3 + GetBits(3)
+            Else
+                repeat = 11 + GetBits(7)
+            End If
+
+            If idx + repeat > nLen + nDist Then
+                Err.Raise ERR_BASE + 9, "BuildDynamicTables", "Too many code lengths"
+            End If
+            Do While repeat > 0
+                lengths(idx) = prevLen
+                idx = idx + 1
+                repeat = repeat - 1
+            Loop
+        End If
+    Loop
+
+    HuffConstruct litHuff, lengths, nLen
+
+    For idx = 0 To nDist - 1
+        distLengths(idx) = lengths(nLen + idx)
+    Next idx
+    HuffConstruct distHuff, distLengths, nDist
+
+End Sub
+
+'------------------------------------------------------------------------------
+' Builds a canonical Huffman table from a list of code lengths.
+'------------------------------------------------------------------------------
+Private Sub HuffConstruct(ByRef h As tHuffman, ByRef lengths() As Long, ByVal n As Long)
+
+    Dim offs(0 To MAX_BITS) As Long
+    Dim symbol As Long
+    Dim bitLen As Long
+    Dim leftCodes As Long
+
+    For bitLen = 0 To MAX_BITS
+        h.Cnt(bitLen) = 0
+    Next bitLen
+
+    For symbol = 0 To n - 1
+        h.Cnt(lengths(symbol)) = h.Cnt(lengths(symbol)) + 1
+    Next symbol
+
+    leftCodes = 1
+    For bitLen = 1 To MAX_BITS
+        leftCodes = leftCodes * 2 - h.Cnt(bitLen)
+        If leftCodes < 0 Then
+            Err.Raise ERR_BASE + 10, "HuffConstruct", "Over-subscribed Huffman code set"
+        End If
+    Next bitLen
+
+    offs(1) = 0
+    For bitLen = 1 To MAX_BITS - 1
+        offs(bitLen + 1) = offs(bitLen) + h.Cnt(bitLen)
+    Next bitLen
+
+    For symbol = 0 To n - 1
+        If lengths(symbol) <> 0 Then
+            h.Sym(offs(lengths(symbol))) = symbol
+            offs(lengths(symbol)) = offs(lengths(symbol)) + 1
+        End If
+    Next symbol
+
+End Sub
+
+'------------------------------------------------------------------------------
+Private Function HuffDecode(ByRef h As tHuffman) As Long
+
+    Dim code As Long, first As Long, index As Long
+    Dim count As Long, bitLen As Long
+
+    code = 0: first = 0: index = 0
+
+    For bitLen = 1 To MAX_BITS
+        code = code Or GetBits(1)
+        count = h.Cnt(bitLen)
+        If code - first < count Then
+            HuffDecode = h.Sym(index + (code - first))
+            Exit Function
+        End If
+        index = index + count
+        first = (first + count) * 2
+        code = code * 2
+    Next bitLen
+
+    Err.Raise ERR_BASE + 11, "HuffDecode", "Invalid Huffman code"
+
+End Function
+
+'------------------------------------------------------------------------------
+Private Function GetBits(ByVal need As Long) As Long
+
+    Dim value As Long
+
+    Do While m_bitCnt < need
+        If m_inPos > m_inEnd Then
+            Err.Raise ERR_BASE + 12, "GetBits", "Ran out of compressed data"
+        End If
+        m_bitBuf = m_bitBuf Or (CLng(m_in(m_inPos)) * m_pow2(m_bitCnt))
+        m_inPos = m_inPos + 1
+        m_bitCnt = m_bitCnt + 8
+    Loop
+
+    value = m_bitBuf And (m_pow2(need) - 1)
+    m_bitBuf = m_bitBuf \ m_pow2(need)
+    m_bitCnt = m_bitCnt - need
+    GetBits = value
+
+End Function
+
+'------------------------------------------------------------------------------
+Private Sub OutByte(ByVal b As Byte)
+
+    If m_outLen >= m_outCap Then
+        m_outCap = m_outCap * 2
+        ReDim Preserve m_out(0 To m_outCap - 1)
+    End If
+    m_out(m_outLen) = b
+    m_outLen = m_outLen + 1
+
+End Sub
+
+'------------------------------------------------------------------------------
+Private Sub InitTables()
+
+    Dim v() As String
+    Dim i As Long
+
+    If m_tablesReady Then Exit Sub
+
+    m_pow2(0) = 1
+    For i = 1 To 30
+        m_pow2(i) = m_pow2(i - 1) * 2
+    Next i
+
+    v = Split("3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258", ",")
+    For i = 0 To 28
+        m_lenBase(i) = CLng(v(i))
+    Next i
+
+    v = Split("0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0", ",")
+    For i = 0 To 28
+        m_lenExtra(i) = CLng(v(i))
+    Next i
+
+    v = Split("1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769," & _
+              "1025,1537,2049,3073,4097,6145,8193,12289,16385,24577", ",")
+    For i = 0 To 29
+        m_distBase(i) = CLng(v(i))
+    Next i
+
+    v = Split("0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13", ",")
+    For i = 0 To 29
+        m_distExtra(i) = CLng(v(i))
+    Next i
+
+    v = Split("16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15", ",")
+    For i = 0 To 18
+        m_clOrder(i) = CLng(v(i))
+    Next i
+
+    m_tablesReady = True
+
+End Sub
+
+
+'==============================================================================
+' PDF SCANNING HELPERS
+'==============================================================================
+
+'------------------------------------------------------------------------------
+' True when the "stream" found at sPos is really the tail of "endstream".
+'------------------------------------------------------------------------------
+Private Function IsEndStreamKeyword(ByRef pdf() As Byte, ByVal sPos As Long) As Boolean
+
+    If sPos < 3 Then Exit Function
+    IsEndStreamKeyword = (pdf(sPos - 3) = 101) And _
+                         (pdf(sPos - 2) = 110) And _
+                         (pdf(sPos - 1) = 100)          ' "e", "n", "d"
+
+End Function
+
+'------------------------------------------------------------------------------
+' Returns "<n> 0 obj <<...>>" for the object owning the stream at sPos.
+'------------------------------------------------------------------------------
+Private Function ObjectHeader(ByRef pdf() As Byte, ByVal sPos As Long) As String
+
+    Const LOOK_BACK As Long = 400
+    Dim fromIdx As Long
+    Dim s As String
+    Dim k As Long
+    Dim i As Long
+    Dim ch As String
+
+    fromIdx = sPos - LOOK_BACK
+    If fromIdx < 0 Then fromIdx = 0
+    s = BytesToText(pdf, fromIdx, sPos - 1)
+
+    k = InStrRev(s, "obj")
+    If k > 0 Then
+        i = k
+        Do While i > 1
+            ch = Mid$(s, i - 1, 1)
+            If ch = " " Or ch = vbCr Or ch = vbLf Or (ch >= "0" And ch <= "9") Then
+                i = i - 1
+            Else
+                Exit Do
+            End If
+        Loop
+        s = Mid$(s, i)
+    End If
+
+    ObjectHeader = Replace(Replace(s, vbCr, " "), vbLf, " ")
+
+End Function
+
+'------------------------------------------------------------------------------
+' Determines the last data byte of a stream. Uses /Length when it is a direct
+' value and verified by an "endstream" probe, otherwise searches for the keyword.
+'------------------------------------------------------------------------------
+Private Function StreamEnd(ByRef pdf() As Byte, ByVal dStart As Long, ByVal dictTxt As String) As Long
+
+    Dim declared As Long
+    Dim probe As String
+    Dim ePos As Long
+    Dim i As Long
+
+    declared = DeclaredLength(dictTxt)
+    If declared > 0 Then
+        If dStart + declared + 20 <= UBound(pdf) Then
+            probe = BytesToText(pdf, dStart + declared, dStart + declared + 20)
+            If InStr(1, probe, "endstream") > 0 Then
+                StreamEnd = dStart + declared - 1
+                Exit Function
+            End If
+        End If
+    End If
+
+    ePos = FindPattern(pdf, dStart, "endstream")
+    If ePos < 0 Then
+        StreamEnd = UBound(pdf)
+    Else
+        i = ePos - 1
+        Do While i >= dStart
+            If pdf(i) <> 10 And pdf(i) <> 13 Then Exit Do    ' trim the EOL before endstream
+            i = i - 1
+        Loop
+        StreamEnd = i
+    End If
+
+End Function
+
+'------------------------------------------------------------------------------
+' Reads "/Length <n>". Returns 0 for an indirect reference such as "/Length 24 0 R".
+'------------------------------------------------------------------------------
+Private Function DeclaredLength(ByVal dictTxt As String) As Long
+
+    Dim k As Long, i As Long
+    Dim ch As String, num As String, tail As String
+
+    k = InStr(1, dictTxt, "/Length")
+    If k = 0 Then Exit Function
+
+    i = k + 7
+    Do While i <= Len(dictTxt)
+        If Mid$(dictTxt, i, 1) <> " " Then Exit Do
+        i = i + 1
+    Loop
+
+    Do While i <= Len(dictTxt)
+        ch = Mid$(dictTxt, i, 1)
+        If ch < "0" Or ch > "9" Then Exit Do
+        num = num & ch
+        i = i + 1
+    Loop
+
+    If Len(num) = 0 Then Exit Function
+
+    tail = LTrim$(Mid$(dictTxt, i, 6))
+    If Len(tail) > 0 Then
+        If tail Like "#*" Then Exit Function          ' indirect reference, unusable here
+    End If
+
+    DeclaredLength = CLng(num)
+
+End Function
+
+'------------------------------------------------------------------------------
+' Returns 2 when the stream starts with a zlib header, otherwise 0.
+'------------------------------------------------------------------------------
+Private Function ZlibHeaderSize(ByRef pdf() As Byte, ByVal dStart As Long) As Long
+
+    Dim b0 As Long, b1 As Long
+
+    If dStart + 1 > UBound(pdf) Then Exit Function
+    b0 = pdf(dStart)
+    b1 = pdf(dStart + 1)
+
+    If (b0 And &HF) = 8 Then
+        If ((b0 * 256 + b1) Mod 31) = 0 Then ZlibHeaderSize = 2
+    End If
+
+End Function
+
+'------------------------------------------------------------------------------
+Private Function FindPattern(ByRef data() As Byte, ByVal startAt As Long, _
+                             ByVal pattern As String) As Long
+
+    Dim pat() As Byte
+    Dim patLen As Long
+    Dim i As Long, j As Long
+
+    pat = StrConv(pattern, vbFromUnicode)
+    patLen = UBound(pat) - LBound(pat) + 1
+    If startAt < 0 Then startAt = 0
+
+    For i = startAt To UBound(data) - patLen + 1
+        If data(i) = pat(0) Then
+            For j = 1 To patLen - 1
+                If data(i + j) <> pat(j) Then Exit For
+            Next j
+            If j = patLen Then
+                FindPattern = i
+                Exit Function
+            End If
+        End If
+    Next i
+
+    FindPattern = -1
+
+End Function
+
+
+'==============================================================================
+' FILE AND FORMATTING HELPERS
+'==============================================================================
+
+Private Function ReadAllBytes(ByVal filePath As String) As Byte()
+
+    Dim fileNum As Integer
+    Dim size As Long
+    Dim buf() As Byte
+
+    If Len(Dir$(filePath)) = 0 Then
+        Err.Raise ERR_BASE + 20, "ReadAllBytes", "File not found: " & filePath
+    End If
+
+    fileNum = FreeFile
+    Open filePath For Binary Access Read As #fileNum
+    size = LOF(fileNum)
+    If size = 0 Then
+        Close #fileNum
+        Err.Raise ERR_BASE + 21, "ReadAllBytes", "File is empty: " & filePath
+    End If
+    ReDim buf(0 To size - 1)
+    Get #fileNum, 1, buf
+    Close #fileNum
+
+    ReadAllBytes = buf
+
+End Function
+
+Private Function ReadAllText(ByVal filePath As String) As String
+
+    Dim b() As Byte
+    b = ReadAllBytes(filePath)
+    ReadAllText = StrConv(b, vbUnicode)
+
+End Function
+
+Private Function BytesToText(ByRef b() As Byte, ByVal fromIdx As Long, ByVal toIdx As Long) As String
+
+    Dim tmp() As Byte
+    Dim i As Long, n As Long
+
+    If toIdx < fromIdx Then Exit Function
+    If toIdx > UBound(b) Then toIdx = UBound(b)
+    n = toIdx - fromIdx + 1
+    ReDim tmp(0 To n - 1)
+    For i = 0 To n - 1
+        tmp(i) = b(fromIdx + i)
+    Next i
+
+    BytesToText = StrConv(tmp, vbUnicode)
+
+End Function
+
+Private Sub WriteText(ByVal fileNum As Integer, ByVal s As String)
+
+    Dim b() As Byte
+    If LenB(s) = 0 Then Exit Sub
+    b = StrConv(s, vbFromUnicode)
+    Put #fileNum, , b
+
+End Sub
+
+Private Sub WriteBytes(ByVal fileNum As Integer, ByRef b() As Byte, ByVal count As Long)
+
+    Dim chunk() As Byte
+    Dim i As Long
+
+    If count <= 0 Then Exit Sub
+    ReDim chunk(0 To count - 1)
+    For i = 0 To count - 1
+        chunk(i) = b(i)
+    Next i
+    Put #fileNum, , chunk
+
+End Sub
+
+Private Sub WriteRange(ByVal fileNum As Integer, ByRef b() As Byte, _
+                       ByVal fromIdx As Long, ByVal toIdx As Long)
+
+    Dim chunk() As Byte
+    Dim i As Long, n As Long
+
+    If toIdx < fromIdx Then Exit Sub
+    n = toIdx - fromIdx + 1
+    ReDim chunk(0 To n - 1)
+    For i = 0 To n - 1
+        chunk(i) = b(fromIdx + i)
+    Next i
+    Put #fileNum, , chunk
+
+End Sub
+
+'------------------------------------------------------------------------------
+' Locale independent number parsing and printing (PDF always uses a dot).
+'------------------------------------------------------------------------------
+Private Function ToNum(ByVal s As String) As Double
+
+    ' Val always treats "." as the decimal separator, regardless of Windows locale,
+    ' which is exactly what the PDF syntax requires.
+    ToNum = Val(s)
+
+End Function
+
+Private Function NumTxt(ByVal v As Double) As String
+
+    NumTxt = Replace(Format$(v, "0.###"), ",", ".")
+
+End Function
+
+Private Sub AddUnique(ByRef col As Collection, ByVal v As Double)
+
+    On Error Resume Next
+    col.Add v, "k" & NumTxt(v)
+    On Error GoTo 0
+
+End Sub
+
+Private Function ToSortedArray(ByRef col As Collection, ByVal ascending As Boolean) As Double()
+
+    Dim arr() As Double
+    Dim i As Long, j As Long
+    Dim tmp As Double
+
+    If col.count = 0 Then
+        ReDim arr(0 To 0)
+        ToSortedArray = arr
+        Exit Function
+    End If
+
+    ReDim arr(0 To col.count - 1)
+    For i = 1 To col.count
+        arr(i - 1) = col.Item(i)
+    Next i
+
+    For i = 0 To UBound(arr) - 1                     ' insertion sort, small data sets
+        For j = i + 1 To UBound(arr)
+            If (ascending And arr(j) < arr(i)) Or ((Not ascending) And arr(j) > arr(i)) Then
+                tmp = arr(i): arr(i) = arr(j): arr(j) = tmp
+            End If
+        Next j
+    Next i
+
+    ToSortedArray = arr
+
+End Function
+
+Private Function DumpSorted(ByRef col As Collection, ByVal ascending As Boolean) As String
+
+    Dim arr() As Double
+    Dim i As Long
+    Dim s As String
+
+    If col.count = 0 Then
+        DumpSorted = "  (none)" & vbCrLf
+        Exit Function
+    End If
+
+    arr = ToSortedArray(col, ascending)
+    s = "  "
+    For i = 0 To UBound(arr)
+        s = s & NumTxt(arr(i))
+        If i < UBound(arr) Then s = s & " ; "
+        If (i + 1) Mod 10 = 0 Then s = s & vbCrLf & "  "
+    Next i
+
+    DumpSorted = s & vbCrLf & "  count = " & CStr(col.count) & vbCrLf
+
+End Function
+
+Private Function DumpDiffs(ByRef col As Collection) As String
+
+    Dim arr() As Double
+    Dim i As Long
+    Dim s As String
+
+    If col.count < 2 Then
+        DumpDiffs = "  (n/a)" & vbCrLf
+        Exit Function
+    End If
+
+    arr = ToSortedArray(col, True)
+    s = "  "
+    For i = 1 To UBound(arr)
+        s = s & NumTxt(arr(i) - arr(i - 1))
+        If i < UBound(arr) Then s = s & " ; "
+        If i Mod 10 = 0 Then s = s & vbCrLf & "  "
+    Next i
+
+    DumpDiffs = s & vbCrLf
+
+End Function
+
+Private Function DumpList(ByRef col As Collection) As String
+
+    Dim i As Long
+    Dim s As String
+
+    If col.count = 0 Then
+        DumpList = "  (none)" & vbCrLf
+        Exit Function
+    End If
+
+    For i = 1 To col.count
+        s = s & "  " & col.Item(i) & vbCrLf
+    Next i
+
+    DumpList = s
+
+End Function
