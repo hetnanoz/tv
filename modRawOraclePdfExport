@@ -1,0 +1,2202 @@
+Option Explicit
+
+Private Const CLASS_NAME As String = "modRawOraclePdfExport"
+Private Const CONFIG_RANGE_NAME As String = "cfg_OraclePdfFormat"
+Private Const PDF_HEADER As String = "%PDF-1.4"
+Private Const PDF_PAGE_WIDTH As Double = 1368#
+Private Const PDF_PAGE_HEIGHT As Double = 684#
+Private Const TABLE_LEFT_X As Double = 40.52
+Private Const TABLE_RIGHT_X As Double = 1323.04
+Private Const TABLE_WIDTH As Double = 1282.52
+Private Const FIRST_PAGE_TABLE_TOP_Y As Double = 553.48
+Private Const CONTINUATION_PAGE_TABLE_TOP_Y As Double = 607.48
+Private Const FIRST_PAGE_HEADER_TOP_Y As Double = 535.48
+Private Const FIRST_PAGE_HEADER_BOTTOM_Y As Double = 517.48
+Private Const CONTINUATION_PAGE_HEADER_TOP_Y As Double = 589.48
+Private Const CONTINUATION_PAGE_HEADER_BOTTOM_Y As Double = 571.48
+Private Const FIRST_PAGE_FIRST_TOP_BASELINE_Y As Double = 504#
+Private Const CONTINUATION_PAGE_FIRST_TOP_BASELINE_Y As Double = 558#
+Private Const DATA_ROW_HEIGHT As Double = 18#
+Private Const SEPARATOR_HEIGHT As Double = 4.52
+Private Const DATA_BASELINE_OFFSET As Double = 4.52
+Private Const MAX_TRANSACTIONS_PER_PAGE As Long = 11
+Private Const FIRST_DATA_ROW As Long = 7
+Private Const LAST_REPORT_COLUMN As Long = 22
+Private Const HEADER_FONT_SIZE As Double = 8#
+Private Const DATA_FONT_SIZE As Double = 9#
+Private Const LONG_TEXT_FONT_SIZE As Double = 8#
+Private Const MIN_FONT_SIZE As Double = 5.5
+Private Const TEXT_HORIZONTAL_PADDING As Double = 4.48
+Private Const HEADER_GRAY_LEVEL As Double = 0.72
+Private Const SEPARATOR_GRAY_LEVEL As Double = 0.86
+Private Const FOOTER_X As Double = 40.52
+Private Const FOOTER_BASELINE_GAP As Double = 26.2
+Private Const FOOTER_FONT_SIZE As Double = 8#
+Private Const FOOTER_TEXT As String = "Diese Abrechnung wurde maschinell erstellt und ist ohne eigenhaendige Unterschrift gueltig"
+Private Const PAGE_NUMBER_X As Double = 1287#
+Private Const PAGE_NUMBER_Y As Double = 55.52
+Private Const PAGE_NUMBER_FONT_SIZE As Double = 8#
+Private Const LOGO_X As Double = 40.52
+Private Const LOGO_Y As Double = 589.52
+Private Const LOGO_WIDTH As Double = 85.52
+Private Const LOGO_HEIGHT As Double = 17.96
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    wksMacro As Excel.Worksheet
+' Returns:       Boolean
+' Description:   Returns whether the raw Oracle-compatible PDF mode is enabled.
+'-------------------------------------------------------------------------------
+Public Function IsRawOraclePdfEnabled(ByVal wksMacro As Excel.Worksheet) As Boolean
+    Const METHOD_NAME As String = "IsRawOraclePdfEnabled"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim rngFlag As Excel.Range
+    Dim strFlag As String
+    Dim varFlag As Variant
+
+    On Error GoTo ErrorHandler
+
+    IsRawOraclePdfEnabled = False
+
+    If wksMacro Is Nothing Then
+        Err.Raise 1001, METHOD_NAME, "The Tradeversand worksheet is required."
+    End If
+
+    On Error Resume Next
+    Set rngFlag = wksMacro.Range(CONFIG_RANGE_NAME)
+    On Error GoTo ErrorHandler
+
+    If rngFlag Is Nothing Then
+        GoTo ExitFunction
+    End If
+
+    varFlag = rngFlag.Value
+
+    If VarType(varFlag) = vbBoolean Then
+        IsRawOraclePdfEnabled = CBool(varFlag)
+        GoTo ExitFunction
+    End If
+
+    If IsNumeric(varFlag) Then
+        IsRawOraclePdfEnabled = (CDbl(varFlag) <> 0#)
+        GoTo ExitFunction
+    End If
+
+    strFlag = UCase$(Trim$(CStr(varFlag)))
+    IsRawOraclePdfEnabled = _
+        (strFlag = "TRUE" Or strFlag = "PRAWDA" Or strFlag = "YES" Or _
+         strFlag = "JA" Or strFlag = "ORACLE" Or strFlag = "1")
+
+ExitFunction:
+    Set rngFlag = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    IsRawOraclePdfEnabled = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    targetPath As String, wksSource As Excel.Worksheet, logoPath As String
+' Returns:       Boolean
+' Description:   Generates a synchronous raw PDF 1.4 from the completed report worksheet.
+'-------------------------------------------------------------------------------
+Public Function GenerateRawOraclePdfFromWorksheet( _
+    ByVal targetPath As String, _
+    ByVal wksSource As Excel.Worksheet, _
+    ByVal logoPath As String) As Boolean
+
+    Const METHOD_NAME As String = "GenerateRawOraclePdfFromWorksheet"
+    Dim arrBottomRows() As Long
+    Dim arrTopRows() As Long
+    Dim blnFileOpened As Boolean
+    Dim blnHasLogo As Boolean
+    Dim colPageContents As Collection
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngFileNumber As Long
+    Dim lngLogoComponents As Long
+    Dim lngLogoHeight As Long
+    Dim lngLogoWidth As Long
+    Dim lngTradeCount As Long
+    Dim strDocument As String
+    Dim strLogoHex As String
+
+    On Error GoTo ErrorHandler
+
+    GenerateRawOraclePdfFromWorksheet = False
+
+    If wksSource Is Nothing Then
+        Err.Raise 1001, METHOD_NAME, "The completed report worksheet is required."
+    End If
+
+    If Not ValidateTargetPath(targetPath) Then
+        Err.Raise 1020, METHOD_NAME, "The target PDF path is invalid or inaccessible."
+    End If
+
+    wksSource.Calculate
+
+    If Not CollectTransactionRows(wksSource, arrTopRows, arrBottomRows, lngTradeCount) Then
+        Err.Raise 1001, METHOD_NAME, "No transaction row pairs were found in the report worksheet."
+    End If
+
+    blnHasLogo = PrepareLogoImage( _
+        wksSource, _
+        logoPath, _
+        strLogoHex, _
+        lngLogoWidth, _
+        lngLogoHeight, _
+        lngLogoComponents)
+
+    If Not blnHasLogo Then
+        Err.Raise 1013, METHOD_NAME, "The report logo could not be prepared as a JPEG image."
+    End If
+
+    If Not BuildAllPageContents( _
+        wksSource, _
+        arrTopRows, _
+        arrBottomRows, _
+        lngTradeCount, _
+        blnHasLogo, _
+        colPageContents) Then
+
+        Err.Raise 1024, METHOD_NAME, "The Oracle PDF page contents could not be built."
+    End If
+
+    If Not BuildPdfDocument( _
+        colPageContents, _
+        strLogoHex, _
+        lngLogoWidth, _
+        lngLogoHeight, _
+        lngLogoComponents, _
+        strDocument) Then
+
+        Err.Raise 1024, METHOD_NAME, "The PDF object structure or XREF table could not be built."
+    End If
+
+    If Len(Dir$(targetPath)) > 0 Then
+        Kill targetPath
+    End If
+
+    lngFileNumber = FreeFile
+    Open targetPath For Output Access Write Lock Write As #lngFileNumber
+    blnFileOpened = True
+    Print #lngFileNumber, strDocument;
+    Close #lngFileNumber
+    blnFileOpened = False
+
+    If Len(Dir$(targetPath)) = 0 Then
+        Err.Raise 1011, METHOD_NAME, "The raw Oracle PDF file was not created."
+    End If
+
+    If FileLen(targetPath) <= 0 Then
+        Err.Raise 1011, METHOD_NAME, "The raw Oracle PDF file is empty."
+    End If
+
+    If Not HasPdf14Header(targetPath) Then
+        Err.Raise 1024, METHOD_NAME, "The generated file does not start with the PDF 1.4 header."
+    End If
+
+    GenerateRawOraclePdfFromWorksheet = True
+
+ExitFunction:
+    If blnFileOpened Then
+        On Error Resume Next
+        Close #lngFileNumber
+        On Error GoTo 0
+    End If
+
+    If Not GenerateRawOraclePdfFromWorksheet Then
+        On Error Resume Next
+        If Len(Dir$(targetPath)) > 0 Then
+            Kill targetPath
+        End If
+        On Error GoTo 0
+    End If
+
+    Set colPageContents = Nothing
+    Set wksSource = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GenerateRawOraclePdfFromWorksheet = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "targetPath;tradeCount", _
+        targetPath, _
+        lngTradeCount
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    targetPath As String
+' Returns:       Boolean
+' Description:   Validates the target PDF path and its parent folder.
+'-------------------------------------------------------------------------------
+Private Function ValidateTargetPath(ByVal targetPath As String) As Boolean
+    Const METHOD_NAME As String = "ValidateTargetPath"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim fso As Object
+    Dim strParentFolder As String
+
+    On Error GoTo ErrorHandler
+
+    ValidateTargetPath = False
+
+    If Len(Trim$(targetPath)) = 0 Then
+        Err.Raise 1020, METHOD_NAME, "The target PDF path is required."
+    End If
+
+    If LCase$(Right$(Trim$(targetPath), 4)) <> ".pdf" Then
+        Err.Raise 1020, METHOD_NAME, "The target path must end with .pdf."
+    End If
+
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    strParentFolder = CStr(fso.GetParentFolderName(targetPath))
+
+    If Len(strParentFolder) = 0 Then
+        Err.Raise 1020, METHOD_NAME, "The target parent folder could not be resolved."
+    End If
+
+    If Not fso.FolderExists(strParentFolder) Then
+        Err.Raise 1022, METHOD_NAME, "The target parent folder does not exist."
+    End If
+
+    ValidateTargetPath = True
+
+ExitFunction:
+    Set fso = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ValidateTargetPath = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "targetPath", _
+        targetPath
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    wksSource As Excel.Worksheet, arrTopRows() As Long, arrBottomRows() As Long, lngTradeCount As Long
+' Returns:       Boolean
+' Description:   Collects the two worksheet rows belonging to each transaction.
+'-------------------------------------------------------------------------------
+Private Function CollectTransactionRows( _
+    ByVal wksSource As Excel.Worksheet, _
+    ByRef arrTopRows() As Long, _
+    ByRef arrBottomRows() As Long, _
+    ByRef lngTradeCount As Long) As Boolean
+
+    Const METHOD_NAME As String = "CollectTransactionRows"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngCapacity As Long
+    Dim lngLastRow As Long
+    Dim lngRow As Long
+
+    On Error GoTo ErrorHandler
+
+    CollectTransactionRows = False
+    lngTradeCount = 0
+    lngLastRow = GetLastUsedRow(wksSource)
+
+    If lngLastRow < FIRST_DATA_ROW + 1 Then
+        GoTo ExitFunction
+    End If
+
+    lngCapacity = 16
+    ReDim arrTopRows(1 To lngCapacity)
+    ReDim arrBottomRows(1 To lngCapacity)
+
+    lngRow = FIRST_DATA_ROW
+
+    Do While lngRow <= lngLastRow - 1
+        If IsTransactionRowPair(wksSource, lngRow, lngLastRow) Then
+            lngTradeCount = lngTradeCount + 1
+
+            If lngTradeCount > lngCapacity Then
+                lngCapacity = lngCapacity * 2
+                ReDim Preserve arrTopRows(1 To lngCapacity)
+                ReDim Preserve arrBottomRows(1 To lngCapacity)
+            End If
+
+            arrTopRows(lngTradeCount) = lngRow
+            arrBottomRows(lngTradeCount) = lngRow + 1
+            lngRow = lngRow + 2
+        Else
+            lngRow = lngRow + 1
+        End If
+    Loop
+
+    If lngTradeCount = 0 Then
+        GoTo ExitFunction
+    End If
+
+    ReDim Preserve arrTopRows(1 To lngTradeCount)
+    ReDim Preserve arrBottomRows(1 To lngTradeCount)
+    CollectTransactionRows = True
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    CollectTransactionRows = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "lastRow;tradeCount", _
+        lngLastRow, _
+        lngTradeCount
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    wksSource As Excel.Worksheet, lngTopRow As Long, lngLastRow As Long
+' Returns:       Boolean
+' Description:   Returns whether two consecutive worksheet rows form one transaction.
+'-------------------------------------------------------------------------------
+Private Function IsTransactionRowPair( _
+    ByVal wksSource As Excel.Worksheet, _
+    ByVal lngTopRow As Long, _
+    ByVal lngLastRow As Long) As Boolean
+
+    Const METHOD_NAME As String = "IsTransactionRowPair"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strBottomKey As String
+    Dim strTopKey As String
+
+    On Error GoTo ErrorHandler
+
+    IsTransactionRowPair = False
+
+    If lngTopRow < FIRST_DATA_ROW Or lngTopRow + 1 > lngLastRow Then
+        GoTo ExitFunction
+    End If
+
+    strTopKey = Trim$(CStr(wksSource.Cells(lngTopRow, 1).Text))
+    strBottomKey = Trim$(CStr(wksSource.Cells(lngTopRow + 1, 1).Text))
+
+    IsTransactionRowPair = (Len(strTopKey) > 0 And Len(strBottomKey) > 0)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    IsTransactionRowPair = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "topRow;lastRow", _
+        lngTopRow, _
+        lngLastRow
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    wksSource As Excel.Worksheet
+' Returns:       Long
+' Description:   Returns the last used worksheet row.
+'-------------------------------------------------------------------------------
+Private Function GetLastUsedRow(ByVal wksSource As Excel.Worksheet) As Long
+    Const METHOD_NAME As String = "GetLastUsedRow"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim rngLast As Excel.Range
+
+    On Error GoTo ErrorHandler
+
+    GetLastUsedRow = 0
+
+    Set rngLast = wksSource.Cells.Find( _
+        What:="*", _
+        After:=wksSource.Cells(1, 1), _
+        LookIn:=xlFormulas, _
+        LookAt:=xlPart, _
+        SearchOrder:=xlByRows, _
+        SearchDirection:=xlPrevious, _
+        MatchCase:=False)
+
+    If Not rngLast Is Nothing Then
+        GetLastUsedRow = rngLast.Row
+    End If
+
+ExitFunction:
+    Set rngLast = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetLastUsedRow = 0
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    wksSource As Excel.Worksheet, arrTopRows() As Long, arrBottomRows() As Long, lngTradeCount As Long, blnHasLogo As Boolean, colPageContents As Collection
+' Returns:       Boolean
+' Description:   Builds the uncompressed content stream for every PDF page.
+'-------------------------------------------------------------------------------
+Private Function BuildAllPageContents( _
+    ByVal wksSource As Excel.Worksheet, _
+    ByRef arrTopRows() As Long, _
+    ByRef arrBottomRows() As Long, _
+    ByVal lngTradeCount As Long, _
+    ByVal blnHasLogo As Boolean, _
+    ByRef colPageContents As Collection) As Boolean
+
+    Const METHOD_NAME As String = "BuildAllPageContents"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngPage As Long
+    Dim lngPageCount As Long
+    Dim strPageContent As String
+
+    On Error GoTo ErrorHandler
+
+    BuildAllPageContents = False
+    Set colPageContents = New Collection
+
+    If lngTradeCount <= 0 Then
+        Err.Raise 1001, METHOD_NAME, "At least one transaction is required."
+    End If
+
+    lngPageCount = (lngTradeCount + MAX_TRANSACTIONS_PER_PAGE - 1) \ MAX_TRANSACTIONS_PER_PAGE
+
+    For lngPage = 1 To lngPageCount
+        strPageContent = BuildSinglePageContent( _
+            wksSource, _
+            arrTopRows, _
+            arrBottomRows, _
+            lngTradeCount, _
+            lngPage, _
+            lngPageCount, _
+            blnHasLogo)
+
+        If Len(strPageContent) = 0 Then
+            Err.Raise 1024, METHOD_NAME, "A page content stream was empty."
+        End If
+
+        colPageContents.Add strPageContent
+    Next lngPage
+
+    BuildAllPageContents = (colPageContents.Count = lngPageCount)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildAllPageContents = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "tradeCount;pageCount", _
+        lngTradeCount, _
+        lngPageCount
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    wksSource As Excel.Worksheet, arrTopRows() As Long, arrBottomRows() As Long, lngTradeCount As Long, lngPage As Long, lngPageCount As Long, blnHasLogo As Boolean
+' Returns:       String
+' Description:   Builds one page using the fixed Oracle report geometry.
+'-------------------------------------------------------------------------------
+Private Function BuildSinglePageContent( _
+    ByVal wksSource As Excel.Worksheet, _
+    ByRef arrTopRows() As Long, _
+    ByRef arrBottomRows() As Long, _
+    ByVal lngTradeCount As Long, _
+    ByVal lngPage As Long, _
+    ByVal lngPageCount As Long, _
+    ByVal blnHasLogo As Boolean) As String
+
+    Const METHOD_NAME As String = "BuildSinglePageContent"
+    Dim arrBottomColumns As Variant
+    Dim arrBottomWidths As Variant
+    Dim arrBottomX As Variant
+    Dim arrTopColumns As Variant
+    Dim arrTopWidths As Variant
+    Dim arrTopX As Variant
+    Dim blnFirstPage As Boolean
+    Dim blnLastPage As Boolean
+    Dim dblBottomBaseline As Double
+    Dim dblBottomRowY As Double
+    Dim dblHeaderBottomY As Double
+    Dim dblHeaderTopY As Double
+    Dim dblSeparatorY As Double
+    Dim dblTableBottomY As Double
+    Dim dblTableTopY As Double
+    Dim dblTopBaseline As Double
+    Dim dblTopRowY As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngFirstTrade As Long
+    Dim lngLastTrade As Long
+    Dim lngSlot As Long
+    Dim lngTradeIndex As Long
+    Dim strContent As String
+
+    On Error GoTo ErrorHandler
+
+    BuildSinglePageContent = vbNullString
+
+    blnFirstPage = (lngPage = 1)
+    blnLastPage = (lngPage = lngPageCount)
+    lngFirstTrade = ((lngPage - 1) * MAX_TRANSACTIONS_PER_PAGE) + 1
+    lngLastTrade = lngFirstTrade + MAX_TRANSACTIONS_PER_PAGE - 1
+
+    If lngLastTrade > lngTradeCount Then
+        lngLastTrade = lngTradeCount
+    End If
+
+    arrTopX = GetTopGridX()
+    arrTopWidths = GetTopGridWidths()
+    arrBottomX = GetBottomGridX()
+    arrBottomWidths = GetBottomGridWidths()
+    arrTopColumns = GetTopSourceColumns()
+    arrBottomColumns = GetBottomSourceColumns()
+
+    If blnFirstPage Then
+        dblHeaderTopY = FIRST_PAGE_HEADER_TOP_Y
+        dblHeaderBottomY = FIRST_PAGE_HEADER_BOTTOM_Y
+        dblTableTopY = FIRST_PAGE_TABLE_TOP_Y
+    Else
+        dblHeaderTopY = CONTINUATION_PAGE_HEADER_TOP_Y
+        dblHeaderBottomY = CONTINUATION_PAGE_HEADER_BOTTOM_Y
+        dblTableTopY = CONTINUATION_PAGE_TABLE_TOP_Y
+    End If
+
+    strContent = "0 G" & vbCrLf & "0 g" & vbCrLf & "0 w" & vbCrLf
+
+    If blnFirstPage And blnHasLogo Then
+        strContent = strContent & _
+            "q" & vbCrLf & _
+            PdfNumber(LOGO_WIDTH) & " 0 0 " & PdfNumber(LOGO_HEIGHT) & " " & _
+            PdfNumber(LOGO_X) & " " & PdfNumber(LOGO_Y) & " cm" & vbCrLf & _
+            "/Im0 Do" & vbCrLf & _
+            "Q" & vbCrLf
+    End If
+
+    strContent = strContent & BuildGridRowContent( _
+        wksSource, _
+        5, _
+        arrTopColumns, _
+        arrTopX, _
+        arrTopWidths, _
+        dblHeaderTopY, _
+        IIf(blnFirstPage, 540.76, 594.76), _
+        True)
+
+    strContent = strContent & BuildGridRowContent( _
+        wksSource, _
+        6, _
+        arrBottomColumns, _
+        arrBottomX, _
+        arrBottomWidths, _
+        dblHeaderBottomY, _
+        IIf(blnFirstPage, 522.76, 576.76), _
+        True)
+
+    lngSlot = 0
+
+    For lngTradeIndex = lngFirstTrade To lngLastTrade
+        lngSlot = lngSlot + 1
+        dblTopBaseline = GetTransactionTopBaseline(blnFirstPage, lngSlot)
+        dblBottomBaseline = dblTopBaseline - DATA_ROW_HEIGHT
+        dblTopRowY = dblTopBaseline - DATA_BASELINE_OFFSET
+        dblBottomRowY = dblBottomBaseline - DATA_BASELINE_OFFSET
+        dblSeparatorY = dblBottomBaseline - (DATA_BASELINE_OFFSET + SEPARATOR_HEIGHT)
+
+        strContent = strContent & BuildGridRowContent( _
+            wksSource, _
+            arrTopRows(lngTradeIndex), _
+            arrTopColumns, _
+            arrTopX, _
+            arrTopWidths, _
+            dblTopRowY, _
+            dblTopBaseline, _
+            False)
+
+        strContent = strContent & BuildGridRowContent( _
+            wksSource, _
+            arrBottomRows(lngTradeIndex), _
+            arrBottomColumns, _
+            arrBottomX, _
+            arrBottomWidths, _
+            dblBottomRowY, _
+            dblBottomBaseline, _
+            False)
+
+        strContent = strContent & _
+            "q " & PdfNumber(SEPARATOR_GRAY_LEVEL) & " g " & _
+            PdfNumber(TABLE_LEFT_X) & " " & PdfNumber(dblSeparatorY) & " " & _
+            PdfNumber(TABLE_WIDTH) & " " & PdfNumber(SEPARATOR_HEIGHT) & " re f Q" & vbCrLf & _
+            PdfNumber(TABLE_LEFT_X) & " " & PdfNumber(dblSeparatorY) & " " & _
+            PdfNumber(TABLE_WIDTH) & " " & PdfNumber(SEPARATOR_HEIGHT) & " re S" & vbCrLf
+    Next lngTradeIndex
+
+    dblTableBottomY = dblSeparatorY
+
+    strContent = strContent & _
+        PdfNumber(TABLE_LEFT_X) & " " & PdfNumber(dblTableBottomY) & " " & _
+        PdfNumber(TABLE_WIDTH) & " " & PdfNumber(dblTableTopY - dblTableBottomY) & " re S" & vbCrLf
+
+    If blnLastPage Then
+        strContent = strContent & BuildAbsoluteTextCommand( _
+            "/F0", _
+            FOOTER_FONT_SIZE, _
+            FOOTER_X, _
+            dblTableBottomY - FOOTER_BASELINE_GAP, _
+            FOOTER_TEXT)
+    End If
+
+    strContent = strContent & BuildAbsoluteTextCommand( _
+        "/F0", _
+        PAGE_NUMBER_FONT_SIZE, _
+        PAGE_NUMBER_X, _
+        PAGE_NUMBER_Y, _
+        CStr(lngPage) & " / " & CStr(lngPageCount))
+
+    BuildSinglePageContent = strContent
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildSinglePageContent = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "page;pageCount;firstTrade;lastTrade", _
+        lngPage, _
+        lngPageCount, _
+        lngFirstTrade, _
+        lngLastTrade
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    wksSource As Excel.Worksheet, lngSourceRow As Long, arrSourceColumns As Variant, arrX As Variant, arrWidths As Variant, dblRowY As Double, dblBaselineY As Double, blnHeader As Boolean
+' Returns:       String
+' Description:   Draws one complete 12-column or 13-column row.
+'-------------------------------------------------------------------------------
+Private Function BuildGridRowContent( _
+    ByVal wksSource As Excel.Worksheet, _
+    ByVal lngSourceRow As Long, _
+    ByVal arrSourceColumns As Variant, _
+    ByVal arrX As Variant, _
+    ByVal arrWidths As Variant, _
+    ByVal dblRowY As Double, _
+    ByVal dblBaselineY As Double, _
+    ByVal blnHeader As Boolean) As String
+
+    Const METHOD_NAME As String = "BuildGridRowContent"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim rngSource As Excel.Range
+    Dim strContent As String
+
+    On Error GoTo ErrorHandler
+
+    BuildGridRowContent = vbNullString
+
+    If UBound(arrSourceColumns) <> UBound(arrX) Or UBound(arrX) <> UBound(arrWidths) Then
+        Err.Raise 1024, METHOD_NAME, "The row geometry arrays do not have matching dimensions."
+    End If
+
+    For lngIndex = LBound(arrX) To UBound(arrX)
+        Set rngSource = wksSource.Cells(lngSourceRow, CLng(arrSourceColumns(lngIndex)))
+
+        strContent = strContent & BuildCellContent( _
+            rngSource, _
+            CDbl(arrX(lngIndex)), _
+            dblRowY, _
+            CDbl(arrWidths(lngIndex)), _
+            DATA_ROW_HEIGHT, _
+            dblBaselineY, _
+            blnHeader)
+    Next lngIndex
+
+    BuildGridRowContent = strContent
+
+ExitFunction:
+    Set rngSource = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildGridRowContent = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "sourceRow;rowY;baselineY;header", _
+        lngSourceRow, _
+        dblRowY, _
+        dblBaselineY, _
+        blnHeader
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    rngSource As Excel.Range, dblX As Double, dblY As Double, dblWidth As Double, dblHeight As Double, dblBaselineY As Double, blnHeader As Boolean
+' Returns:       String
+' Description:   Draws one explicit PDF rectangle and the worksheet text inside it.
+'-------------------------------------------------------------------------------
+Private Function BuildCellContent( _
+    ByVal rngSource As Excel.Range, _
+    ByVal dblX As Double, _
+    ByVal dblY As Double, _
+    ByVal dblWidth As Double, _
+    ByVal dblHeight As Double, _
+    ByVal dblBaselineY As Double, _
+    ByVal blnHeader As Boolean) As String
+
+    Const METHOD_NAME As String = "BuildCellContent"
+    Dim dblFontSize As Double
+    Dim dblTextWidth As Double
+    Dim dblTextX As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngAlignment As Long
+    Dim strContent As String
+    Dim strFont As String
+    Dim strText As String
+
+    On Error GoTo ErrorHandler
+
+    BuildCellContent = vbNullString
+    strText = GetWorksheetDisplayText(rngSource)
+
+    If blnHeader Then
+        strContent = strContent & _
+            "q " & PdfNumber(HEADER_GRAY_LEVEL) & " g " & _
+            PdfNumber(dblX) & " " & PdfNumber(dblY) & " " & _
+            PdfNumber(dblWidth) & " " & PdfNumber(dblHeight) & " re f Q" & vbCrLf
+        strFont = "/F0"
+        dblFontSize = HEADER_FONT_SIZE
+        lngAlignment = xlCenter
+    Else
+        strFont = "/F1"
+        dblFontSize = GetDataFontSize(strText)
+        lngAlignment = ResolveCellAlignment(rngSource, strText)
+    End If
+
+    strContent = strContent & _
+        PdfNumber(dblX) & " " & PdfNumber(dblY) & " " & _
+        PdfNumber(dblWidth) & " " & PdfNumber(dblHeight) & " re S" & vbCrLf
+
+    If Len(strText) = 0 Then
+        BuildCellContent = strContent
+        GoTo ExitFunction
+    End If
+
+    dblFontSize = FitFontSize(strText, strFont, dblFontSize, dblWidth - (2# * TEXT_HORIZONTAL_PADDING))
+    dblTextWidth = EstimateBase14TextWidth(strText, strFont, dblFontSize)
+
+    Select Case lngAlignment
+        Case xlCenter
+            dblTextX = dblX + ((dblWidth - dblTextWidth) / 2#)
+        Case xlRight
+            dblTextX = dblX + dblWidth - TEXT_HORIZONTAL_PADDING - dblTextWidth
+        Case Else
+            dblTextX = dblX + TEXT_HORIZONTAL_PADDING
+    End Select
+
+    If dblTextX < dblX + 0.5 Then
+        dblTextX = dblX + 0.5
+    End If
+
+    strContent = strContent & BuildAbsoluteTextCommand( _
+        strFont, _
+        dblFontSize, _
+        dblTextX, _
+        dblBaselineY, _
+        strText)
+
+    BuildCellContent = strContent
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildCellContent = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "x;y;width;height;header", _
+        dblX, _
+        dblY, _
+        dblWidth, _
+        dblHeight, _
+        blnHeader
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    rngSource As Excel.Range
+' Returns:       String
+' Description:   Returns the displayed worksheet value used by the existing report.
+'-------------------------------------------------------------------------------
+Private Function GetWorksheetDisplayText(ByVal rngSource As Excel.Range) As String
+    Const METHOD_NAME As String = "GetWorksheetDisplayText"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim rngValue As Excel.Range
+    Dim strText As String
+
+    On Error GoTo ErrorHandler
+
+    GetWorksheetDisplayText = vbNullString
+
+    If rngSource Is Nothing Then
+        GoTo ExitFunction
+    End If
+
+    Set rngValue = rngSource
+
+    If rngSource.MergeCells Then
+        Set rngValue = rngSource.MergeArea.Cells(1, 1)
+    End If
+
+    If IsError(rngValue.Value) Or IsEmpty(rngValue.Value) Then
+        GoTo ExitFunction
+    End If
+
+    strText = CStr(rngValue.Text)
+
+    If Len(strText) = 0 Or Replace(strText, "#", vbNullString) = vbNullString Then
+        If IsDate(rngValue.Value) Then
+            strText = Format$(CDate(rngValue.Value), "dd-mm-yy")
+        Else
+            strText = CStr(rngValue.Value)
+        End If
+    End If
+
+    strText = Replace(strText, vbCr, " ")
+    strText = Replace(strText, vbLf, " ")
+    strText = Replace(strText, ChrW(160), " ")
+    GetWorksheetDisplayText = Trim$(strText)
+
+ExitFunction:
+    Set rngValue = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetWorksheetDisplayText = vbNullString
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    rngSource As Excel.Range, strText As String
+' Returns:       Long
+' Description:   Resolves the visual alignment used for one report value.
+'-------------------------------------------------------------------------------
+Private Function ResolveCellAlignment( _
+    ByVal rngSource As Excel.Range, _
+    ByVal strText As String) As Long
+
+    Const METHOD_NAME As String = "ResolveCellAlignment"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngAlignment As Long
+    Dim rngValue As Excel.Range
+
+    On Error GoTo ErrorHandler
+
+    ResolveCellAlignment = xlLeft
+
+    Set rngValue = rngSource
+
+    If rngSource.MergeCells Then
+        Set rngValue = rngSource.MergeArea.Cells(1, 1)
+    End If
+
+    lngAlignment = CLng(rngValue.HorizontalAlignment)
+
+    If lngAlignment = xlCenter Or lngAlignment = xlRight Or lngAlignment = xlLeft Then
+        ResolveCellAlignment = lngAlignment
+        GoTo ExitFunction
+    End If
+
+    If IsDate(rngValue.Value) Then
+        ResolveCellAlignment = xlCenter
+    ElseIf IsNumeric(rngValue.Value) And Len(strText) > 0 Then
+        ResolveCellAlignment = xlRight
+    ElseIf Len(strText) = 3 And UCase$(strText) = strText And strText Like "[A-Z][A-Z][A-Z]" Then
+        ResolveCellAlignment = xlCenter
+    Else
+        ResolveCellAlignment = xlLeft
+    End If
+
+ExitFunction:
+    Set rngValue = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ResolveCellAlignment = xlLeft
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    strText As String
+' Returns:       Double
+' Description:   Returns the preferred data font size for one value.
+'-------------------------------------------------------------------------------
+Private Function GetDataFontSize(ByVal strText As String) As Double
+    Const METHOD_NAME As String = "GetDataFontSize"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    GetDataFontSize = DATA_FONT_SIZE
+
+    If Len(strText) > 18 Then
+        GetDataFontSize = LONG_TEXT_FONT_SIZE
+    ElseIf Len(strText) = 3 And UCase$(strText) = strText And strText Like "[A-Z][A-Z][A-Z]" Then
+        GetDataFontSize = LONG_TEXT_FONT_SIZE
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetDataFontSize = DATA_FONT_SIZE
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    strText As String, strFont As String, dblInitialSize As Double, dblAvailableWidth As Double
+' Returns:       Double
+' Description:   Shrinks text until it fits inside the fixed PDF cell width.
+'-------------------------------------------------------------------------------
+Private Function FitFontSize( _
+    ByVal strText As String, _
+    ByVal strFont As String, _
+    ByVal dblInitialSize As Double, _
+    ByVal dblAvailableWidth As Double) As Double
+
+    Const METHOD_NAME As String = "FitFontSize"
+    Dim dblFontSize As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    dblFontSize = dblInitialSize
+
+    Do While dblFontSize > MIN_FONT_SIZE
+        If EstimateBase14TextWidth(strText, strFont, dblFontSize) <= dblAvailableWidth Then
+            Exit Do
+        End If
+        dblFontSize = dblFontSize - 0.25
+    Loop
+
+    If dblFontSize < MIN_FONT_SIZE Then
+        dblFontSize = MIN_FONT_SIZE
+    End If
+
+    FitFontSize = dblFontSize
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    FitFontSize = MIN_FONT_SIZE
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    strText As String, strFont As String, dblFontSize As Double
+' Returns:       Double
+' Description:   Estimates Times-Roman or Times-Bold text width in PDF points.
+'-------------------------------------------------------------------------------
+Private Function EstimateBase14TextWidth( _
+    ByVal strText As String, _
+    ByVal strFont As String, _
+    ByVal dblFontSize As Double) As Double
+
+    Const METHOD_NAME As String = "EstimateBase14TextWidth"
+    Dim dblUnits As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngChar As Long
+    Dim lngIndex As Long
+    Dim strChar As String
+
+    On Error GoTo ErrorHandler
+
+    dblUnits = 0#
+
+    For lngIndex = 1 To Len(strText)
+        strChar = Mid$(strText, lngIndex, 1)
+        lngChar = AscW(strChar)
+
+        If strFont = "/F0" Then
+            Select Case strChar
+                Case " ": dblUnits = dblUnits + 250
+                Case "I": dblUnits = dblUnits + 389
+                Case "J": dblUnits = dblUnits + 500
+                Case "M": dblUnits = dblUnits + 944
+                Case "W": dblUnits = dblUnits + 1000
+                Case "A", "D", "N", "R", "X", "Y": dblUnits = dblUnits + 722
+                Case "B", "E", "L", "T", "Z": dblUnits = dblUnits + 667
+                Case "C", "G", "H", "K", "O": dblUnits = dblUnits + 778
+                Case "F", "P": dblUnits = dblUnits + 611
+                Case "S": dblUnits = dblUnits + 556
+                Case "i", "l": dblUnits = dblUnits + 278
+                Case "j", "f", "t": dblUnits = dblUnits + 333
+                Case "m": dblUnits = dblUnits + 833
+                Case "w": dblUnits = dblUnits + 722
+                Case "r", "z": dblUnits = dblUnits + 444
+                Case "c", "s": dblUnits = dblUnits + 389
+                Case "a", "g", "o", "v", "x", "y": dblUnits = dblUnits + 500
+                Case "b", "d", "e", "h", "k", "n", "p", "q", "u": dblUnits = dblUnits + 556
+                Case "0" To "9": dblUnits = dblUnits + 500
+                Case ".", ",": dblUnits = dblUnits + 250
+                Case "-": dblUnits = dblUnits + 333
+                Case "/": dblUnits = dblUnits + 278
+                Case "("
+                    dblUnits = dblUnits + 333
+                Case ")"
+                    dblUnits = dblUnits + 333
+                Case Else
+                    dblUnits = dblUnits + IIf(lngChar >= 0 And lngChar <= 127, 500, 556)
+            End Select
+        Else
+            Select Case strChar
+                Case " ": dblUnits = dblUnits + 250
+                Case "I": dblUnits = dblUnits + 333
+                Case "J": dblUnits = dblUnits + 389
+                Case "M": dblUnits = dblUnits + 889
+                Case "W": dblUnits = dblUnits + 944
+                Case "A", "D", "G", "H", "K", "N", "O", "X", "Y": dblUnits = dblUnits + 722
+                Case "B", "C", "R": dblUnits = dblUnits + 667
+                Case "E", "L", "Z", "T": dblUnits = dblUnits + 611
+                Case "F", "P", "S": dblUnits = dblUnits + 556
+                Case "i", "j", "l", "t": dblUnits = dblUnits + 278
+                Case "f", "r": dblUnits = dblUnits + 333
+                Case "m": dblUnits = dblUnits + 778
+                Case "w": dblUnits = dblUnits + 722
+                Case "s": dblUnits = dblUnits + 389
+                Case "a", "c", "z": dblUnits = dblUnits + 444
+                Case "b", "d", "e", "g", "h", "k", "n", "o", "p", "q", "u", "v", "x", "y": dblUnits = dblUnits + 500
+                Case "0" To "9": dblUnits = dblUnits + 500
+                Case ".", ",": dblUnits = dblUnits + 250
+                Case "-": dblUnits = dblUnits + 333
+                Case "/": dblUnits = dblUnits + 278
+                Case "("
+                    dblUnits = dblUnits + 333
+                Case ")"
+                    dblUnits = dblUnits + 333
+                Case Else
+                    dblUnits = dblUnits + IIf(lngChar >= 0 And lngChar <= 127, 500, 500)
+            End Select
+        End If
+    Next lngIndex
+
+    EstimateBase14TextWidth = (dblUnits / 1000#) * dblFontSize
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    EstimateBase14TextWidth = Len(strText) * dblFontSize * 0.5
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    strFont As String, dblFontSize As Double, dblX As Double, dblY As Double, strText As String
+' Returns:       String
+' Description:   Builds one simple BT-Td-Tj-ET text command.
+'-------------------------------------------------------------------------------
+Private Function BuildAbsoluteTextCommand( _
+    ByVal strFont As String, _
+    ByVal dblFontSize As Double, _
+    ByVal dblX As Double, _
+    ByVal dblY As Double, _
+    ByVal strText As String) As String
+
+    Const METHOD_NAME As String = "BuildAbsoluteTextCommand"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    BuildAbsoluteTextCommand = _
+        "BT " & strFont & " " & PdfNumber(dblFontSize) & " Tf " & _
+        PdfNumber(dblX) & " " & PdfNumber(dblY) & " Td (" & _
+        EncodePdfText(strText) & ") Tj ET" & vbCrLf
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildAbsoluteTextCommand = vbNullString
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    strText As String
+' Returns:       String
+' Description:   Encodes text as an ASCII-safe WinAnsi PDF literal string.
+'-------------------------------------------------------------------------------
+Private Function EncodePdfText(ByVal strText As String) As String
+    Const METHOD_NAME As String = "EncodePdfText"
+    Dim arrBytes() As Byte
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngByte As Long
+    Dim lngIndex As Long
+    Dim strEncoded As String
+
+    On Error GoTo ErrorHandler
+
+    EncodePdfText = vbNullString
+
+    If Len(strText) = 0 Then
+        GoTo ExitFunction
+    End If
+
+    arrBytes = StrConv(strText, vbFromUnicode)
+
+    For lngIndex = LBound(arrBytes) To UBound(arrBytes)
+        lngByte = CLng(arrBytes(lngIndex))
+
+        Select Case lngByte
+            Case 40
+                strEncoded = strEncoded & "\("
+            Case 41
+                strEncoded = strEncoded & "\)"
+            Case 92
+                strEncoded = strEncoded & "\\"
+            Case 32 To 126
+                strEncoded = strEncoded & Chr$(lngByte)
+            Case Else
+                strEncoded = strEncoded & "\" & Right$("000" & Oct$(lngByte), 3)
+        End Select
+    Next lngIndex
+
+    EncodePdfText = strEncoded
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    EncodePdfText = vbNullString
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    blnFirstPage As Boolean, lngSlot As Long
+' Returns:       Double
+' Description:   Returns the exact top-row baseline for one transaction slot.
+'-------------------------------------------------------------------------------
+Private Function GetTransactionTopBaseline( _
+    ByVal blnFirstPage As Boolean, _
+    ByVal lngSlot As Long) As Double
+
+    Const METHOD_NAME As String = "GetTransactionTopBaseline"
+    Dim arrOffsets As Variant
+    Dim dblFirstBaseline As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    arrOffsets = Array(0#, 40.52, 81#, 121.52, 162#, 202.52, 243#, 283.52, 324#, 364.52, 405#)
+
+    If lngSlot < 1 Or lngSlot > MAX_TRANSACTIONS_PER_PAGE Then
+        Err.Raise 1001, METHOD_NAME, "The transaction slot must be between 1 and 11."
+    End If
+
+    If blnFirstPage Then
+        dblFirstBaseline = FIRST_PAGE_FIRST_TOP_BASELINE_Y
+    Else
+        dblFirstBaseline = CONTINUATION_PAGE_FIRST_TOP_BASELINE_Y
+    End If
+
+    GetTransactionTopBaseline = dblFirstBaseline - CDbl(arrOffsets(lngSlot - 1))
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetTransactionTopBaseline = 0#
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "firstPage;slot", _
+        blnFirstPage, _
+        lngSlot
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    ---
+' Returns:       Variant
+' Description:   Returns the exact X coordinates of the 12-column upper row.
+'-------------------------------------------------------------------------------
+Private Function GetTopGridX() As Variant
+    Const METHOD_NAME As String = "GetTopGridX"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    GetTopGridX = Array(40.52, 126#, 328.52, 414#, 504#, 553.52, 594#, 675#, 891#, 1026#, 1053#, 1179#)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetTopGridX = Array()
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    ---
+' Returns:       Variant
+' Description:   Returns the exact widths of the 12-column upper row.
+'-------------------------------------------------------------------------------
+Private Function GetTopGridWidths() As Variant
+    Const METHOD_NAME As String = "GetTopGridWidths"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    GetTopGridWidths = Array(85.48, 202.52, 85.48, 90#, 49.52, 40.48, 81#, 216#, 135#, 27#, 126#, 144.04)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetTopGridWidths = Array()
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    ---
+' Returns:       Variant
+' Description:   Returns the exact X coordinates of the 13-column lower row.
+'-------------------------------------------------------------------------------
+Private Function GetBottomGridX() As Variant
+    Const METHOD_NAME As String = "GetBottomGridX"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    GetBottomGridX = Array(40.52, 126#, 283.52, 328.52, 468#, 504#, 639#, 675#, 855#, 891#, 1053#, 1179#, 1206#)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetBottomGridX = Array()
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    ---
+' Returns:       Variant
+' Description:   Returns the exact widths of the 13-column lower row.
+'-------------------------------------------------------------------------------
+Private Function GetBottomGridWidths() As Variant
+    Const METHOD_NAME As String = "GetBottomGridWidths"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    GetBottomGridWidths = Array(85.48, 157.52, 45#, 139.48, 36#, 135#, 36#, 180#, 36#, 162#, 126#, 27#, 117.04)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetBottomGridWidths = Array()
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    ---
+' Returns:       Variant
+' Description:   Returns the worksheet columns mapped to the upper PDF row.
+'-------------------------------------------------------------------------------
+Private Function GetTopSourceColumns() As Variant
+    Const METHOD_NAME As String = "GetTopSourceColumns"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    GetTopSourceColumns = Array(1, 2, 5, 7, 9, 10, 11, 13, 16, 18, 19, 20)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetTopSourceColumns = Array()
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    ---
+' Returns:       Variant
+' Description:   Returns the worksheet columns mapped to the lower PDF row.
+'-------------------------------------------------------------------------------
+Private Function GetBottomSourceColumns() As Variant
+    Const METHOD_NAME As String = "GetBottomSourceColumns"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    GetBottomSourceColumns = Array(1, 2, 4, 5, 8, 9, 12, 13, 15, 16, 19, 20, 21)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetBottomSourceColumns = Array()
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    wksSource As Excel.Worksheet, logoPath As String, strLogoHex As String, lngLogoWidth As Long, lngLogoHeight As Long, lngLogoComponents As Long
+' Returns:       Boolean
+' Description:   Reads or exports the existing report logo and converts it to ASCII hexadecimal JPEG data.
+'-------------------------------------------------------------------------------
+Private Function PrepareLogoImage( _
+    ByVal wksSource As Excel.Worksheet, _
+    ByVal logoPath As String, _
+    ByRef strLogoHex As String, _
+    ByRef lngLogoWidth As Long, _
+    ByRef lngLogoHeight As Long, _
+    ByRef lngLogoComponents As Long) As Boolean
+
+    Const METHOD_NAME As String = "PrepareLogoImage"
+    Dim arrBytes() As Byte
+    Dim blnTemporaryFile As Boolean
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim fso As Object
+    Dim strImagePath As String
+    Dim strTempPath As String
+
+    On Error GoTo ErrorHandler
+
+    PrepareLogoImage = False
+    Set fso = CreateObject("Scripting.FileSystemObject")
+
+    If fso.FileExists(logoPath) Then
+        If LCase$(fso.GetExtensionName(logoPath)) = "jpg" Or _
+           LCase$(fso.GetExtensionName(logoPath)) = "jpeg" Then
+            strImagePath = logoPath
+        End If
+    End If
+
+    If Len(strImagePath) = 0 Then
+        strTempPath = Environ$("TEMP") & "\Tradeversand_OracleLogo_" & _
+                      Format$(Now, "yyyymmdd_hhnnss") & "_" & _
+                      Format$(CLng(Timer * 100), "00000000") & ".jpg"
+
+        If Not ExportWorksheetLogoToJpeg(wksSource, strTempPath) Then
+            GoTo ExitFunction
+        End If
+
+        strImagePath = strTempPath
+        blnTemporaryFile = True
+    End If
+
+    arrBytes = ReadFileBytes(strImagePath)
+
+    If Not GetJpegInformation(arrBytes, lngLogoWidth, lngLogoHeight, lngLogoComponents) Then
+        Err.Raise 1013, METHOD_NAME, "The prepared logo is not a supported JPEG image."
+    End If
+
+    strLogoHex = BytesToAsciiHex(arrBytes)
+    PrepareLogoImage = (Len(strLogoHex) > 1)
+
+ExitFunction:
+    If blnTemporaryFile Then
+        On Error Resume Next
+        If Len(Dir$(strTempPath)) > 0 Then
+            Kill strTempPath
+        End If
+        On Error GoTo 0
+    End If
+
+    Set fso = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    PrepareLogoImage = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "logoPath", _
+        logoPath
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    wksSource As Excel.Worksheet, targetJpegPath As String
+' Returns:       Boolean
+' Description:   Exports the first worksheet picture to a temporary JPEG file.
+'-------------------------------------------------------------------------------
+Private Function ExportWorksheetLogoToJpeg( _
+    ByVal wksSource As Excel.Worksheet, _
+    ByVal targetJpegPath As String) As Boolean
+
+    Const METHOD_NAME As String = "ExportWorksheetLogoToJpeg"
+    Dim chartLogo As Excel.ChartObject
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngShape As Long
+    Dim shpLogo As Excel.Shape
+
+    On Error GoTo ErrorHandler
+
+    ExportWorksheetLogoToJpeg = False
+
+    For lngShape = 1 To wksSource.Shapes.Count
+        If wksSource.Shapes(lngShape).Type = 13 Or wksSource.Shapes(lngShape).Type = 11 Then
+            Set shpLogo = wksSource.Shapes(lngShape)
+            Exit For
+        End If
+    Next lngShape
+
+    If shpLogo Is Nothing Then
+        Err.Raise 1013, METHOD_NAME, "No picture shape was found on the report worksheet."
+    End If
+
+    Set chartLogo = wksSource.ChartObjects.Add( _
+        Left:=shpLogo.Left, _
+        Top:=shpLogo.Top, _
+        Width:=shpLogo.Width, _
+        Height:=shpLogo.Height)
+
+    shpLogo.CopyPicture Appearance:=xlScreen, Format:=xlPicture
+    DoEvents
+    chartLogo.Chart.Paste
+    DoEvents
+
+    ExportWorksheetLogoToJpeg = chartLogo.Chart.Export( _
+        Filename:=targetJpegPath, _
+        FilterName:="JPG")
+
+ExitFunction:
+    If Not chartLogo Is Nothing Then
+        On Error Resume Next
+        chartLogo.Delete
+        On Error GoTo 0
+    End If
+
+    Set shpLogo = Nothing
+    Set chartLogo = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ExportWorksheetLogoToJpeg = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "targetJpegPath", _
+        targetJpegPath
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    filePath As String
+' Returns:       Byte()
+' Description:   Reads a complete binary file into a byte array.
+'-------------------------------------------------------------------------------
+Private Function ReadFileBytes(ByVal filePath As String) As Byte()
+    Const METHOD_NAME As String = "ReadFileBytes"
+    Dim arrBytes() As Byte
+    Dim blnFileOpened As Boolean
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngFileNumber As Long
+    Dim lngSize As Long
+
+    On Error GoTo ErrorHandler
+
+    If Len(Dir$(filePath)) = 0 Then
+        Err.Raise 1010, METHOD_NAME, "The requested file does not exist."
+    End If
+
+    lngFileNumber = FreeFile
+    Open filePath For Binary Access Read Lock Read As #lngFileNumber
+    blnFileOpened = True
+    lngSize = LOF(lngFileNumber)
+
+    If lngSize <= 0 Then
+        Err.Raise 1011, METHOD_NAME, "The requested file is empty."
+    End If
+
+    ReDim arrBytes(0 To lngSize - 1)
+    Get #lngFileNumber, 1, arrBytes
+    Close #lngFileNumber
+    blnFileOpened = False
+
+    ReadFileBytes = arrBytes
+
+ExitFunction:
+    If blnFileOpened Then
+        On Error Resume Next
+        Close #lngFileNumber
+        On Error GoTo 0
+    End If
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ReDim arrBytes(0 To 0)
+    ReadFileBytes = arrBytes
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "filePath", _
+        filePath
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    arrBytes() As Byte, lngWidth As Long, lngHeight As Long, lngComponents As Long
+' Returns:       Boolean
+' Description:   Extracts JPEG dimensions and component count from a SOF marker.
+'-------------------------------------------------------------------------------
+Private Function GetJpegInformation( _
+    ByRef arrBytes() As Byte, _
+    ByRef lngWidth As Long, _
+    ByRef lngHeight As Long, _
+    ByRef lngComponents As Long) As Boolean
+
+    Const METHOD_NAME As String = "GetJpegInformation"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngMarker As Long
+    Dim lngPosition As Long
+    Dim lngSegmentLength As Long
+
+    On Error GoTo ErrorHandler
+
+    GetJpegInformation = False
+    lngWidth = 0
+    lngHeight = 0
+    lngComponents = 0
+
+    If UBound(arrBytes) < 10 Then
+        GoTo ExitFunction
+    End If
+
+    If arrBytes(0) <> &HFF Or arrBytes(1) <> &HD8 Then
+        GoTo ExitFunction
+    End If
+
+    lngPosition = 2
+
+    Do While lngPosition <= UBound(arrBytes) - 8
+        Do While lngPosition <= UBound(arrBytes) And arrBytes(lngPosition) <> &HFF
+            lngPosition = lngPosition + 1
+        Loop
+
+        Do While lngPosition <= UBound(arrBytes) And arrBytes(lngPosition) = &HFF
+            lngPosition = lngPosition + 1
+        Loop
+
+        If lngPosition > UBound(arrBytes) Then
+            Exit Do
+        End If
+
+        lngMarker = CLng(arrBytes(lngPosition))
+        lngPosition = lngPosition + 1
+
+        If lngMarker = &HD9 Or lngMarker = &HDA Then
+            Exit Do
+        End If
+
+        If lngMarker = &H1 Or (lngMarker >= &HD0 And lngMarker <= &HD7) Then
+            GoTo ContinueLoop
+        End If
+
+        If lngPosition + 1 > UBound(arrBytes) Then
+            Exit Do
+        End If
+
+        lngSegmentLength = CLng(arrBytes(lngPosition)) * 256 + CLng(arrBytes(lngPosition + 1))
+
+        Select Case lngMarker
+            Case &HC0, &HC1, &HC2, &HC3, &HC5, &HC6, &HC7, &HC9, &HCA, &HCB, &HCD, &HCE, &HCF
+                If lngPosition + 7 <= UBound(arrBytes) Then
+                    lngHeight = CLng(arrBytes(lngPosition + 3)) * 256 + CLng(arrBytes(lngPosition + 4))
+                    lngWidth = CLng(arrBytes(lngPosition + 5)) * 256 + CLng(arrBytes(lngPosition + 6))
+                    lngComponents = CLng(arrBytes(lngPosition + 7))
+                    GetJpegInformation = (lngWidth > 0 And lngHeight > 0 And lngComponents > 0)
+                    GoTo ExitFunction
+                End If
+        End Select
+
+        If lngSegmentLength < 2 Then
+            Exit Do
+        End If
+
+        lngPosition = lngPosition + lngSegmentLength
+ContinueLoop:
+    Loop
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetJpegInformation = False
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    arrBytes() As Byte
+' Returns:       String
+' Description:   Converts binary bytes to an ASCIIHex stream terminated by greater-than.
+'-------------------------------------------------------------------------------
+Private Function BytesToAsciiHex(ByRef arrBytes() As Byte) As String
+    Const METHOD_NAME As String = "BytesToAsciiHex"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim lngLength As Long
+    Dim strHex As String
+
+    On Error GoTo ErrorHandler
+
+    lngLength = UBound(arrBytes) - LBound(arrBytes) + 1
+
+    If lngLength <= 0 Then
+        GoTo ExitFunction
+    End If
+
+    strHex = String$(lngLength * 2, "0")
+
+    For lngIndex = 0 To lngLength - 1
+        Mid$(strHex, (lngIndex * 2) + 1, 2) = Right$("0" & Hex$(arrBytes(LBound(arrBytes) + lngIndex)), 2)
+    Next lngIndex
+
+    BytesToAsciiHex = strHex & ">"
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BytesToAsciiHex = vbNullString
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    colPageContents As Collection, strLogoHex As String, lngLogoWidth As Long, lngLogoHeight As Long, lngLogoComponents As Long, strDocument As String
+' Returns:       Boolean
+' Description:   Builds all PDF objects, the classic XREF table, trailer, and EOF marker.
+'-------------------------------------------------------------------------------
+Private Function BuildPdfDocument( _
+    ByVal colPageContents As Collection, _
+    ByVal strLogoHex As String, _
+    ByVal lngLogoWidth As Long, _
+    ByVal lngLogoHeight As Long, _
+    ByVal lngLogoComponents As Long, _
+    ByRef strDocument As String) As Boolean
+
+    Const METHOD_NAME As String = "BuildPdfDocument"
+    Dim arrObjects() As String
+    Dim arrOffsets() As Long
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngContentObject As Long
+    Dim lngFirstPageObject As Long
+    Dim lngImageObject As Long
+    Dim lngObject As Long
+    Dim lngObjectCount As Long
+    Dim lngPage As Long
+    Dim lngPageObject As Long
+    Dim lngStartXref As Long
+    Dim strColorSpace As String
+    Dim strKids As String
+    Dim strPageResources As String
+
+    On Error GoTo ErrorHandler
+
+    BuildPdfDocument = False
+    strDocument = vbNullString
+
+    If colPageContents Is Nothing Then
+        Err.Raise 1001, METHOD_NAME, "The page content collection is required."
+    End If
+
+    If colPageContents.Count = 0 Then
+        Err.Raise 1001, METHOD_NAME, "At least one PDF page is required."
+    End If
+
+    lngImageObject = 5
+    lngFirstPageObject = 6
+    lngObjectCount = 5 + (colPageContents.Count * 2)
+
+    ReDim arrObjects(1 To lngObjectCount)
+    ReDim arrOffsets(1 To lngObjectCount)
+
+    arrObjects(1) = "<< /Type /Catalog /Pages 2 0 R >>"
+    arrObjects(3) = "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold /Encoding /WinAnsiEncoding >>"
+    arrObjects(4) = "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman /Encoding /WinAnsiEncoding >>"
+
+    Select Case lngLogoComponents
+        Case 1
+            strColorSpace = "/DeviceGray"
+        Case 4
+            strColorSpace = "/DeviceCMYK"
+        Case Else
+            strColorSpace = "/DeviceRGB"
+    End Select
+
+    arrObjects(lngImageObject) = _
+        "<< /Type /XObject /Subtype /Image /Width " & CStr(lngLogoWidth) & _
+        " /Height " & CStr(lngLogoHeight) & _
+        " /ColorSpace " & strColorSpace & _
+        " /BitsPerComponent 8 /Filter [/ASCIIHexDecode /DCTDecode] /Length " & _
+        CStr(Len(strLogoHex)) & " >>" & vbCrLf & _
+        "stream" & vbCrLf & _
+        strLogoHex & vbCrLf & _
+        "endstream"
+
+    For lngPage = 1 To colPageContents.Count
+        lngPageObject = lngFirstPageObject + ((lngPage - 1) * 2)
+        lngContentObject = lngPageObject + 1
+
+        If Len(strKids) > 0 Then
+            strKids = strKids & " "
+        End If
+        strKids = strKids & CStr(lngPageObject) & " 0 R"
+
+        strPageResources = "<< /Font << /F0 3 0 R /F1 4 0 R >>"
+        If lngPage = 1 Then
+            strPageResources = strPageResources & " /XObject << /Im0 " & CStr(lngImageObject) & " 0 R >>"
+        End If
+        strPageResources = strPageResources & " >>"
+
+        arrObjects(lngPageObject) = _
+            "<< /Type /Page /Parent 2 0 R " & _
+            "/MediaBox [0 0 1368 684] /CropBox [0 0 1368 684] /Rotate 0 " & _
+            "/Resources " & strPageResources & _
+            " /Contents " & CStr(lngContentObject) & " 0 R >>"
+
+        arrObjects(lngContentObject) = _
+            "<< /Length " & CStr(Len(CStr(colPageContents(lngPage)))) & " >>" & vbCrLf & _
+            "stream" & vbCrLf & _
+            CStr(colPageContents(lngPage)) & _
+            "endstream"
+    Next lngPage
+
+    arrObjects(2) = _
+        "<< /Type /Pages /Count " & CStr(colPageContents.Count) & _
+        " /Kids [" & strKids & "] >>"
+
+    strDocument = PDF_HEADER & vbCrLf & "% Tradeversand Oracle-compatible raw PDF" & vbCrLf
+
+    For lngObject = 1 To lngObjectCount
+        arrOffsets(lngObject) = Len(strDocument)
+        strDocument = strDocument & _
+            CStr(lngObject) & " 0 obj" & vbCrLf & _
+            arrObjects(lngObject) & vbCrLf & _
+            "endobj" & vbCrLf
+    Next lngObject
+
+    lngStartXref = Len(strDocument)
+    strDocument = strDocument & _
+        "xref" & vbCrLf & _
+        "0 " & CStr(lngObjectCount + 1) & vbCrLf & _
+        "0000000000 65535 f" & vbCrLf
+
+    For lngObject = 1 To lngObjectCount
+        strDocument = strDocument & _
+            Format$(arrOffsets(lngObject), "0000000000") & " 00000 n" & vbCrLf
+    Next lngObject
+
+    strDocument = strDocument & _
+        "trailer" & vbCrLf & _
+        "<< /Size " & CStr(lngObjectCount + 1) & " /Root 1 0 R >>" & vbCrLf & _
+        "startxref" & vbCrLf & _
+        CStr(lngStartXref) & vbCrLf & _
+        "%%EOF" & vbCrLf
+
+    BuildPdfDocument = True
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildPdfDocument = False
+    strDocument = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "objectCount", _
+        lngObjectCount
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    targetPath As String
+' Returns:       Boolean
+' Description:   Checks that the generated file begins with the PDF 1.4 header.
+'-------------------------------------------------------------------------------
+Private Function HasPdf14Header(ByVal targetPath As String) As Boolean
+    Const METHOD_NAME As String = "HasPdf14Header"
+    Dim arrHeader(0 To 7) As Byte
+    Dim blnFileOpened As Boolean
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngFileNumber As Long
+    Dim strHeader As String
+
+    On Error GoTo ErrorHandler
+
+    HasPdf14Header = False
+
+    lngFileNumber = FreeFile
+    Open targetPath For Binary Access Read Lock Read As #lngFileNumber
+    blnFileOpened = True
+    Get #lngFileNumber, 1, arrHeader
+    Close #lngFileNumber
+    blnFileOpened = False
+
+    strHeader = StrConv(arrHeader, vbUnicode)
+    HasPdf14Header = (Left$(strHeader, 8) = PDF_HEADER)
+
+ExitFunction:
+    If blnFileOpened Then
+        On Error Resume Next
+        Close #lngFileNumber
+        On Error GoTo 0
+    End If
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    HasPdf14Header = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "targetPath", _
+        targetPath
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    dblValue As Double
+' Returns:       String
+' Description:   Formats a PDF number with a dot decimal separator.
+'-------------------------------------------------------------------------------
+Private Function PdfNumber(ByVal dblValue As Double) As String
+    Const METHOD_NAME As String = "PdfNumber"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    PdfNumber = Replace(Format$(dblValue, "0.##"), ",", ".")
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    PdfNumber = "0"
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
