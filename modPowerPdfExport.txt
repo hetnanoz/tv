@@ -1740,7 +1740,11 @@ Private Function ValidatePowerPdfConfiguration(ByRef strValidationError As Strin
         CLIENT_PDF_PREFLIGHT_TIMEOUT_SECONDS)
 
     If Len(strPreflightPdfPath) = 0 Then
-        Err.Raise 1014, METHOD_NAME, "Power PDF preflight output was not created."
+        Err.Raise 1014, METHOD_NAME, _
+                  "Power PDF did not save the preflight automatically. " & _
+                  "In global Power PDF Printing Preferences set Destination > Naming Method to " & _
+                  "'Save in named folder; auto-name file', set the folder to " & _
+                  gstrStagingFolder & ", and disable View Resulting PDF."
     End If
 
     If Not IsClientPdfCompatible(strPreflightPdfPath, strValidationDetails) Then
