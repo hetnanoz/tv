@@ -51,8 +51,16 @@ Private Const ORACLE_KAUF_TEXT_X As Double = 362.24
 Private Const ORACLE_VERKAUF_TEXT_X As Double = 357#
 Private Const TOP_FIELD_GESCHAEFTSART_INDEX As Long = 2
 Private Const TOP_FIELD_SECURITY_DESCRIPTION_INDEX As Long = 7
+Private Const TOP_FIELD_NOMINALE_INDEX As Long = 8
+Private Const TOP_FIELD_WHG_INDEX As Long = 9
+Private Const BOTTOM_FIELD_WHG_MAKLER_INDEX As Long = 2
+Private Const BOTTOM_FIELD_WHG_STEUERN_INDEX As Long = 4
+Private Const BOTTOM_FIELD_WHG_ABWICKLUNG_INDEX As Long = 6
 Private Const BOTTOM_FIELD_SPESEN_INDEX As Long = 7
+Private Const BOTTOM_FIELD_WHG_SPESEN_INDEX As Long = 8
 Private Const BOTTOM_FIELD_ABRECH_AMOUNT_INDEX As Long = 10
+Private Const BOTTOM_FIELD_WHG_ABRECH_INDEX As Long = 11
+Private Const BOTTOM_FIELD_DEVISENKURS_INDEX As Long = 12
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -1128,11 +1136,18 @@ Private Function BuildCellContent( _
             lngFieldIndex, _
             dblFixedTextX)
 
-        lngAlignment = ResolveCellAlignment(rngSource, strText)
+        lngAlignment = ResolveOracleDataAlignment( _
+            rngSource, _
+            strText, _
+            blnTopTransactionRow, _
+            lngFieldIndex)
+
         strText = ApplyOracleNumericFieldPadding( _
             rngSource, _
             strText, _
-            lngAlignment)
+            lngAlignment, _
+            blnTopTransactionRow, _
+            lngFieldIndex)
     End If
 
     If Len(strText) = 0 Then
@@ -1890,14 +1905,18 @@ End Function
 Private Function ApplyOracleNumericFieldPadding( _
     ByVal rngSource As Excel.Range, _
     ByVal strText As String, _
-    ByVal lngAlignment As Long) As String
+    ByVal lngAlignment As Long, _
+    ByVal blnTopTransactionRow As Boolean, _
+    ByVal lngFieldIndex As Long) As String
 
     Const METHOD_NAME As String = "ApplyOracleNumericFieldPadding"
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
+    Dim lngLeadingSpaces As Long
     Dim rngValue As Excel.Range
     Dim strCoreText As String
+    Dim strTrailingText As String
 
     On Error GoTo ErrorHandler
 
@@ -1913,13 +1932,16 @@ Private Function ApplyOracleNumericFieldPadding( _
         Set rngValue = rngSource.MergeArea.Cells(1, 1)
     End If
 
-    If IsDate(rngValue.Value) Then
+    If IsDate(rngValue.Value) Or Not IsNumeric(rngValue.Value) Then
         GoTo ExitFunction
     End If
 
-    If Not IsNumeric(rngValue.Value) Then
-        GoTo ExitFunction
-    End If
+    ' Keep any deliberate Oracle trailing whitespace, e.g. Devisenkurs.
+    strTrailingText = vbNullString
+    Do While Len(strText) > 0 And Right$(strText, 1) = " "
+        strTrailingText = strTrailingText & " "
+        strText = Left$(strText, Len(strText) - 1)
+    Loop
 
     strCoreText = LTrim$(strText)
 
@@ -1927,8 +1949,15 @@ Private Function ApplyOracleNumericFieldPadding( _
         GoTo ExitFunction
     End If
 
+    lngLeadingSpaces = ORACLE_NUMERIC_LEADING_SPACES
+
+    If blnTopTransactionRow And _
+       lngFieldIndex = TOP_FIELD_NOMINALE_INDEX Then
+        lngLeadingSpaces = ORACLE_NUMERIC_LEADING_SPACES + 1
+    End If
+
     ApplyOracleNumericFieldPadding = _
-        Space$(ORACLE_NUMERIC_LEADING_SPACES) & strCoreText
+        Space$(lngLeadingSpaces) & strCoreText & strTrailingText
 
 ExitFunction:
     Set rngValue = Nothing
@@ -1943,7 +1972,120 @@ ErrorHandler:
         CLASS_NAME, _
         METHOD_NAME, _
         errNumber, _
-        errDescription
+        errDescription, _
+        "alignment;topTransactionRow;fieldIndex;text", _
+        lngAlignment, _
+        blnTopTransactionRow, _
+        lngFieldIndex, _
+        strText
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    rngSource As Excel.Range, strText As String, blnTopTransactionRow As Boolean, lngFieldIndex As Long
+' Returns:       Long
+' Description:   Resolves Oracle data alignment; all Whg fields are centered.
+'-------------------------------------------------------------------------------
+Private Function ResolveOracleDataAlignment( _
+    ByVal rngSource As Excel.Range, _
+    ByVal strText As String, _
+    ByVal blnTopTransactionRow As Boolean, _
+    ByVal lngFieldIndex As Long) As Long
+
+    Const METHOD_NAME As String = "ResolveOracleDataAlignment"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If IsOracleCurrencyField( _
+        blnTopTransactionRow, _
+        lngFieldIndex) Then
+
+        ResolveOracleDataAlignment = xlCenter
+    Else
+        ResolveOracleDataAlignment = ResolveCellAlignment( _
+            rngSource, _
+            strText)
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ResolveOracleDataAlignment = ResolveCellAlignment(rngSource, strText)
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "topTransactionRow;fieldIndex;text", _
+        blnTopTransactionRow, _
+        lngFieldIndex, _
+        strText
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    blnTopTransactionRow As Boolean, lngFieldIndex As Long
+' Returns:       Boolean
+' Description:   Identifies Oracle Whg data fields in both transaction rows.
+'-------------------------------------------------------------------------------
+Private Function IsOracleCurrencyField( _
+    ByVal blnTopTransactionRow As Boolean, _
+    ByVal lngFieldIndex As Long) As Boolean
+
+    Const METHOD_NAME As String = "IsOracleCurrencyField"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    IsOracleCurrencyField = False
+
+    If blnTopTransactionRow Then
+        IsOracleCurrencyField = (lngFieldIndex = TOP_FIELD_WHG_INDEX)
+    Else
+        Select Case lngFieldIndex
+            Case BOTTOM_FIELD_WHG_MAKLER_INDEX, _
+                 BOTTOM_FIELD_WHG_STEUERN_INDEX, _
+                 BOTTOM_FIELD_WHG_ABWICKLUNG_INDEX, _
+                 BOTTOM_FIELD_WHG_SPESEN_INDEX, _
+                 BOTTOM_FIELD_WHG_ABRECH_INDEX
+
+                IsOracleCurrencyField = True
+        End Select
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    IsOracleCurrencyField = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "topTransactionRow;fieldIndex", _
+        blnTopTransactionRow, _
+        lngFieldIndex
 
     errorManager.save
     Resume ExitFunction
@@ -2035,12 +2177,7 @@ Private Function NormalizeOracleFieldDisplayText( _
 
     NormalizeOracleFieldDisplayText = strText
 
-    If blnTopTransactionRow Then
-        GoTo ExitFunction
-    End If
-
-    If lngFieldIndex <> BOTTOM_FIELD_SPESEN_INDEX And _
-       lngFieldIndex <> BOTTOM_FIELD_ABRECH_AMOUNT_INDEX Then
+    If Len(strText) = 0 Then
         GoTo ExitFunction
     End If
 
@@ -2058,7 +2195,11 @@ Private Function NormalizeOracleFieldDisplayText( _
         GoTo ExitFunction
     End If
 
-    strResult = LTrim$(strText)
+    ' Oracle display rule: preserve the worksheet's thousands separator and
+    ' decimal separator, but remove non-significant zeroes at the end of the
+    ' fractional part. This is PDF-only formatting; source values are untouched.
+    strResult = Trim$(strText)
+
     lngDotPosition = InStrRev(strResult, ".")
     lngCommaPosition = InStrRev(strResult, ",")
 
@@ -2068,16 +2209,22 @@ Private Function NormalizeOracleFieldDisplayText( _
         lngDecimalPosition = lngCommaPosition
     End If
 
-    If lngDecimalPosition <= 0 Then
-        GoTo ExitFunction
+    If lngDecimalPosition > 0 Then
+        Do While Len(strResult) > lngDecimalPosition And _
+                 Right$(strResult, 1) = "0"
+            strResult = Left$(strResult, Len(strResult) - 1)
+        Loop
+
+        If Len(strResult) = lngDecimalPosition Then
+            strResult = Left$(strResult, lngDecimalPosition - 1)
+        End If
     End If
 
-    Do While Len(strResult) > lngDecimalPosition And Right$(strResult, 1) = "0"
-        strResult = Left$(strResult, Len(strResult) - 1)
-    Loop
-
-    If Len(strResult) = lngDecimalPosition Then
-        strResult = Left$(strResult, lngDecimalPosition - 1)
+    ' OLD Oracle whitespace audit shows a recurring one-character trailing
+    ' whitespace family. Visually it corresponds to Devisenkurs values.
+    If Not blnTopTransactionRow And _
+       lngFieldIndex = BOTTOM_FIELD_DEVISENKURS_INDEX Then
+        strResult = strResult & " "
     End If
 
     NormalizeOracleFieldDisplayText = strResult
@@ -2932,9 +3079,8 @@ Private Function GetTopDataTextX() As Variant
     ' 5 WKN, 6 ISIN, 7 Wertpapierbezeichnung, 8 Nominale/Stuecke,
     ' 9 Whg, 10 Kurs, 11 Stueckzinsen.
     '
-    ' Only coordinates directly supported by the OLD-vs-NEW forensic audit are
-    ' fixed here. Other fields stay at -1 and continue to use normal alignment,
-    ' so different input values are not hardcoded.
+    ' Only non-currency coordinates directly supported by OLD-vs-NEW audit
+    ' are fixed here. Whg fields stay dynamic and are centered by field role.
     GetTopDataTextX = Array( _
         -1#, _
         -1#, _
@@ -2945,7 +3091,7 @@ Private Function GetTopDataTextX() As Variant
         -1#, _
         -1#, _
         -1#, _
-        1031.24, _
+        -1#, _
         -1#, _
         -1#)
 
@@ -2977,9 +3123,8 @@ Private Function GetBottomDataTextX() As Variant
 
     On Error GoTo ErrorHandler
 
-    ' Indexes follow GetBottomSourceColumns(). The Whg field immediately before
-    ' Devisenkurs is anchored to the OLD Oracle coordinate. All other fields
-    ' remain content-dependent to support different transaction inputs.
+    ' Indexes follow GetBottomSourceColumns(). All Whg fields remain dynamic
+    ' and are centered by Oracle field role; no currency text is hardcoded.
     GetBottomDataTextX = Array( _
         -1#, _
         -1#, _
@@ -2992,7 +3137,7 @@ Private Function GetBottomDataTextX() As Variant
         -1#, _
         -1#, _
         -1#, _
-        1184.24, _
+        -1#, _
         -1#)
 
 ExitFunction:
