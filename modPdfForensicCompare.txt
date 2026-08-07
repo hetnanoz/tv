@@ -62,6 +62,7 @@ Private Type tPdfPage
     RotateValue As String
     FontDictionary As String
     ResolvedFonts As String
+    FontForensicSignature As String
     ContentFilters As String
     ContentText As String
     ContentLength As Long
@@ -226,7 +227,7 @@ Public Sub RunPdfComparisonBrowse()
 
     MsgBox _
         "Oracle clone audit completed." & vbCrLf & vbCrLf & _
-        "SEND / SCREENSHOT THIS FILE (V9 focused fields):" & vbCrLf & strBreaksSummaryPath & vbCrLf & vbCrLf & _
+        "SEND / SCREENSHOT THIS FILE (V10 font forensics):" & vbCrLf & strBreaksSummaryPath & vbCrLf & vbCrLf & _
         "Full remaining breaks:" & vbCrLf & strBreaksPath & vbCrLf & vbCrLf & _
         "Main audit:" & vbCrLf & strAuditPath & vbCrLf & vbCrLf & _
         "Detailed vector comparison:" & vbCrLf & strDetailPath, _
@@ -2406,6 +2407,7 @@ Private Sub ParsePage( _
         .RotateValue = DictValue(strDictionary, "/Rotate")
         .FontDictionary = DictValue(strDictionary, "/Font")
         .ResolvedFonts = ResolvePageFontSignature(strDictionary)
+        .FontForensicSignature = ResolvePageFontForensicSignature(strDictionary)
         .ContentFilters = PageContentFilterSignature(strDictionary)
         .ContentText = strContent
         .ContentLength = Len(strContent)
@@ -6120,6 +6122,437 @@ End Function
 ' Returns:       String
 ' Description:   Resolves page font resource names to BaseFont, subtype, and encoding without object-number noise.
 '-------------------------------------------------------------------------------
+ '-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pageDictionary As String
+' Returns:       String
+' Description:   Captures detailed page font resources including embedding and widths fingerprints.
+'-------------------------------------------------------------------------------
+Private Function ResolvePageFontForensicSignature(ByVal pageDictionary As String) As String
+
+    Const METHOD_NAME As String = "ResolvePageFontForensicSignature"
+    Dim arrReferences() As String
+    Dim arrTokens() As String
+    Dim dictFonts As Object
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngFontObject As Long
+    Dim lngIndex As Long
+    Dim lngObjectIndex As Long
+    Dim strBaseFont As String
+    Dim strDescriptor As String
+    Dim strEncoding As String
+    Dim strFirstChar As String
+    Dim strFontDictionary As String
+    Dim strFontObjectDictionary As String
+    Dim strFontRefs As String
+    Dim strLastChar As String
+    Dim strResourceName As String
+    Dim strSubtype As String
+    Dim strWidths As String
+    Dim strWorking As String
+
+    On Error GoTo ErrorHandler
+
+    Set dictFonts = CreateObject("Scripting.Dictionary")
+
+    strFontDictionary = DictValue(pageDictionary, "/Font")
+    If strFontDictionary = "(absent)" Then
+        ResolvePageFontForensicSignature = "(none)"
+        GoTo ExitFunction
+    End If
+
+    If InStr(1, strFontDictionary, " R", vbBinaryCompare) = 0 Then
+        strFontRefs = RefList(pageDictionary, "/Font")
+        If Len(strFontRefs) > 0 Then
+            arrReferences = Split(strFontRefs, ",")
+            lngObjectIndex = IndexOfObject(CLng(arrReferences(0)))
+            If lngObjectIndex >= 0 Then
+                strFontDictionary = ObjectDict(m_objPos(lngObjectIndex))
+            End If
+        End If
+    End If
+
+    strWorking = Replace(strFontDictionary, "<<", " ")
+    strWorking = Replace(strWorking, ">>", " ")
+    strWorking = Replace(strWorking, vbCr, " ")
+    strWorking = Replace(strWorking, vbLf, " ")
+
+    Do While InStr(1, strWorking, "  ", vbBinaryCompare) > 0
+        strWorking = Replace(strWorking, "  ", " ")
+    Loop
+
+    arrTokens = Split(Trim$(strWorking), " ")
+
+    For lngIndex = LBound(arrTokens) To UBound(arrTokens) - 3
+        If Left$(arrTokens(lngIndex), 1) = "/" Then
+            If IsNumeric(arrTokens(lngIndex + 1)) And _
+               arrTokens(lngIndex + 3) = "R" Then
+
+                strResourceName = arrTokens(lngIndex)
+
+                If Left$(strResourceName, 2) = "/F" Then
+                    lngFontObject = CLng(arrTokens(lngIndex + 1))
+                    lngObjectIndex = IndexOfObject(lngFontObject)
+
+                    If lngObjectIndex >= 0 Then
+                        strFontObjectDictionary = ObjectDict(m_objPos(lngObjectIndex))
+                        strBaseFont = DictValue(strFontObjectDictionary, "/BaseFont")
+                        strSubtype = DictValue(strFontObjectDictionary, "/Subtype")
+                        strEncoding = DictValue(strFontObjectDictionary, "/Encoding")
+                        strFirstChar = DictValue(strFontObjectDictionary, "/FirstChar")
+                        strLastChar = DictValue(strFontObjectDictionary, "/LastChar")
+                        strWidths = FontWidthsForensicSignature(strFontObjectDictionary)
+                        strDescriptor = FontDescriptorForensicSignature(strFontObjectDictionary)
+
+                        dictFonts(strResourceName) = _
+                            strResourceName & _
+                            "|obj=" & CStr(lngFontObject) & _
+                            "|base=" & strBaseFont & _
+                            "|subtype=" & strSubtype & _
+                            "|encoding=" & strEncoding & _
+                            "|first=" & strFirstChar & _
+                            "|last=" & strLastChar & _
+                            "|widths=" & strWidths & _
+                            "|descriptor=" & strDescriptor
+                    End If
+                End If
+            End If
+        End If
+    Next lngIndex
+
+    ResolvePageFontForensicSignature = DictionaryEntrySignature(dictFonts)
+
+    If Len(ResolvePageFontForensicSignature) = 0 Then
+        ResolvePageFontForensicSignature = "(unresolved)"
+    End If
+
+ExitFunction:
+    Set dictFonts = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ResolvePageFontForensicSignature = "(error)"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    fontObjectDictionary As String
+' Returns:       String
+' Description:   Returns a compact widths-array fingerprint without depending on object numbers.
+'-------------------------------------------------------------------------------
+Private Function FontWidthsForensicSignature(ByVal fontObjectDictionary As String) As String
+
+    Const METHOD_NAME As String = "FontWidthsForensicSignature"
+    Dim arrReferences() As String
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngObjectIndex As Long
+    Dim strNormalized As String
+    Dim strReferences As String
+    Dim strWidthsObject As String
+
+    On Error GoTo ErrorHandler
+
+    If InStr(1, fontObjectDictionary, "/Widths", vbBinaryCompare) = 0 Then
+        FontWidthsForensicSignature = "absent"
+        GoTo ExitFunction
+    End If
+
+    strReferences = RefList(fontObjectDictionary, "/Widths")
+
+    If Len(strReferences) > 0 Then
+        arrReferences = Split(strReferences, ",")
+        lngObjectIndex = IndexOfObject(CLng(arrReferences(0)))
+
+        If lngObjectIndex >= 0 Then
+            strWidthsObject = ObjectDict(m_objPos(lngObjectIndex))
+        End If
+    Else
+        strWidthsObject = DictValue(fontObjectDictionary, "/Widths")
+    End If
+
+    strNormalized = NormalizePdfValue(strWidthsObject)
+
+    FontWidthsForensicSignature = _
+        "chars=" & CStr(Len(strNormalized)) & _
+        ",sum=" & FontTextChecksum(strNormalized)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    FontWidthsForensicSignature = "error"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    textValue As String
+' Returns:       String
+' Description:   Returns a deterministic lightweight checksum for diagnostic text.
+'-------------------------------------------------------------------------------
+Private Function FontTextChecksum(ByVal textValue As String) As String
+
+    Const METHOD_NAME As String = "FontTextChecksum"
+    Dim dblChecksum As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+
+    On Error GoTo ErrorHandler
+
+    dblChecksum = 0#
+
+    For lngIndex = 1 To Len(textValue)
+        dblChecksum = _
+            (dblChecksum + (CDbl(AscW(Mid$(textValue, lngIndex, 1))) * CDbl(lngIndex))) Mod 1000000007#
+    Next lngIndex
+
+    FontTextChecksum = Format$(dblChecksum, "0")
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    FontTextChecksum = "error"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "length", _
+        Len(textValue)
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    fontObjectDictionary As String
+' Returns:       String
+' Description:   Captures descriptor metrics and embedded font-program presence/stream size.
+'-------------------------------------------------------------------------------
+Private Function FontDescriptorForensicSignature(ByVal fontObjectDictionary As String) As String
+
+    Const METHOD_NAME As String = "FontDescriptorForensicSignature"
+    Dim arrReferences() As String
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngObjectIndex As Long
+    Dim strDescriptorDictionary As String
+    Dim strReferences As String
+
+    On Error GoTo ErrorHandler
+
+    strReferences = RefList(fontObjectDictionary, "/FontDescriptor")
+
+    If Len(strReferences) = 0 Then
+        FontDescriptorForensicSignature = "absent"
+        GoTo ExitFunction
+    End If
+
+    arrReferences = Split(strReferences, ",")
+    lngObjectIndex = IndexOfObject(CLng(arrReferences(0)))
+
+    If lngObjectIndex < 0 Then
+        FontDescriptorForensicSignature = "unresolved"
+        GoTo ExitFunction
+    End If
+
+    strDescriptorDictionary = ObjectDict(m_objPos(lngObjectIndex))
+
+    FontDescriptorForensicSignature = _
+        "fontName=" & DictValue(strDescriptorDictionary, "/FontName") & _
+        ",flags=" & DictValue(strDescriptorDictionary, "/Flags") & _
+        ",bbox=" & DictValue(strDescriptorDictionary, "/FontBBox") & _
+        ",italic=" & DictValue(strDescriptorDictionary, "/ItalicAngle") & _
+        ",ascent=" & DictValue(strDescriptorDictionary, "/Ascent") & _
+        ",descent=" & DictValue(strDescriptorDictionary, "/Descent") & _
+        ",capHeight=" & DictValue(strDescriptorDictionary, "/CapHeight") & _
+        ",stemV=" & DictValue(strDescriptorDictionary, "/StemV") & _
+        ",missingWidth=" & DictValue(strDescriptorDictionary, "/MissingWidth") & _
+        ",fontFile=" & FontProgramForensicSignature(strDescriptorDictionary)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    FontDescriptorForensicSignature = "error"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    descriptorDictionary As String
+' Returns:       String
+' Description:   Reports FontFile/FontFile2/FontFile3 stream presence, size, filter and subtype.
+'-------------------------------------------------------------------------------
+Private Function FontProgramForensicSignature(ByVal descriptorDictionary As String) As String
+
+    Const METHOD_NAME As String = "FontProgramForensicSignature"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strResult As String
+
+    On Error GoTo ErrorHandler
+
+    strResult = FontProgramKeySignature(descriptorDictionary, "/FontFile")
+
+    If Len(strResult) = 0 Then
+        strResult = FontProgramKeySignature(descriptorDictionary, "/FontFile2")
+    End If
+
+    If Len(strResult) = 0 Then
+        strResult = FontProgramKeySignature(descriptorDictionary, "/FontFile3")
+    End If
+
+    If Len(strResult) = 0 Then
+        strResult = "absent"
+    End If
+
+    FontProgramForensicSignature = strResult
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    FontProgramForensicSignature = "error"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    descriptorDictionary As String, keyName As String
+' Returns:       String
+' Description:   Returns one embedded font-program stream signature.
+'-------------------------------------------------------------------------------
+Private Function FontProgramKeySignature( _
+    ByVal descriptorDictionary As String, _
+    ByVal keyName As String) As String
+
+    Const METHOD_NAME As String = "FontProgramKeySignature"
+    Dim arrReferences() As String
+    Dim dataEnd As Long
+    Dim dataStart As Long
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngObjectIndex As Long
+    Dim lngStreamLength As Long
+    Dim strDictionary As String
+    Dim strReferences As String
+
+    On Error GoTo ErrorHandler
+
+    FontProgramKeySignature = vbNullString
+    strReferences = RefList(descriptorDictionary, keyName)
+
+    If Len(strReferences) = 0 Then
+        GoTo ExitFunction
+    End If
+
+    arrReferences = Split(strReferences, ",")
+    lngObjectIndex = IndexOfObject(CLng(arrReferences(0)))
+
+    If lngObjectIndex < 0 Then
+        FontProgramKeySignature = keyName & ":unresolved"
+        GoTo ExitFunction
+    End If
+
+    strDictionary = ObjectDict(m_objPos(lngObjectIndex))
+
+    If StreamBounds(m_objPos(lngObjectIndex), dataStart, dataEnd) Then
+        lngStreamLength = dataEnd - dataStart + 1
+    Else
+        lngStreamLength = 0
+    End If
+
+    FontProgramKeySignature = _
+        keyName & _
+        ":bytes=" & CStr(lngStreamLength) & _
+        ",filter=" & DictValue(strDictionary, "/Filter") & _
+        ",subtype=" & DictValue(strDictionary, "/Subtype") & _
+        ",length1=" & DictValue(strDictionary, "/Length1") & _
+        ",length2=" & DictValue(strDictionary, "/Length2") & _
+        ",length3=" & DictValue(strDictionary, "/Length3")
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    FontProgramKeySignature = keyName & ":error"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "keyName", _
+        keyName
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
 Private Function ResolvePageFontSignature(ByVal pageDictionary As String) As String
     Const METHOD_NAME As String = "ResolvePageFontSignature"
     Dim errorManager As New ErrorManager
@@ -6931,7 +7364,7 @@ Private Sub WriteBreaksExecutiveSummary( _
     '-----------------------------------------------------------------------
     lngFileOut = OpenNew(outputPath)
 
-    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V7_FOCUSED_FIELDS")
+    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V8_FONT_FORENSICS")
     Call EmitLine(lngFileOut, "OLD|" & oldDoc.PdfPath)
     Call EmitLine(lngFileOut, "NEW|" & newDoc.PdfPath)
     Call EmitLine(lngFileOut, _
@@ -6964,6 +7397,15 @@ Private Sub WriteBreaksExecutiveSummary( _
         "|geometryOrCrossingEvents=" & CStr(lngTargetGeometry))
     Call EmitLine(lngFileOut, _
         "INPUT_CONTAMINATION|tradeMismatchPages=" & CStr(lngTradeMismatchPages))
+
+    Call EmitLine(lngFileOut, vbNullString)
+    Call EmitLine(lngFileOut, "============================================================")
+    Call EmitLine(lngFileOut, "FONT_RESOURCE_FORENSICS")
+    Call EmitLine(lngFileOut, "============================================================")
+    Call BreaksWriteFontResourceForensics( _
+        oldDoc, _
+        newDoc, _
+        lngFileOut)
 
     Call EmitLine(lngFileOut, vbNullString)
     Call EmitLine(lngFileOut, "============================================================")
@@ -8073,6 +8515,133 @@ End Function
 ' Returns:       ---
 ' Description:   Writes compact OLD/NEW details for numeric and Whg fields even when the normal break summary omits them.
 '-------------------------------------------------------------------------------
+ '-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDoc As tPdfDocument, newDoc As tPdfDocument, fileNumber As Long
+' Returns:       ---
+' Description:   Writes page-1 F0/F1/F2 font resource internals for direct OLD/NEW comparison.
+'-------------------------------------------------------------------------------
+Private Sub BreaksWriteFontResourceForensics( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal fileNumber As Long)
+
+    Const METHOD_NAME As String = "BreaksWriteFontResourceForensics"
+    Dim arrAliases As Variant
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim strAlias As String
+    Dim strNew As String
+    Dim strOld As String
+
+    On Error GoTo ErrorHandler
+
+    If oldDoc.PageCount < 1 Or newDoc.PageCount < 1 Then
+        GoTo ExitSub
+    End If
+
+    arrAliases = Array("/F0", "/F1", "/F2")
+
+    For lngIndex = LBound(arrAliases) To UBound(arrAliases)
+        strAlias = CStr(arrAliases(lngIndex))
+        strOld = BreaksFontForensicEntry( _
+            oldDoc.Pages(1).FontForensicSignature, _
+            strAlias)
+        strNew = BreaksFontForensicEntry( _
+            newDoc.Pages(1).FontForensicSignature, _
+            strAlias)
+
+        Call EmitLine(fileNumber, _
+            "FONT_FORENSIC|alias=" & strAlias & _
+            "|OLD=" & strOld & _
+            "|NEW=" & strNew & _
+            "|exact=" & BoolText(strOld = strNew))
+    Next lngIndex
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    signature As String, aliasName As String
+' Returns:       String
+' Description:   Extracts one alias entry from a semicolon-delimited forensic signature.
+'-------------------------------------------------------------------------------
+Private Function BreaksFontForensicEntry( _
+    ByVal signature As String, _
+    ByVal aliasName As String) As String
+
+    Const METHOD_NAME As String = "BreaksFontForensicEntry"
+    Dim arrEntries() As String
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim strEntry As String
+
+    On Error GoTo ErrorHandler
+
+    BreaksFontForensicEntry = "(missing)"
+
+    If Len(signature) = 0 Then
+        GoTo ExitFunction
+    End If
+
+    arrEntries = Split(signature, ";")
+
+    For lngIndex = LBound(arrEntries) To UBound(arrEntries)
+        strEntry = Trim$(arrEntries(lngIndex))
+
+        If Left$(strEntry, Len(aliasName) + 1) = aliasName & "=" Or _
+           Left$(strEntry, Len(aliasName) + 1) = aliasName & "|" Then
+
+            If Left$(strEntry, Len(aliasName) + 1) = aliasName & "=" Then
+                strEntry = aliasName & "|" & Mid$(strEntry, Len(aliasName) + 2)
+            End If
+
+            BreaksFontForensicEntry = strEntry
+            Exit For
+        End If
+    Next lngIndex
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksFontForensicEntry = "(error)"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "aliasName", _
+        aliasName
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
 Private Sub BreaksWriteFocusedFieldDiagnostics( _
     ByRef oldDoc As tPdfDocument, _
     ByRef newDoc As tPdfDocument, _
