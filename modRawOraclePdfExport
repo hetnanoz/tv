@@ -2269,20 +2269,12 @@ Private Function ResolveOracleDataFontResource( _
 
     On Error GoTo ErrorHandler
 
-    ResolveOracleDataFontResource = "/F2"
-
-    If blnTopTransactionRow Then
-        If lngFieldIndex = TOP_FIELD_WHG_INDEX Then
-            ResolveOracleDataFontResource = "/F1"
-        End If
-    Else
-        If IsOracleCurrencyField(False, lngFieldIndex) Or _
-           lngFieldIndex = BOTTOM_FIELD_SPESEN_INDEX Or _
-           lngFieldIndex = BOTTOM_FIELD_DEVISENKURS_INDEX Then
-
-            ResolveOracleDataFontResource = "/F1"
-        End If
-    End If
+    ' V10 FONT_RESOURCE_FORENSICS decoded the OLD Oracle page resources:
+    '   /F0 = Times-Bold
+    '   /F1 = Times-Roman
+    '   /F2 = absent on the audited data page
+    ' Therefore all normal data text uses /F1. Font size remains field-specific.
+    ResolveOracleDataFontResource = "/F1"
 
 ExitFunction:
     Exit Function
@@ -2290,7 +2282,7 @@ ExitFunction:
 ErrorHandler:
     errNumber = VBA.Err.Number
     errDescription = VBA.Err.Description
-    ResolveOracleDataFontResource = "/F2"
+    ResolveOracleDataFontResource = "/F1"
 
     errorManager.addError _
         CLASS_NAME, _
@@ -2327,7 +2319,7 @@ Private Function ResolveOracleNumericLeadingSpaces( _
 
     If blnTopTransactionRow Then
         If lngFieldIndex = TOP_FIELD_NOMINALE_INDEX Then
-            ResolveOracleNumericLeadingSpaces = 4
+            ResolveOracleNumericLeadingSpaces = 3
         End If
     Else
         Select Case lngFieldIndex
@@ -4353,10 +4345,10 @@ Private Function BuildPdfDocument( _
 
     arrObjects(1) = "<< /Type /Catalog /Pages 2 0 R >>"
     arrObjects(3) = "<< /Type /Font /Subtype /Type1 /BaseFont /#54#69#6D#65#73#2D#42#6F#6C#64 /Encoding /WinAnsiEncoding >>"
-    arrObjects(4) = _
-        "<< /Type /Font /Subtype /Type1 /BaseFont /#41#72#69#61#6C#2D#42#6F#6C#64 " & _
-        "/FirstChar 32 /LastChar 255 /Widths 6 0 R /FontDescriptor 7 0 R " & _
-        "/Encoding /WinAnsiEncoding >>"
+    ' V10 forensic audit: OLD Oracle /F1 is Base14 Times-Roman with no
+    ' explicit Widths/FontDescriptor. The previous Arial-Bold mapping caused
+    ' visually bold Whg, Spesen and Devisenkurs despite matching alias/XY.
+    arrObjects(4) = "<< /Type /Font /Subtype /Type1 /BaseFont /#54#69#6D#65#73#2D#52#6F#6D#61#6E /Encoding /WinAnsiEncoding >>"
     arrObjects(5) = "<< /Type /Font /Subtype /Type1 /BaseFont /#54#69#6D#65#73#2D#52#6F#6D#61#6E /Encoding /WinAnsiEncoding >>"
     arrObjects(6) = GetArialBoldWidthsArray()
     arrObjects(7) = _
@@ -4392,7 +4384,7 @@ Private Function BuildPdfDocument( _
         End If
         strKids = strKids & CStr(lngPageObject) & " 0 R"
 
-        strPageResources = "<< /Font << /F0 3 0 R /F1 4 0 R /F2 5 0 R >>"
+        strPageResources = "<< /Font << /F0 3 0 R /F1 4 0 R >>"
 
         If lngPage = 1 Then
             strPageResources = strPageResources & _
