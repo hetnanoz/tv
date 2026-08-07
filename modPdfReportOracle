@@ -45,7 +45,8 @@ Private Const ORACLE_TABLE_RIGHT_X As Double = 1323.04
 Private Const ORACLE_MIN_DATA_ROW_STEP As Double = 16#
 Private Const ORACLE_MAX_DATA_ROW_STEP As Double = 20#
 Private Const ORACLE_GRID_MATCH_TOLERANCE As Double = 1#
-Private Const ORACLE_MAX_TRADES_PER_PAGE As Long = 11
+Private Const ORACLE_FIRST_PAGE_MAX_TRADES As Long = 11
+Private Const ORACLE_CONTINUATION_PAGE_MAX_TRADES As Long = 12
 
 Private Type tHuffman
     Cnt(0 To MAX_BITS) As Long
@@ -1242,7 +1243,7 @@ Private Sub WriteOracleSchemaHeader(ByVal fileNum As Integer, ByVal pdfPath As S
     EmitLine fileNum, "TRADEVERSAND ORACLE PDF SCHEMA V1"
     EmitLine fileNum, "SOURCE|" & pdfPath
     EmitLine fileNum, "UNITS|PDF points|origin=bottom-left"
-    EmitLine fileNum, "EXPECTED|MediaBox=0,0,1368,684|orientation=landscape|maxTradesPerPage=11"
+    EmitLine fileNum, "EXPECTED|MediaBox=0,0,1368,684|orientation=landscape|firstPageMaxTrades=11|continuationPageMaxTrades=12"
     EmitLine fileNum, "EXPECTED_TOP_COLUMNS|12"
     EmitLine fileNum, "EXPECTED_TOP_X|" & OracleJoinDoubles(topX, ORACLE_TOP_COLUMN_COUNT)
     EmitLine fileNum, "EXPECTED_TOP_W|" & OracleJoinDoubles(topW, ORACLE_TOP_COLUMN_COUNT)
@@ -1251,6 +1252,15 @@ Private Sub WriteOracleSchemaHeader(ByVal fileNum As Integer, ByVal pdfPath As S
     EmitLine fileNum, "EXPECTED_BOTTOM_W|" & OracleJoinDoubles(bottomW, ORACLE_BOTTOM_COLUMN_COUNT)
 
 End Sub
+
+Private Function OracleMaxTradesForPage(ByVal pageNo As Long) As Long
+
+    If pageNo = 1 Then
+        OracleMaxTradesForPage = ORACLE_FIRST_PAGE_MAX_TRADES
+    Else
+        OracleMaxTradesForPage = ORACLE_CONTINUATION_PAGE_MAX_TRADES
+    End If
+End Function
 
 Private Function EmitOraclePageSchema(ByVal fileNum As Integer, ByVal pageNo As Long, _
                                       ByVal objNo As Long, ByVal pageDict As String, _
@@ -1386,7 +1396,7 @@ Private Function EmitOraclePageSchema(ByVal fileNum As Integer, ByVal pageNo As 
         InStr(1, topGridCheck, "match=TRUE", vbTextCompare) > 0 And _
         InStr(1, bottomGridCheck, "match=TRUE", vbTextCompare) > 0
     tradePairMatch = (unpairedRows = 0)
-    tradeLimitMatch = (tradeCount <= ORACLE_MAX_TRADES_PER_PAGE)
+    tradeLimitMatch = (tradeCount <= OracleMaxTradesForPage(pageNo))
     footerMatch = (footerFound = footerExpected)
 
     If headerMatch And gridMatch And tradePairMatch And tradeLimitMatch And footerMatch Then
@@ -1399,6 +1409,7 @@ Private Function EmitOraclePageSchema(ByVal fileNum As Integer, ByVal pageNo As 
                            "|grid=" & UCase$(CStr(gridMatch)) & _
                            "|tradePairs=" & UCase$(CStr(tradePairMatch)) & _
                            "|maxTrades=" & UCase$(CStr(tradeLimitMatch)) & _
+                           "|expectedMaxTrades=" & CStr(OracleMaxTradesForPage(pageNo)) & _
                            "|footerExpected=" & UCase$(CStr(footerExpected)) & _
                            "|footerFound=" & UCase$(CStr(footerFound)) & _
                            "|footerMatch=" & UCase$(CStr(footerMatch)) & _
@@ -1414,7 +1425,7 @@ Private Function EmitOraclePageSchema(ByVal fileNum As Integer, ByVal pageNo As 
         EmitLine fileNum, "WARNING|unpaired data baseline detected - possible split or malformed two-row transaction"
     End If
     If Not tradeLimitMatch Then
-        EmitLine fileNum, "WARNING|trade count exceeds expected maximum " & CStr(ORACLE_MAX_TRADES_PER_PAGE)
+        EmitLine fileNum, "WARNING|trade count exceeds expected maximum " & CStr(OracleMaxTradesForPage(pageNo))
     End If
     If Not footerMatch Then
         EmitLine fileNum, "WARNING|footer placement does not match last-page-only Oracle convention"
