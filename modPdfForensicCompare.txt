@@ -227,7 +227,7 @@ Public Sub RunPdfComparisonBrowse()
 
     MsgBox _
         "Oracle clone audit completed." & vbCrLf & vbCrLf & _
-        "SEND / SCREENSHOT THIS FILE (V10 font forensics):" & vbCrLf & strBreaksSummaryPath & vbCrLf & vbCrLf & _
+        "SEND / SCREENSHOT THIS FILE (V11 structural fields):" & vbCrLf & strBreaksSummaryPath & vbCrLf & vbCrLf & _
         "Full remaining breaks:" & vbCrLf & strBreaksPath & vbCrLf & vbCrLf & _
         "Main audit:" & vbCrLf & strAuditPath & vbCrLf & vbCrLf & _
         "Detailed vector comparison:" & vbCrLf & strDetailPath, _
@@ -7364,7 +7364,7 @@ Private Sub WriteBreaksExecutiveSummary( _
     '-----------------------------------------------------------------------
     lngFileOut = OpenNew(outputPath)
 
-    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V8_FONT_FORENSICS")
+    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V9_STRUCTURAL_FIELDS")
     Call EmitLine(lngFileOut, "OLD|" & oldDoc.PdfPath)
     Call EmitLine(lngFileOut, "NEW|" & newDoc.PdfPath)
     Call EmitLine(lngFileOut, _
@@ -7403,6 +7403,15 @@ Private Sub WriteBreaksExecutiveSummary( _
     Call EmitLine(lngFileOut, "FONT_RESOURCE_FORENSICS")
     Call EmitLine(lngFileOut, "============================================================")
     Call BreaksWriteFontResourceForensics( _
+        oldDoc, _
+        newDoc, _
+        lngFileOut)
+
+    Call EmitLine(lngFileOut, vbNullString)
+    Call EmitLine(lngFileOut, "============================================================")
+    Call EmitLine(lngFileOut, "STRUCTURAL_FIELD_FORENSICS")
+    Call EmitLine(lngFileOut, "============================================================")
+    Call BreaksWriteStructuralFieldForensics( _
         oldDoc, _
         newDoc, _
         lngFileOut)
@@ -8638,6 +8647,414 @@ ErrorHandler:
         "aliasName", _
         aliasName
 
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+ '-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDoc As tPdfDocument, newDoc As tPdfDocument, fileNumber As Long
+' Returns:       ---
+' Description:   Groups matched text by the physical Oracle table cell, avoiding value-based role guesses.
+'-------------------------------------------------------------------------------
+Private Sub BreaksWriteStructuralFieldForensics( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal fileNumber As Long)
+
+    Const METHOD_NAME As String = "BreaksWriteStructuralFieldForensics"
+    Dim blnNewUsed() As Boolean
+    Dim dictPatterns As Object
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim lngNewIndex As Long
+    Dim lngPage As Long
+    Dim lngPages As Long
+    Dim strKey As String
+    Dim strRole As String
+
+    On Error GoTo ErrorHandler
+
+    Set dictPatterns = CreateObject("Scripting.Dictionary")
+
+    lngPages = oldDoc.PageCount
+    If newDoc.PageCount < lngPages Then
+        lngPages = newDoc.PageCount
+    End If
+
+    For lngPage = 1 To lngPages
+        If newDoc.TextCount > 0 Then
+            ReDim blnNewUsed(0 To newDoc.TextCount - 1)
+        Else
+            ReDim blnNewUsed(0 To 0)
+        End If
+
+        For lngIndex = 0 To oldDoc.TextCount - 1
+            If oldDoc.Texts(lngIndex).PageNo = lngPage Then
+                strRole = BreaksInferStructuralFieldRole( _
+                    lngPage, _
+                    oldDoc.Texts(lngIndex).X, _
+                    oldDoc.Texts(lngIndex).Y)
+
+                If Len(strRole) > 0 Then
+                    lngNewIndex = FindBreaksExactTextMatch( _
+                        oldDoc, _
+                        newDoc, _
+                        lngIndex, _
+                        lngPage, _
+                        blnNewUsed)
+
+                    If lngNewIndex < 0 Then
+                        lngNewIndex = FindBreaksGeometryTextMatch( _
+                            oldDoc, _
+                            newDoc, _
+                            lngIndex, _
+                            lngPage, _
+                            blnNewUsed)
+                    End If
+
+                    If lngNewIndex >= 0 Then
+                        blnNewUsed(lngNewIndex) = True
+
+                        strKey = _
+                            "role=" & strRole & _
+                            "|font=" & oldDoc.Texts(lngIndex).FontName & "@" & _
+                                NumTxt(oldDoc.Texts(lngIndex).FontSize) & ">" & _
+                                newDoc.Texts(lngNewIndex).FontName & "@" & _
+                                NumTxt(newDoc.Texts(lngNewIndex).FontSize) & _
+                            "|dX=" & NumTxt(newDoc.Texts(lngNewIndex).X - oldDoc.Texts(lngIndex).X) & _
+                            "|dY=" & NumTxt(newDoc.Texts(lngNewIndex).Y - oldDoc.Texts(lngIndex).Y) & _
+                            "|lead=" & CStr(BreaksLeadingSpaceCount(oldDoc.Texts(lngIndex).TextValue)) & ">" & _
+                                CStr(BreaksLeadingSpaceCount(newDoc.Texts(lngNewIndex).TextValue)) & _
+                            "|trail=" & CStr(BreaksTrailingSpaceCount(oldDoc.Texts(lngIndex).TextValue)) & ">" & _
+                                CStr(BreaksTrailingSpaceCount(newDoc.Texts(lngNewIndex).TextValue)) & _
+                            "|sample=" & BreaksShortText(Trim$(oldDoc.Texts(lngIndex).TextValue))
+
+                        Call IncrementDictionaryValue(dictPatterns, strKey)
+                    End If
+                End If
+            End If
+        Next lngIndex
+    Next lngPage
+
+    Call BreaksSummaryWriteDictionary( _
+        dictPatterns, _
+        fileNumber, _
+        80, _
+        "CELL")
+
+ExitSub:
+    Set dictPatterns = Nothing
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pageNo As Long, x As Double, y As Double
+' Returns:       String
+' Description:   Resolves a data-cell role from the known Oracle page baselines and grid X-ranges.
+'-------------------------------------------------------------------------------
+Private Function BreaksInferStructuralFieldRole( _
+    ByVal pageNo As Long, _
+    ByVal x As Double, _
+    ByVal y As Double) As String
+
+    Const METHOD_NAME As String = "BreaksInferStructuralFieldRole"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strRowKind As String
+
+    On Error GoTo ErrorHandler
+
+    BreaksInferStructuralFieldRole = vbNullString
+    strRowKind = BreaksOracleRowKind(pageNo, y)
+
+    If strRowKind = "TOP" Then
+        BreaksInferStructuralFieldRole = BreaksTopFieldByX(x)
+    ElseIf strRowKind = "BOTTOM" Then
+        BreaksInferStructuralFieldRole = BreaksBottomFieldByX(x)
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksInferStructuralFieldRole = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;x;y", _
+        pageNo, _
+        x, _
+        y
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pageNo As Long, y As Double
+' Returns:       String
+' Description:   Classifies a text baseline as TOP or BOTTOM transaction row.
+'-------------------------------------------------------------------------------
+Private Function BreaksOracleRowKind( _
+    ByVal pageNo As Long, _
+    ByVal y As Double) As String
+
+    Const METHOD_NAME As String = "BreaksOracleRowKind"
+    Const BASELINE_TOLERANCE As Double = 1.1
+    Const DATA_ROW_HEIGHT As Double = 18#
+    Dim arrTopBaselines As Variant
+    Dim dblBottom As Double
+    Dim dblDistanceBottom As Double
+    Dim dblDistanceTop As Double
+    Dim dblTop As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+
+    On Error GoTo ErrorHandler
+
+    BreaksOracleRowKind = vbNullString
+
+    If pageNo = 1 Then
+        arrTopBaselines = Array(504#, 463.48, 423#, 382.48, 342#, 301.48, 261#, 220.48, 180#, 139.48, 99#)
+    Else
+        arrTopBaselines = Array(558#, 517.48, 477#, 436.48, 396#, 355.48, 315#, 274.48, 234#, 193.48, 153#, 112.48)
+    End If
+
+    For lngIndex = LBound(arrTopBaselines) To UBound(arrTopBaselines)
+        dblTop = CDbl(arrTopBaselines(lngIndex))
+        dblBottom = dblTop - DATA_ROW_HEIGHT
+
+        dblDistanceTop = BreaksBaselineDistance(y, dblTop)
+        dblDistanceBottom = BreaksBaselineDistance(y, dblBottom)
+
+        If dblDistanceTop <= BASELINE_TOLERANCE Or _
+           dblDistanceBottom <= BASELINE_TOLERANCE Then
+
+            If dblDistanceTop <= dblDistanceBottom Then
+                BreaksOracleRowKind = "TOP"
+            Else
+                BreaksOracleRowKind = "BOTTOM"
+            End If
+
+            Exit For
+        End If
+    Next lngIndex
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksOracleRowKind = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;y", _
+        pageNo, _
+        y
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    actualY As Double, baseY As Double
+' Returns:       Double
+' Description:   Measures against both the 9 pt baseline and the Oracle 8 pt +0.76 baseline.
+'-------------------------------------------------------------------------------
+Private Function BreaksBaselineDistance( _
+    ByVal actualY As Double, _
+    ByVal baseY As Double) As Double
+
+    Const METHOD_NAME As String = "BreaksBaselineDistance"
+    Const EIGHT_PT_OFFSET As Double = 0.76
+    Dim dblA As Double
+    Dim dblB As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    dblA = Abs(actualY - baseY)
+    dblB = Abs(actualY - (baseY + EIGHT_PT_OFFSET))
+
+    If dblA <= dblB Then
+        BreaksBaselineDistance = dblA
+    Else
+        BreaksBaselineDistance = dblB
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksBaselineDistance = 1E+30
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "actualY;baseY", _
+        actualY, _
+        baseY
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    x As Double
+' Returns:       String
+' Description:   Maps a TOP-row text origin to the physical Oracle table field.
+'-------------------------------------------------------------------------------
+Private Function BreaksTopFieldByX(ByVal x As Double) As String
+
+    Const METHOD_NAME As String = "BreaksTopFieldByX"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    BreaksTopFieldByX = vbNullString
+
+    Select Case x
+        Case 40.52 To 125.999
+            BreaksTopFieldByX = "TOP_DEPOTNR"
+        Case 126# To 328.519
+            BreaksTopFieldByX = "TOP_FONDSBEZEICHNUNG"
+        Case 328.52 To 413.999
+            BreaksTopFieldByX = "TOP_GESCHAEFTSART"
+        Case 414# To 503.999
+            BreaksTopFieldByX = "TOP_SCHLUSSTAG"
+        Case 504# To 553.519
+            BreaksTopFieldByX = "TOP_VALUTATAG"
+        Case 553.52 To 593.999
+            BreaksTopFieldByX = "TOP_WKN"
+        Case 594# To 674.999
+            BreaksTopFieldByX = "TOP_ISIN"
+        Case 675# To 890.999
+            BreaksTopFieldByX = "TOP_WERTPAPIERBEZEICHNUNG"
+        Case 891# To 1025.999
+            BreaksTopFieldByX = "TOP_NOMINALE_STUECKE"
+        Case 1026# To 1052.999
+            BreaksTopFieldByX = "TOP_WHG_NOMINALE"
+        Case 1053# To 1178.999
+            BreaksTopFieldByX = "TOP_KURS"
+        Case 1179# To 1323.04
+            BreaksTopFieldByX = "TOP_STUECKZINSEN"
+    End Select
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksTopFieldByX = vbNullString
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription, "x", x
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    x As Double
+' Returns:       String
+' Description:   Maps a BOTTOM-row text origin to the physical Oracle table field.
+'-------------------------------------------------------------------------------
+Private Function BreaksBottomFieldByX(ByVal x As Double) As String
+
+    Const METHOD_NAME As String = "BreaksBottomFieldByX"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    BreaksBottomFieldByX = vbNullString
+
+    Select Case x
+        Case 40.52 To 125.999
+            BreaksBottomFieldByX = "BOTTOM_TRANSAKTIONSNR"
+        Case 126# To 283.519
+            BreaksBottomFieldByX = "BOTTOM_MAKLERGEBUEHREN"
+        Case 283.52 To 328.519
+            BreaksBottomFieldByX = "BOTTOM_WHG_MAKLER"
+        Case 328.52 To 467.999
+            BreaksBottomFieldByX = "BOTTOM_STEUERN"
+        Case 468# To 503.999
+            BreaksBottomFieldByX = "BOTTOM_WHG_STEUERN"
+        Case 504# To 638.999
+            BreaksBottomFieldByX = "BOTTOM_ABWICKLUNGSPROVISION"
+        Case 639# To 674.999
+            BreaksBottomFieldByX = "BOTTOM_WHG_ABWICKLUNG"
+        Case 675# To 854.999
+            BreaksBottomFieldByX = "BOTTOM_SPESEN"
+        Case 855# To 890.999
+            BreaksBottomFieldByX = "BOTTOM_WHG_SPESEN"
+        Case 891# To 1052.999
+            BreaksBottomFieldByX = "BOTTOM_AUSM_BETRAG_WHG"
+        Case 1053# To 1178.999
+            BreaksBottomFieldByX = "BOTTOM_AUSM_BETRAG_ABRECH_WHG"
+        Case 1179# To 1205.999
+            BreaksBottomFieldByX = "BOTTOM_WHG_ABRECH"
+        Case 1206# To 1323.04
+            BreaksBottomFieldByX = "BOTTOM_DEVISENKURS"
+    End Select
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksBottomFieldByX = vbNullString
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription, "x", x
     errorManager.save
     Resume ExitFunction
 End Function
