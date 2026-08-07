@@ -6605,6 +6605,7 @@ Private Sub WriteBreaksExecutiveSummary( _
     Dim dictIgnore As Object
     Dim dictPages As Object
     Dim dictShiftPatterns As Object
+    Dim dictTextShiftFields As Object
     Dim dictVerify As Object
     Dim dictWhgShifts As Object
     Dim dictWhitespace As Object
@@ -6647,6 +6648,7 @@ Private Sub WriteBreaksExecutiveSummary( _
     Set dictIgnore = CreateObject("Scripting.Dictionary")
     Set dictPages = CreateObject("Scripting.Dictionary")
     Set dictShiftPatterns = CreateObject("Scripting.Dictionary")
+    Set dictTextShiftFields = CreateObject("Scripting.Dictionary")
     Set dictVerify = CreateObject("Scripting.Dictionary")
     Set dictWhgShifts = CreateObject("Scripting.Dictionary")
     Set dictWhitespace = CreateObject("Scripting.Dictionary")
@@ -6736,6 +6738,12 @@ Private Sub WriteBreaksExecutiveSummary( _
                 Call BreaksSummaryRegisterShiftPattern( _
                     strLine, _
                     dictShiftPatterns)
+
+                Call IncrementDictionaryValue( _
+                    dictTextShiftFields, _
+                    "role=" & BreaksSummaryField(strLine, "role") & _
+                    "|value=" & BreaksSummaryField(strLine, "text") & _
+                    "|delta=" & BreaksSummaryField(strLine, "DELTA_NEW_MINUS_OLD"))
 
                 If Left$(BreaksSummaryField(strLine, "role"), 4) = "WHG_" Then
                     Call IncrementDictionaryValue( _
@@ -6923,7 +6931,7 @@ Private Sub WriteBreaksExecutiveSummary( _
     '-----------------------------------------------------------------------
     lngFileOut = OpenNew(outputPath)
 
-    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V5_FIELD_DIAGNOSTICS")
+    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V6_FIELD_DIAGNOSTICS")
     Call EmitLine(lngFileOut, "OLD|" & oldDoc.PdfPath)
     Call EmitLine(lngFileOut, "NEW|" & newDoc.PdfPath)
     Call EmitLine(lngFileOut, _
@@ -6961,6 +6969,13 @@ Private Sub WriteBreaksExecutiveSummary( _
     Call EmitLine(lngFileOut, "============================================================")
     Call EmitLine(lngFileOut, "FIELD_DIAGNOSTICS")
     Call EmitLine(lngFileOut, "============================================================")
+    Call EmitLine(lngFileOut, "TEXT_ALIGNMENT_BY_FIELD")
+    Call BreaksSummaryWriteDictionary( _
+        dictTextShiftFields, _
+        lngFileOut, _
+        20, _
+        "FIELD_SHIFT")
+
     Call EmitLine(lngFileOut, "WHG_ALIGNMENT")
     Call BreaksSummaryWriteDictionary( _
         dictWhgShifts, _
@@ -7104,6 +7119,7 @@ ExitSub:
     Set dictIgnore = Nothing
     Set dictPages = Nothing
     Set dictShiftPatterns = Nothing
+    Set dictTextShiftFields = Nothing
     Set dictVerify = Nothing
     Set dictWhgShifts = Nothing
     Set dictWhitespace = Nothing
@@ -7634,6 +7650,7 @@ Private Sub BreaksWriteHorizontalRuleSanity( _
     Dim lngMaxOld As Long
     Dim lngNearNew As Long
     Dim lngNearOld As Long
+    Dim lngTolerantExtraNew As Long
     Dim strSample As String
     Dim strStatus As String
 
@@ -7648,17 +7665,23 @@ Private Sub BreaksWriteHorizontalRuleSanity( _
 
     lngNearOld = BreaksCountNearFullWidthHorizontalPairs(oldDoc, pageNo)
     lngNearNew = BreaksCountNearFullWidthHorizontalPairs(newDoc, pageNo)
+    lngTolerantExtraNew = BreaksCountTolerantFullWidthHorizontalExcess( _
+        oldDoc, _
+        newDoc, _
+        pageNo, _
+        strSample)
 
-    If lngExtraNew > 0 Or lngNearNew > lngNearOld Then
+    If lngTolerantExtraNew > 0 Or lngNearNew > lngNearOld Then
         strStatus = "SUSPECT"
     Else
-        strStatus = "PASS"
+        strStatus = "PASS_COORD_SERIALIZATION_ONLY"
     End If
 
     Call EmitLine(fileNumber, _
         "RULES|page=" & CStr(pageNo) & _
         "|status=" & strStatus & _
         "|extraExactNew=" & CStr(lngExtraNew) & _
+        "|tolerantExtraNew=" & CStr(lngTolerantExtraNew) & _
         "|maxMultiplicityOld=" & CStr(lngMaxOld) & _
         "|maxMultiplicityNew=" & CStr(lngMaxNew) & _
         "|nearFullWidthPairsOld=" & CStr(lngNearOld) & _
@@ -7864,6 +7887,110 @@ End Function
 ' Returns:       Long
 ' Description:   Counts near-parallel full-width horizontal rules that could rasterize as a thick band.
 '-------------------------------------------------------------------------------
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDoc As tPdfDocument, newDoc As tPdfDocument, pageNo As Long, sample As String
+' Returns:       Long
+' Description:   Counts NEW full-width horizontals with no unused OLD partner inside coordinate tolerance.
+'-------------------------------------------------------------------------------
+Private Function BreaksCountTolerantFullWidthHorizontalExcess( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByRef sample As String) As Long
+
+    Const METHOD_NAME As String = "BreaksCountTolerantFullWidthHorizontalExcess"
+    Dim blnOldUsed() As Boolean
+    Dim dblNewLength As Double
+    Dim dblOldLength As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngNew As Long
+    Dim lngOld As Long
+    Dim lngPartner As Long
+
+    On Error GoTo ErrorHandler
+
+    sample = vbNullString
+
+    If oldDoc.LineCount > 0 Then
+        ReDim blnOldUsed(0 To oldDoc.LineCount - 1)
+    End If
+
+    For lngNew = 0 To newDoc.LineCount - 1
+        If newDoc.Lines(lngNew).PageNo = pageNo And _
+           BreaksLineOrientation(newDoc.Lines(lngNew)) = "H" Then
+
+            dblNewLength = Abs( _
+                newDoc.Lines(lngNew).X2 - newDoc.Lines(lngNew).X1)
+
+            If dblNewLength >= BREAKS_FULL_WIDTH_MIN Then
+                lngPartner = -1
+
+                For lngOld = 0 To oldDoc.LineCount - 1
+                    If Not blnOldUsed(lngOld) Then
+                        If oldDoc.Lines(lngOld).PageNo = pageNo And _
+                           BreaksLineOrientation(oldDoc.Lines(lngOld)) = "H" Then
+
+                            dblOldLength = Abs( _
+                                oldDoc.Lines(lngOld).X2 - oldDoc.Lines(lngOld).X1)
+
+                            If dblOldLength >= BREAKS_FULL_WIDTH_MIN Then
+                                If Abs(oldDoc.Lines(lngOld).X1 - newDoc.Lines(lngNew).X1) <= BREAKS_POSITION_TOLERANCE And _
+                                   Abs(oldDoc.Lines(lngOld).X2 - newDoc.Lines(lngNew).X2) <= BREAKS_POSITION_TOLERANCE And _
+                                   Abs(oldDoc.Lines(lngOld).Y1 - newDoc.Lines(lngNew).Y1) <= BREAKS_POSITION_TOLERANCE And _
+                                   Abs(oldDoc.Lines(lngOld).Y2 - newDoc.Lines(lngNew).Y2) <= BREAKS_POSITION_TOLERANCE Then
+
+                                    lngPartner = lngOld
+                                    Exit For
+                                End If
+                            End If
+                        End If
+                    End If
+                Next lngOld
+
+                If lngPartner >= 0 Then
+                    blnOldUsed(lngPartner) = True
+                Else
+                    BreaksCountTolerantFullWidthHorizontalExcess = _
+                        BreaksCountTolerantFullWidthHorizontalExcess + 1
+
+                    If Len(sample) = 0 Then
+                        sample = _
+                            "H y=" & NumTxt(newDoc.Lines(lngNew).Y1) & _
+                            " x=" & NumTxt(newDoc.Lines(lngNew).X1) & _
+                            ".." & NumTxt(newDoc.Lines(lngNew).X2) & _
+                            " paint=" & newDoc.Lines(lngNew).PaintOperator & _
+                            " source=" & newDoc.Lines(lngNew).SourceOperator
+                    End If
+                End If
+            End If
+        End If
+    Next lngNew
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksCountTolerantFullWidthHorizontalExcess = 0
+    sample = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo", _
+        pageNo
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
 Private Function BreaksCountNearFullWidthHorizontalPairs( _
     ByRef pdfDoc As tPdfDocument, _
     ByVal pageNo As Long) As Long
