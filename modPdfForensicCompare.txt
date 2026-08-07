@@ -188,6 +188,7 @@ Public Sub RunPdfComparisonBrowse()
     Dim errNumber As Long
     Dim strAuditPath As String
     Dim strBreaksPath As String
+    Dim strBreaksSummaryPath As String
     Dim strDetailPath As String
     Dim strNewPdfPath As String
     Dim strOldPdfPath As String
@@ -207,20 +208,23 @@ Public Sub RunPdfComparisonBrowse()
     strAuditPath = BuildOracleAuditOutputPath(strOldPdfPath, strNewPdfPath)
     strDetailPath = BuildComparisonOutputPath(strOldPdfPath, strNewPdfPath)
     strBreaksPath = BuildBreaksOnlyOutputPath(strOldPdfPath, strNewPdfPath)
+    strBreaksSummaryPath = BuildBreaksSummaryOutputPath(strOldPdfPath, strNewPdfPath)
 
     If Not PdfOracleCloneAudit( _
         strOldPdfPath, _
         strNewPdfPath, _
         strAuditPath, _
         strDetailPath, _
-        strBreaksPath) Then
+        strBreaksPath, _
+        strBreaksSummaryPath) Then
 
         Err.Raise ERR_BASE + 2, METHOD_NAME, "The Oracle clone PDF audit could not be completed."
     End If
 
     MsgBox _
         "Oracle clone audit completed." & vbCrLf & vbCrLf & _
-        "Concise remaining breaks:" & vbCrLf & strBreaksPath & vbCrLf & vbCrLf & _
+        "SEND / SCREENSHOT THIS FILE:" & vbCrLf & strBreaksSummaryPath & vbCrLf & vbCrLf & _
+        "Full remaining breaks:" & vbCrLf & strBreaksPath & vbCrLf & vbCrLf & _
         "Main audit:" & vbCrLf & strAuditPath & vbCrLf & vbCrLf & _
         "Detailed vector comparison:" & vbCrLf & strDetailPath, _
         vbInformation, _
@@ -238,12 +242,13 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "oldPdfPath;newPdfPath;auditPath;detailPath;breaksPath", _
+        "oldPdfPath;newPdfPath;auditPath;detailPath;breaksPath;breaksSummaryPath", _
         strOldPdfPath, _
         strNewPdfPath, _
         strAuditPath, _
         strDetailPath, _
-        strBreaksPath
+        strBreaksPath, _
+        strBreaksSummaryPath
 
     errorManager.save
     errorManager.display "The Oracle PDF audit failed."
@@ -4514,7 +4519,8 @@ Public Function PdfOracleCloneAudit( _
     ByVal newPdfPath As String, _
     ByVal auditOutputPath As String, _
     ByVal detailOutputPath As String, _
-    Optional ByVal breaksOutputPath As String = vbNullString) As Boolean
+    Optional ByVal breaksOutputPath As String = vbNullString, _
+    Optional ByVal breaksSummaryOutputPath As String = vbNullString) As Boolean
 
     Const METHOD_NAME As String = "PdfOracleCloneAudit"
     Dim errorManager As New ErrorManager
@@ -4545,6 +4551,10 @@ Public Function PdfOracleCloneAudit( _
         breaksOutputPath = BuildBreaksOnlyOutputPath(oldPdfPath, newPdfPath)
     End If
 
+    If Len(Trim$(breaksSummaryOutputPath)) = 0 Then
+        breaksSummaryOutputPath = BuildBreaksSummaryOutputPath(oldPdfPath, newPdfPath)
+    End If
+
     Call LoadPdfDocument(oldPdfPath, oldDoc)
     If oldDoc.PageCount = 0 Then
         Err.Raise 1014, METHOD_NAME, "The old PDF could not be parsed into page content."
@@ -4558,6 +4568,11 @@ Public Function PdfOracleCloneAudit( _
     Call WriteOracleCloneAuditReport(oldDoc, newDoc, auditOutputPath)
     Call WriteComparisonReport(oldDoc, newDoc, detailOutputPath)
     Call WriteBreaksOnlyReport(oldDoc, newDoc, breaksOutputPath)
+    Call WriteBreaksExecutiveSummary( _
+        oldDoc, _
+        newDoc, _
+        breaksOutputPath, _
+        breaksSummaryOutputPath)
     PdfOracleCloneAudit = True
 
 ExitFunction:
@@ -4574,12 +4589,13 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "oldPdfPath;newPdfPath;auditOutputPath;detailOutputPath;breaksOutputPath", _
+        "oldPdfPath;newPdfPath;auditOutputPath;detailOutputPath;breaksOutputPath;breaksSummaryOutputPath", _
         oldPdfPath, _
         newPdfPath, _
         auditOutputPath, _
         detailOutputPath, _
-        breaksOutputPath
+        breaksOutputPath, _
+        breaksSummaryOutputPath
 
     errorManager.save
     Resume ExitFunction
@@ -4689,6 +4705,61 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldPdfPath As String, newPdfPath As String
+' Returns:       String
+' Description:   Builds the output path for the ultra-compact executive breaks summary.
+'-------------------------------------------------------------------------------
+Private Function BuildBreaksSummaryOutputPath( _
+    ByVal oldPdfPath As String, _
+    ByVal newPdfPath As String) As String
+
+    Const METHOD_NAME As String = "BuildBreaksSummaryOutputPath"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngSlashPosition As Long
+    Dim strFolder As String
+    Dim strNewBase As String
+    Dim strOldBase As String
+
+    On Error GoTo ErrorHandler
+
+    lngSlashPosition = InStrRev(newPdfPath, "\")
+    If lngSlashPosition > 0 Then
+        strFolder = Left$(newPdfPath, lngSlashPosition)
+    End If
+
+    strOldBase = FileBaseName(oldPdfPath)
+    strNewBase = FileBaseName(newPdfPath)
+
+    BuildBreaksSummaryOutputPath = _
+        strFolder & strOldBase & "_VS_" & strNewBase & "_BREAKS_SUMMARY.txt"
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildBreaksSummaryOutputPath = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "oldPdfPath;newPdfPath", _
+        oldPdfPath, _
+        newPdfPath
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -6508,6 +6579,524 @@ End Function
 ' Returns:       ---
 ' Description:   Writes only remaining parser-sensitive differences with OLD, NEW, DELTA, and FIX hints.
 '-------------------------------------------------------------------------------
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDoc, newDoc, detailedBreaksPath, outputPath
+' Returns:       ---
+' Description:   Writes a short, screenshot-friendly summary of the detailed
+'                BREAKS_ONLY report. Raw events are grouped into fix families.
+'-------------------------------------------------------------------------------
+Private Sub WriteBreaksExecutiveSummary( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal detailedBreaksPath As String, _
+    ByVal outputPath As String)
+
+    Const METHOD_NAME As String = "WriteBreaksExecutiveSummary"
+    Dim errorManager As New ErrorManager
+    Dim dictActionTypes As Object
+    Dim dictFontPairs As Object
+    Dim dictPages As Object
+    Dim dictWhitespace As Object
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngCurrentPage As Long
+    Dim lngFileIn As Long
+    Dim lngFileOut As Long
+    Dim lngLikelyTextShift As Long
+    Dim lngMatchingNoise As Long
+    Dim lngPage As Long
+    Dim lngPagesCompared As Long
+    Dim lngRawCritical As Long
+    Dim lngRawInfo As Long
+    Dim lngRawStructural As Long
+    Dim lngTargetGeometry As Long
+    Dim lngTargetStyleOnly As Long
+    Dim lngVectorGeometry As Long
+    Dim lngVectorStyle As Long
+    Dim strLine As String
+    Dim strRawStatus As String
+
+    On Error GoTo ErrorHandler
+
+    Set dictActionTypes = CreateObject("Scripting.Dictionary")
+    Set dictFontPairs = CreateObject("Scripting.Dictionary")
+    Set dictPages = CreateObject("Scripting.Dictionary")
+    Set dictWhitespace = CreateObject("Scripting.Dictionary")
+
+    lngFileIn = FreeFile
+    Open detailedBreaksPath For Input Access Read As #lngFileIn
+
+    Do While Not EOF(lngFileIn)
+        Line Input #lngFileIn, strLine
+
+        If Left$(strLine, 5) = "PAGE|" Then
+            lngCurrentPage = CLng(Val(Mid$(strLine, 6)))
+            If lngCurrentPage > lngPagesCompared Then lngPagesCompared = lngCurrentPage
+
+        ElseIf Left$(strLine, 12) = "PAGE_RESULT|" Then
+            Call BreaksSummarySetPageValue( _
+                dictPages, _
+                lngCurrentPage, _
+                "result", _
+                BreaksSummaryField(strLine, "result"))
+
+            Call BreaksSummarySetPageValue( _
+                dictPages, _
+                lngCurrentPage, _
+                "critical", _
+                BreaksSummaryField(strLine, "newCritical"))
+
+            Call BreaksSummarySetPageValue( _
+                dictPages, _
+                lngCurrentPage, _
+                "structural", _
+                BreaksSummaryField(strLine, "newStructural"))
+
+        ElseIf Left$(strLine, 12) = "PAGE_LAYOUT|" Then
+            Call BreaksSummarySetPageValue( _
+                dictPages, _
+                lngCurrentPage, _
+                "trades", _
+                BreaksSummaryField(strLine, "tradesOld") & ">" & _
+                BreaksSummaryField(strLine, "tradesNew"))
+
+            Call BreaksSummarySetPageValue( _
+                dictPages, _
+                lngCurrentPage, _
+                "footer", _
+                BreaksSummaryField(strLine, "footerOld") & ">" & _
+                BreaksSummaryField(strLine, "footerNew"))
+
+        ElseIf Left$(strLine, 17) = "TARGET_SEPARATOR|" Then
+            Call BreaksSummaryRegisterTarget( _
+                strLine, _
+                lngCurrentPage, _
+                dictPages, _
+                lngTargetStyleOnly, _
+                lngTargetGeometry)
+
+        ElseIf Left$(strLine, 14) = "TEXT_POSITION|" Then
+            If BreaksSummaryLikelyPairingNoise(strLine) Then
+                lngMatchingNoise = lngMatchingNoise + 1
+            Else
+                lngLikelyTextShift = lngLikelyTextShift + 1
+            End If
+
+        ElseIf Left$(strLine, 10) = "TEXT_FONT|" Then
+            Call BreaksSummaryRegisterFontPair(strLine, dictFontPairs)
+
+        ElseIf Left$(strLine, 16) = "WHITESPACE_ONLY|" Then
+            Call BreaksSummaryRegisterWhitespace(strLine, dictWhitespace)
+
+        ElseIf Left$(strLine, 24) = "VECTOR_GEOMETRY_SUMMARY|" Then
+            lngVectorGeometry = lngVectorGeometry + _
+                CLng(Val(BreaksSummaryField(strLine, "breaks")))
+
+        ElseIf Left$(strLine, 21) = "VECTOR_STYLE_SUMMARY|" Then
+            lngVectorStyle = lngVectorStyle + _
+                CLng(Val(BreaksSummaryField(strLine, "breaks")))
+
+        ElseIf Left$(strLine, 7) = "ACTION|" Then
+            Call BreaksSummaryRegisterActionType(strLine, dictActionTypes)
+
+        ElseIf Left$(strLine, 15) = "BREAKS_SUMMARY|" Then
+            strRawStatus = BreaksSummaryField(strLine, "status")
+            lngRawCritical = CLng(Val(BreaksSummaryField(strLine, "critical")))
+            lngRawStructural = CLng(Val(BreaksSummaryField(strLine, "structural")))
+            lngRawInfo = CLng(Val(BreaksSummaryField(strLine, "informational")))
+        End If
+    Loop
+
+    Close #lngFileIn
+    lngFileIn = 0
+
+    lngFileOut = OpenNew(outputPath)
+
+    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_EXECUTIVE_SUMMARY_V1")
+    Call EmitLine(lngFileOut, "OLD|" & oldDoc.PdfPath)
+    Call EmitLine(lngFileOut, "NEW|" & newDoc.PdfPath)
+    Call EmitLine(lngFileOut, _
+        "PURPOSE|Short screenshot-friendly summary. Full forensic details remain in BREAKS_ONLY.")
+    Call EmitLine(lngFileOut, _
+        "IMPORTANT|RAW critical/structural counts are event counts, not the number of unique code fixes.")
+    Call EmitLine(lngFileOut, _
+        "PAIRING_NOISE_RULE|Repeated text is flagged as diagnostic noise when abs(deltaY)>5 pt or abs(deltaX)>50 pt.")
+
+    Call EmitLine(lngFileOut, vbNullString)
+    Call EmitLine(lngFileOut, "============================================================")
+    Call EmitLine(lngFileOut, "GLOBAL")
+    Call EmitLine(lngFileOut, "============================================================")
+    Call EmitLine(lngFileOut, _
+        "RAW|status=" & strRawStatus & _
+        "|criticalEvents=" & CStr(lngRawCritical) & _
+        "|structuralEvents=" & CStr(lngRawStructural) & _
+        "|informationalEvents=" & CStr(lngRawInfo) & _
+        "|pagesCompared=" & CStr(lngPagesCompared))
+    Call EmitLine(lngFileOut, _
+        "TEXT_POSITION|likelyReal=" & CStr(lngLikelyTextShift) & _
+        "|likelyPairingNoise=" & CStr(lngMatchingNoise))
+    Call EmitLine(lngFileOut, _
+        "TARGET_SEPARATORS|styleOnlyEvents=" & CStr(lngTargetStyleOnly) & _
+        "|geometryOrCrossingEvents=" & CStr(lngTargetGeometry))
+    Call EmitLine(lngFileOut, _
+        "VECTORS|geometryEvents=" & CStr(lngVectorGeometry) & _
+        "|styleEvents=" & CStr(lngVectorStyle))
+    Call EmitLine(lngFileOut, _
+        "UNIQUE_ACTION_FAMILIES|" & CStr(dictActionTypes.Count))
+
+    Call EmitLine(lngFileOut, vbNullString)
+    Call EmitLine(lngFileOut, "============================================================")
+    Call EmitLine(lngFileOut, "PAGE_MATRIX")
+    Call EmitLine(lngFileOut, "============================================================")
+
+    For lngPage = 1 To lngPagesCompared
+        Call EmitLine(lngFileOut, _
+            "PAGE|" & CStr(lngPage) & _
+            "|result=" & BreaksSummaryGetPageValue(dictPages, lngPage, "result", "?") & _
+            "|rawCritical=" & BreaksSummaryGetPageValue(dictPages, lngPage, "critical", "0") & _
+            "|rawStructural=" & BreaksSummaryGetPageValue(dictPages, lngPage, "structural", "0") & _
+            "|tradesOld>New=" & BreaksSummaryGetPageValue(dictPages, lngPage, "trades", "?") & _
+            "|footerOld>New=" & BreaksSummaryGetPageValue(dictPages, lngPage, "footer", "?") & _
+            "|x468=" & BreaksSummaryGetPageValue(dictPages, lngPage, "x468", "?") & _
+            "|x639=" & BreaksSummaryGetPageValue(dictPages, lngPage, "x639", "?"))
+    Next lngPage
+
+    Call EmitLine(lngFileOut, vbNullString)
+    Call EmitLine(lngFileOut, "============================================================")
+    Call EmitLine(lngFileOut, "WHITESPACE_PATTERNS")
+    Call EmitLine(lngFileOut, "============================================================")
+    Call BreaksSummaryWriteDictionary(dictWhitespace, lngFileOut, 12, "WHITESPACE")
+
+    Call EmitLine(lngFileOut, vbNullString)
+    Call EmitLine(lngFileOut, "============================================================")
+    Call EmitLine(lngFileOut, "FONT_PAIRS")
+    Call EmitLine(lngFileOut, "============================================================")
+    Call BreaksSummaryWriteDictionary(dictFontPairs, lngFileOut, 12, "FONT")
+
+    Call EmitLine(lngFileOut, vbNullString)
+    Call EmitLine(lngFileOut, "============================================================")
+    Call EmitLine(lngFileOut, "GROUPED_ACTIONS")
+    Call EmitLine(lngFileOut, "============================================================")
+    Call BreaksSummaryWriteDictionary(dictActionTypes, lngFileOut, 20, "ACTION")
+
+    Call EmitLine(lngFileOut, vbNullString)
+    Call EmitLine(lngFileOut, "============================================================")
+    Call EmitLine(lngFileOut, "INTERPRETATION")
+    Call EmitLine(lngFileOut, "============================================================")
+
+    If lngTargetGeometry = 0 And lngTargetStyleOnly > 0 Then
+        Call EmitLine(lngFileOut, _
+            "TARGET_SEPARATOR_NOTE|Geometry/crossings match; remaining x=468/x=639 differences are STYLE_ONLY and should be treated as STRUCTURAL tuning, not coordinate failure.")
+    End If
+
+    If lngMatchingNoise > 0 Then
+        Call EmitLine(lngFileOut, _
+            "TEXT_PAIRING_NOTE|" & CStr(lngMatchingNoise) & _
+            " text-position events have implausibly large deltas and are likely repeated-text matching noise. Do not change generator coordinates from those events.")
+    End If
+
+    If dictWhitespace.Count > 0 Then
+        Call EmitLine(lngFileOut, _
+            "WHITESPACE_NOTE|Use the grouped leading/trailing-space patterns before changing numeric text X positions.")
+    End If
+
+    Call EmitLine(lngFileOut, _
+        "SEND_ME|Normally this SUMMARY file alone is enough. Send extra BREAKS_ONLY screenshots only for a specific group I ask for.")
+
+ExitSub:
+    If lngFileIn > 0 Then Close #lngFileIn
+    If lngFileOut > 0 Then Close #lngFileOut
+
+    Set dictActionTypes = Nothing
+    Set dictFontPairs = Nothing
+    Set dictPages = Nothing
+    Set dictWhitespace = Nothing
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "detailedBreaksPath;outputPath", _
+        detailedBreaksPath, _
+        outputPath
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+Private Sub BreaksSummaryRegisterTarget( _
+    ByVal lineText As String, _
+    ByVal pageNo As Long, _
+    ByVal pageDictionary As Object, _
+    ByRef styleOnlyCount As Long, _
+    ByRef geometryCount As Long)
+
+    Dim lngExtra As Long
+    Dim lngGeometry As Long
+    Dim lngNewCrossings As Long
+    Dim lngOldCrossings As Long
+    Dim lngStyle As Long
+    Dim strClassification As String
+    Dim strTargetX As String
+
+    strTargetX = BreaksSummaryField(lineText, "x")
+
+    If BreaksSummaryField(lineText, "result") = "PASS" Then
+        strClassification = "PASS"
+    Else
+        lngGeometry = CLng(Val(BreaksSummaryField(lineText, "geometryBreaks")))
+        lngExtra = CLng(Val(BreaksSummaryField(lineText, "extraNew")))
+        lngStyle = CLng(Val(BreaksSummaryField(lineText, "styleBreaks")))
+        lngOldCrossings = CLng(Val(BreaksSummaryField(lineText, "oldCrossings")))
+        lngNewCrossings = CLng(Val(BreaksSummaryField(lineText, "newCrossings")))
+
+        If lngGeometry = 0 And lngExtra = 0 And _
+           lngStyle > 0 And lngOldCrossings = lngNewCrossings Then
+
+            strClassification = "STYLE_ONLY"
+            styleOnlyCount = styleOnlyCount + lngStyle
+        Else
+            strClassification = "GEOMETRY/CROSSING"
+            geometryCount = geometryCount + 1
+        End If
+    End If
+
+    If strTargetX = "468" Then
+        Call BreaksSummarySetPageValue( _
+            pageDictionary, pageNo, "x468", strClassification)
+    ElseIf strTargetX = "639" Then
+        Call BreaksSummarySetPageValue( _
+            pageDictionary, pageNo, "x639", strClassification)
+    End If
+End Sub
+
+Private Sub BreaksSummaryRegisterWhitespace( _
+    ByVal lineText As String, _
+    ByVal dictionary As Object)
+
+    Dim strKey As String
+
+    strKey = _
+        "leading " & BreaksSummaryField(lineText, "leadingOld") & ">" & _
+        BreaksSummaryField(lineText, "leadingNew") & _
+        "; trailing " & BreaksSummaryField(lineText, "trailingOld") & ">" & _
+        BreaksSummaryField(lineText, "trailingNew") & _
+        "; length " & BreaksSummaryField(lineText, "lengthOld") & ">" & _
+        BreaksSummaryField(lineText, "lengthNew")
+
+    Call IncrementDictionaryValue(dictionary, strKey)
+End Sub
+
+Private Sub BreaksSummaryRegisterFontPair( _
+    ByVal lineText As String, _
+    ByVal dictionary As Object)
+
+    Dim strKey As String
+
+    strKey = _
+        BreaksSummaryField(lineText, "OLD") & " > " & _
+        BreaksSummaryField(lineText, "NEW")
+
+    If Len(Replace(strKey, " > ", vbNullString)) > 0 Then
+        Call IncrementDictionaryValue(dictionary, strKey)
+    End If
+End Sub
+
+Private Sub BreaksSummaryRegisterActionType( _
+    ByVal lineText As String, _
+    ByVal dictionary As Object)
+
+    Dim arrParts() As String
+    Dim lngCount As Long
+    Dim strAction As String
+    Dim strType As String
+
+    arrParts = Split(lineText, "|")
+    If UBound(arrParts) < 2 Then Exit Sub
+
+    lngCount = CLng(Val(Replace(arrParts(1), "count=", vbNullString)))
+    strAction = arrParts(2)
+    strType = strAction
+
+    If InStr(1, strType, "=", vbBinaryCompare) > 0 Then
+        strType = Left$(strType, InStr(1, strType, "=", vbBinaryCompare) - 1)
+    End If
+
+    If lngCount <= 0 Then lngCount = 1
+    Call BreaksSummaryIncrementBy(dictionary, strType, lngCount)
+End Sub
+
+Private Function BreaksSummaryLikelyPairingNoise( _
+    ByVal lineText As String) As Boolean
+
+    Dim dblDeltaX As Double
+    Dim dblDeltaY As Double
+    Dim strDelta As String
+    Dim strX As String
+    Dim strY As String
+
+    strDelta = BreaksSummaryField(lineText, "DELTA_NEW_MINUS_OLD")
+    If Len(strDelta) = 0 Then Exit Function
+
+    strX = BreaksSummarySubField(strDelta, "x")
+    strY = BreaksSummarySubField(strDelta, "y")
+
+    dblDeltaX = Val(strX)
+    dblDeltaY = Val(strY)
+
+    BreaksSummaryLikelyPairingNoise = _
+        Abs(dblDeltaY) > 5# Or Abs(dblDeltaX) > 50#
+End Function
+
+Private Function BreaksSummarySubField( _
+    ByVal value As String, _
+    ByVal keyName As String) As String
+
+    Dim arrParts() As String
+    Dim lngIndex As Long
+    Dim strPrefix As String
+
+    strPrefix = keyName & "="
+    arrParts = Split(value, ",")
+
+    For lngIndex = LBound(arrParts) To UBound(arrParts)
+        If Left$(arrParts(lngIndex), Len(strPrefix)) = strPrefix Then
+            BreaksSummarySubField = Mid$(arrParts(lngIndex), Len(strPrefix) + 1)
+            Exit Function
+        End If
+    Next lngIndex
+End Function
+
+Private Function BreaksSummaryField( _
+    ByVal lineText As String, _
+    ByVal keyName As String) As String
+
+    Dim arrParts() As String
+    Dim lngIndex As Long
+    Dim strPrefix As String
+
+    strPrefix = keyName & "="
+    arrParts = Split(lineText, "|")
+
+    For lngIndex = LBound(arrParts) To UBound(arrParts)
+        If Left$(arrParts(lngIndex), Len(strPrefix)) = strPrefix Then
+            BreaksSummaryField = Mid$(arrParts(lngIndex), Len(strPrefix) + 1)
+            Exit Function
+        End If
+    Next lngIndex
+End Function
+
+Private Sub BreaksSummarySetPageValue( _
+    ByVal dictionary As Object, _
+    ByVal pageNo As Long, _
+    ByVal fieldName As String, _
+    ByVal fieldValue As String)
+
+    dictionary(CStr(pageNo) & "|" & fieldName) = fieldValue
+End Sub
+
+Private Function BreaksSummaryGetPageValue( _
+    ByVal dictionary As Object, _
+    ByVal pageNo As Long, _
+    ByVal fieldName As String, _
+    ByVal defaultValue As String) As String
+
+    Dim strKey As String
+
+    strKey = CStr(pageNo) & "|" & fieldName
+
+    If dictionary.Exists(strKey) Then
+        BreaksSummaryGetPageValue = CStr(dictionary(strKey))
+    Else
+        BreaksSummaryGetPageValue = defaultValue
+    End If
+End Function
+
+Private Sub BreaksSummaryIncrementBy( _
+    ByVal dictionary As Object, _
+    ByVal keyName As String, _
+    ByVal incrementValue As Long)
+
+    If dictionary.Exists(keyName) Then
+        dictionary(keyName) = CLng(dictionary(keyName)) + incrementValue
+    Else
+        dictionary.Add keyName, incrementValue
+    End If
+End Sub
+
+Private Sub BreaksSummaryWriteDictionary( _
+    ByVal dictionary As Object, _
+    ByVal fileNumber As Long, _
+    ByVal maxLines As Long, _
+    ByVal prefix As String)
+
+    Dim arrKeys() As String
+    Dim arrValues() As Long
+    Dim lngCount As Long
+    Dim lngIndex As Long
+    Dim lngInner As Long
+    Dim lngSwapValue As Long
+    Dim strKey As Variant
+    Dim strSwapKey As String
+
+    If dictionary Is Nothing Then
+        Call EmitLine(fileNumber, prefix & "|(none)")
+        Exit Sub
+    End If
+
+    If dictionary.Count = 0 Then
+        Call EmitLine(fileNumber, prefix & "|(none)")
+        Exit Sub
+    End If
+
+    lngCount = dictionary.Count
+    ReDim arrKeys(0 To lngCount - 1)
+    ReDim arrValues(0 To lngCount - 1)
+
+    lngIndex = 0
+    For Each strKey In dictionary.Keys
+        arrKeys(lngIndex) = CStr(strKey)
+        arrValues(lngIndex) = CLng(dictionary(strKey))
+        lngIndex = lngIndex + 1
+    Next strKey
+
+    For lngIndex = 0 To lngCount - 2
+        For lngInner = lngIndex + 1 To lngCount - 1
+            If arrValues(lngInner) > arrValues(lngIndex) Then
+                lngSwapValue = arrValues(lngIndex)
+                arrValues(lngIndex) = arrValues(lngInner)
+                arrValues(lngInner) = lngSwapValue
+
+                strSwapKey = arrKeys(lngIndex)
+                arrKeys(lngIndex) = arrKeys(lngInner)
+                arrKeys(lngInner) = strSwapKey
+            End If
+        Next lngInner
+    Next lngIndex
+
+    For lngIndex = 0 To lngCount - 1
+        If lngIndex >= maxLines Then
+            Call EmitLine(fileNumber, _
+                prefix & "|... " & CStr(lngCount - maxLines) & _
+                " additional grouped item(s) omitted")
+            Exit For
+        End If
+
+        Call EmitLine(fileNumber, _
+            prefix & "|count=" & CStr(arrValues(lngIndex)) & _
+            "|" & arrKeys(lngIndex))
+    Next lngIndex
+End Sub
+
 Private Sub WriteBreaksOnlyReport( _
     ByRef oldDoc As tPdfDocument, _
     ByRef newDoc As tPdfDocument, _
