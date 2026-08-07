@@ -1936,7 +1936,8 @@ Private Function ApplyOracleNumericFieldPadding( _
         GoTo ExitFunction
     End If
 
-    ' Keep any deliberate Oracle trailing whitespace, e.g. Devisenkurs.
+    ' Preserve any deliberate trailing whitespace supplied by the Oracle
+    ' display formatter. Current FIX25 does not add numeric trailing spaces.
     strTrailingText = vbNullString
     Do While Len(strText) > 0 And Right$(strText, 1) = " "
         strTrailingText = strTrailingText & " "
@@ -1950,11 +1951,6 @@ Private Function ApplyOracleNumericFieldPadding( _
     End If
 
     lngLeadingSpaces = ORACLE_NUMERIC_LEADING_SPACES
-
-    If blnTopTransactionRow And _
-       lngFieldIndex = TOP_FIELD_NOMINALE_INDEX Then
-        lngLeadingSpaces = ORACLE_NUMERIC_LEADING_SPACES + 1
-    End If
 
     ApplyOracleNumericFieldPadding = _
         Space$(lngLeadingSpaces) & strCoreText & strTrailingText
@@ -2218,13 +2214,6 @@ Private Function NormalizeOracleFieldDisplayText( _
         If Len(strResult) = lngDecimalPosition Then
             strResult = Left$(strResult, lngDecimalPosition - 1)
         End If
-    End If
-
-    ' OLD Oracle whitespace audit shows a recurring one-character trailing
-    ' whitespace family. Visually it corresponds to Devisenkurs values.
-    If Not blnTopTransactionRow And _
-       lngFieldIndex = BOTTOM_FIELD_DEVISENKURS_INDEX Then
-        strResult = strResult & " "
     End If
 
     NormalizeOracleFieldDisplayText = strResult
@@ -2512,7 +2501,7 @@ Private Function EstimateBase14TextWidth( _
                 Case "J": dblUnits = dblUnits + 389
                 Case "M": dblUnits = dblUnits + 889
                 Case "W": dblUnits = dblUnits + 944
-                Case "A", "D", "G", "H", "K", "N", "O", "X", "Y": dblUnits = dblUnits + 722
+                Case "A", "D", "G", "H", "K", "N", "O", "Q", "U", "V", "X", "Y": dblUnits = dblUnits + 722
                 Case "B", "C", "R": dblUnits = dblUnits + 667
                 Case "E", "L", "Z", "T": dblUnits = dblUnits + 611
                 Case "F", "P", "S": dblUnits = dblUnits + 556
@@ -3260,7 +3249,7 @@ Private Function GetTopHeaderLabels() As Variant
         "Schlusstag", _
         "Valutatag", _
         "WKN", _
-        "ISIN", _
+        "ISIN ", _
         "Wertpapierbezeichnung", _
         "Nominale /Stuecke", _
         "Whg", _
