@@ -654,7 +654,7 @@ Private Function BuildSinglePageContent( _
         dblTableTopY = CONTINUATION_PAGE_TABLE_TOP_Y
     End If
 
-    strContent = "0 g" & vbCrLf & "0 w" & vbCrLf
+    strContent = "0 g" & vbCrLf & "0 G" & vbCrLf & "0 w" & vbCrLf
 
     If blnFirstPage And blnHasLogo Then
         strContent = strContent & _
@@ -914,9 +914,12 @@ Private Function BuildCellContent( _
     Optional ByVal strOverrideText As String = vbNullString) As String
 
     Const METHOD_NAME As String = "BuildCellContent"
+    Const FONT_SIZE_TOLERANCE As Double = 0.01
+    Const ORACLE_EIGHT_PT_BASELINE_OFFSET As Double = 0.76
     Dim dblFontSize As Double
     Dim dblTextWidth As Double
     Dim dblTextX As Double
+    Dim dblTextY As Double
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
@@ -948,11 +951,21 @@ Private Function BuildCellContent( _
         GoTo ExitFunction
     End If
 
+    dblTextY = dblBaselineY
+
     If blnHeader And dblFixedTextX >= 0# Then
         dblTextX = dblFixedTextX
     Else
-        dblFontSize = FitFontSize(strText, strFont, dblFontSize, dblWidth - (2# * TEXT_HORIZONTAL_PADDING))
-        dblTextWidth = EstimateBase14TextWidth(strText, strFont, dblFontSize)
+        dblFontSize = FitFontSize( _
+            strText, _
+            strFont, _
+            dblFontSize, _
+            dblWidth - (2# * TEXT_HORIZONTAL_PADDING))
+
+        dblTextWidth = EstimateBase14TextWidth( _
+            strText, _
+            strFont, _
+            dblFontSize)
 
         Select Case lngAlignment
             Case xlCenter
@@ -968,11 +981,17 @@ Private Function BuildCellContent( _
         End If
     End If
 
+    If Not blnHeader Then
+        If Abs(dblFontSize - LONG_TEXT_FONT_SIZE) < FONT_SIZE_TOLERANCE Then
+            dblTextY = dblBaselineY + ORACLE_EIGHT_PT_BASELINE_OFFSET
+        End If
+    End If
+
     BuildCellContent = BuildAbsoluteTextCommand( _
         strFont, _
         dblFontSize, _
         dblTextX, _
-        dblBaselineY, _
+        dblTextY, _
         strText)
 
 ExitFunction:
@@ -999,6 +1018,7 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
+
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -1090,8 +1110,6 @@ Private Function BuildOracleTransactionStructure( _
     Const METHOD_NAME As String = "BuildOracleTransactionStructure"
     Dim arrBottomDetailWidths As Variant
     Dim arrBottomDetailX As Variant
-    Dim arrTopDetailWidths As Variant
-    Dim arrTopDetailX As Variant
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
@@ -1100,8 +1118,6 @@ Private Function BuildOracleTransactionStructure( _
 
     On Error GoTo ErrorHandler
 
-    arrTopDetailX = GetOracleTopDetailX()
-    arrTopDetailWidths = GetOracleTopDetailWidths()
     arrBottomDetailX = GetOracleBottomDetailX()
     arrBottomDetailWidths = GetOracleBottomDetailWidths()
 
@@ -1111,14 +1127,6 @@ Private Function BuildOracleTransactionStructure( _
         TABLE_WIDTH, _
         dblTopRowTopY - dblSeparatorBottomY, _
         ORACLE_WHITE_LEVEL)
-
-    For lngIndex = LBound(arrTopDetailX) To UBound(arrTopDetailX)
-        strContent = strContent & BuildStrokedRectangleCommand( _
-            CDbl(arrTopDetailX(lngIndex)), _
-            dblTopBaseline, _
-            CDbl(arrTopDetailWidths(lngIndex)), _
-            ORACLE_DETAIL_HEIGHT)
-    Next lngIndex
 
     For lngIndex = LBound(arrBottomDetailX) To UBound(arrBottomDetailX)
         strContent = strContent & BuildNoPaintRectangleCommand( _
@@ -1169,6 +1177,7 @@ ErrorHandler:
     Resume ExitFunction
 End Function
 
+
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-07
@@ -1191,9 +1200,10 @@ Private Function BuildFilledStrokedRectangleCommand( _
     On Error GoTo ErrorHandler
 
     BuildFilledStrokedRectangleCommand = _
-        PdfNumber(dblGray) & " g " & _
+        "q " & PdfNumber(dblGray) & " g 0 G " & _
         PdfNumber(dblX) & " " & PdfNumber(dblY) & " " & _
-        PdfNumber(dblWidth) & " " & PdfNumber(dblHeight) & " re B*" & vbCrLf
+        PdfNumber(dblWidth) & " " & PdfNumber(dblHeight) & _
+        " re B* Q" & vbCrLf
 
 ExitFunction:
     Exit Function
@@ -1218,6 +1228,7 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
+
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -1329,12 +1340,36 @@ Private Function BuildHeaderGridStrokeContent( _
     ByVal dblTableTopY As Double) As String
 
     Const METHOD_NAME As String = "BuildHeaderGridStrokeContent"
+    Const CURRENT_HEADER_X As Double = 594#
+    Const ORACLE_HEADER_X As Double = 598.52
+    Const X_TOLERANCE As Double = 0.01
+    Dim arrOracleHeaderTopX As Variant
+    Dim blnHeaderXAdjusted As Boolean
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
+    Dim lngIndex As Long
     Dim strContent As String
 
     On Error GoTo ErrorHandler
+
+    If Not IsArray(arrTopX) Then
+        Err.Raise 1024, METHOD_NAME, "The upper header X-coordinate configuration is not an array."
+    End If
+
+    arrOracleHeaderTopX = arrTopX
+
+    For lngIndex = LBound(arrOracleHeaderTopX) To UBound(arrOracleHeaderTopX)
+        If Abs(CDbl(arrOracleHeaderTopX(lngIndex)) - CURRENT_HEADER_X) < X_TOLERANCE Then
+            arrOracleHeaderTopX(lngIndex) = ORACLE_HEADER_X
+            blnHeaderXAdjusted = True
+            Exit For
+        End If
+    Next lngIndex
+
+    If Not blnHeaderXAdjusted Then
+        Err.Raise 1024, METHOD_NAME, "The audited X=594 upper-header boundary was not found."
+    End If
 
     strContent = BuildLineCommand( _
         TABLE_LEFT_X, _
@@ -1343,7 +1378,7 @@ Private Function BuildHeaderGridStrokeContent( _
         dblHeaderTopY)
 
     strContent = strContent & BuildInteriorVerticalLines( _
-        arrTopX, _
+        arrOracleHeaderTopX, _
         dblHeaderTopY, _
         dblTableTopY)
 
@@ -1375,6 +1410,7 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
+
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -1579,6 +1615,7 @@ End Function
 ' Description:   Returns the displayed worksheet value used by the existing report.
 '-------------------------------------------------------------------------------
 Private Function GetWorksheetDisplayText(ByVal rngSource As Excel.Range) As String
+
     Const METHOD_NAME As String = "GetWorksheetDisplayText"
     Dim errorManager As New ErrorManager
     Dim errDescription As String
@@ -1617,7 +1654,13 @@ Private Function GetWorksheetDisplayText(ByVal rngSource As Excel.Range) As Stri
     strText = Replace(strText, vbCr, " ")
     strText = Replace(strText, vbLf, " ")
     strText = Replace(strText, ChrW(160), " ")
-    GetWorksheetDisplayText = Trim$(strText)
+    strText = RTrim$(strText)
+
+    If Len(Trim$(strText)) = 0 Then
+        strText = vbNullString
+    End If
+
+    GetWorksheetDisplayText = strText
 
 ExitFunction:
     Set rngValue = Nothing
@@ -1628,7 +1671,12 @@ ErrorHandler:
     errDescription = VBA.Err.Description
     GetWorksheetDisplayText = vbNullString
 
-    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
     errorManager.save
     Resume ExitFunction
 End Function
@@ -1905,10 +1953,15 @@ Private Function BuildAbsoluteTextCommand( _
 
     On Error GoTo ErrorHandler
 
+    ' FIX17:
+    ' Isolate every text object and explicitly reset the complete text rendering
+    ' state. 0 Tr forces normal filled glyphs; 0 g / 0 G forces black.
     BuildAbsoluteTextCommand = _
-        "BT " & strFont & " " & PdfNumber(dblFontSize) & " Tf " & _
+        "q 0 g 0 G BT " & _
+        strFont & " " & PdfNumber(dblFontSize) & " Tf " & _
+        "0 Tr 0 Tc 0 Tw 100 Tz 0 Ts " & _
         PdfNumber(dblX) & " " & PdfNumber(dblY) & " TD (" & _
-        EncodePdfText(strText) & ") Tj ET" & vbCrLf
+        EncodePdfText(strText) & ") Tj ET Q" & vbCrLf
 
 ExitFunction:
     Exit Function
@@ -1918,11 +1971,20 @@ ErrorHandler:
     errDescription = VBA.Err.Description
     BuildAbsoluteTextCommand = vbNullString
 
-    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "font;fontSize;x;y", _
+        strFont, _
+        dblFontSize, _
+        dblX, _
+        dblY
+
     errorManager.save
     Resume ExitFunction
 End Function
-
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-07
@@ -1941,11 +2003,13 @@ Private Function BuildPageNumberCommand( _
 
     On Error GoTo ErrorHandler
 
+    ' FIX17: use the same explicit visible-text state as all report text.
     BuildPageNumberCommand = _
-        "BT /F0 " & PdfNumber(PAGE_NUMBER_FONT_SIZE) & " Tf " & _
+        "q 0 g 0 G BT /F0 " & PdfNumber(PAGE_NUMBER_FONT_SIZE) & " Tf " & _
+        "0 Tr 0 Tc 0 Tw 100 Tz 0 Ts " & _
         PdfNumber(PAGE_NUMBER_X) & " " & PdfNumber(PAGE_NUMBER_Y) & " TD (" & _
         EncodePdfText(CStr(lngPage)) & ") Tj ( / ) Tj (" & _
-        EncodePdfText(CStr(lngPageCount)) & ") Tj ET" & vbCrLf
+        EncodePdfText(CStr(lngPageCount)) & ") Tj ET Q" & vbCrLf
 
 ExitFunction:
     Exit Function
@@ -1967,7 +2031,6 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
-
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-05
@@ -3615,3 +3678,5 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
+
+
