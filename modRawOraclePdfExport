@@ -22,7 +22,9 @@ Private Const HEADER_FONT_SIZE As Double = 8#
 Private Const DATA_FONT_SIZE As Double = 9#
 Private Const LONG_TEXT_FONT_SIZE As Double = 8#
 Private Const MIN_FONT_SIZE As Double = 5.5
-Private Const TEXT_HORIZONTAL_PADDING As Double = 4.48
+Private Const TEXT_LEFT_PADDING As Double = 4.52
+Private Const TEXT_RIGHT_PADDING As Double = 4.48
+Private Const ORACLE_NUMERIC_LEADING_SPACES As Long = 3
 Private Const HEADER_GRAY_LEVEL As Double = 0.72
 Private Const SEPARATOR_GRAY_LEVEL As Double = 0.86
 Private Const FOOTER_X As Double = 40.52
@@ -945,6 +947,10 @@ Private Function BuildCellContent( _
         strFont = "/F2"
         dblFontSize = GetDataFontSize(strText)
         lngAlignment = ResolveCellAlignment(rngSource, strText)
+        strText = ApplyOracleNumericFieldPadding( _
+            rngSource, _
+            strText, _
+            lngAlignment)
     End If
 
     If Len(strText) = 0 Then
@@ -960,7 +966,7 @@ Private Function BuildCellContent( _
             strText, _
             strFont, _
             dblFontSize, _
-            dblWidth - (2# * TEXT_HORIZONTAL_PADDING))
+            dblWidth - TEXT_LEFT_PADDING - TEXT_RIGHT_PADDING)
 
         dblTextWidth = EstimateBase14TextWidth( _
             strText, _
@@ -971,9 +977,9 @@ Private Function BuildCellContent( _
             Case xlCenter
                 dblTextX = dblX + ((dblWidth - dblTextWidth) / 2#)
             Case xlRight
-                dblTextX = dblX + dblWidth - TEXT_HORIZONTAL_PADDING - dblTextWidth
+                dblTextX = dblX + dblWidth - TEXT_RIGHT_PADDING - dblTextWidth
             Case Else
-                dblTextX = dblX + TEXT_HORIZONTAL_PADDING
+                dblTextX = dblX + TEXT_LEFT_PADDING
         End Select
 
         If dblTextX < dblX + 0.5 Then
@@ -1683,6 +1689,75 @@ End Function
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    rngSource As Excel.Range, strText As String, lngAlignment As Long
+' Returns:       String
+' Description:   Reproduces Oracle Reports fixed-field padding for right-aligned numeric data.
+'-------------------------------------------------------------------------------
+Private Function ApplyOracleNumericFieldPadding( _
+    ByVal rngSource As Excel.Range, _
+    ByVal strText As String, _
+    ByVal lngAlignment As Long) As String
+
+    Const METHOD_NAME As String = "ApplyOracleNumericFieldPadding"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim rngValue As Excel.Range
+    Dim strCoreText As String
+
+    On Error GoTo ErrorHandler
+
+    ApplyOracleNumericFieldPadding = strText
+
+    If Len(strText) = 0 Or lngAlignment <> xlRight Then
+        GoTo ExitFunction
+    End If
+
+    Set rngValue = rngSource
+
+    If rngSource.MergeCells Then
+        Set rngValue = rngSource.MergeArea.Cells(1, 1)
+    End If
+
+    If IsDate(rngValue.Value) Then
+        GoTo ExitFunction
+    End If
+
+    If Not IsNumeric(rngValue.Value) Then
+        GoTo ExitFunction
+    End If
+
+    strCoreText = LTrim$(strText)
+
+    If Len(strCoreText) = 0 Then
+        GoTo ExitFunction
+    End If
+
+    ApplyOracleNumericFieldPadding = _
+        Space$(ORACLE_NUMERIC_LEADING_SPACES) & strCoreText
+
+ExitFunction:
+    Set rngValue = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ApplyOracleNumericFieldPadding = strText
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
 ' Creation date: 2026-08-05
 ' Parameters:    rngSource As Excel.Range, strText As String
 ' Returns:       Long
@@ -1953,15 +2028,16 @@ Private Function BuildAbsoluteTextCommand( _
 
     On Error GoTo ErrorHandler
 
-    ' FIX17:
-    ' Isolate every text object and explicitly reset the complete text rendering
-    ' state. 0 Tr forces normal filled glyphs; 0 g / 0 G forces black.
+    ' FIX18:
+    ' Geometry commands are already isolated with q/Q and the page starts in
+    ' black. Keep the visibility fix (0 Tr) but do not wrap every text object in
+    ' an extra graphics-state pair; this mirrors the Oracle operator profile.
     BuildAbsoluteTextCommand = _
-        "q 0 g 0 G BT " & _
+        "BT " & _
         strFont & " " & PdfNumber(dblFontSize) & " Tf " & _
         "0 Tr 0 Tc 0 Tw 100 Tz 0 Ts " & _
         PdfNumber(dblX) & " " & PdfNumber(dblY) & " TD (" & _
-        EncodePdfText(strText) & ") Tj ET Q" & vbCrLf
+        EncodePdfText(strText) & ") Tj ET" & vbCrLf
 
 ExitFunction:
     Exit Function
@@ -2003,13 +2079,13 @@ Private Function BuildPageNumberCommand( _
 
     On Error GoTo ErrorHandler
 
-    ' FIX17: use the same explicit visible-text state as all report text.
+    ' FIX18: keep the explicit visible-text state without a per-text q/Q wrapper.
     BuildPageNumberCommand = _
-        "q 0 g 0 G BT /F0 " & PdfNumber(PAGE_NUMBER_FONT_SIZE) & " Tf " & _
+        "BT /F0 " & PdfNumber(PAGE_NUMBER_FONT_SIZE) & " Tf " & _
         "0 Tr 0 Tc 0 Tw 100 Tz 0 Ts " & _
         PdfNumber(PAGE_NUMBER_X) & " " & PdfNumber(PAGE_NUMBER_Y) & " TD (" & _
         EncodePdfText(CStr(lngPage)) & ") Tj ( / ) Tj (" & _
-        EncodePdfText(CStr(lngPageCount)) & ") Tj ET Q" & vbCrLf
+        EncodePdfText(CStr(lngPageCount)) & ") Tj ET" & vbCrLf
 
 ExitFunction:
     Exit Function
@@ -3473,15 +3549,15 @@ Private Function BuildPdfDocument( _
     ReDim arrOffsets(1 To lngObjectCount)
 
     arrObjects(1) = "<< /Type /Catalog /Pages 2 0 R >>"
-    arrObjects(3) = "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold /Encoding /WinAnsiEncoding >>"
+    arrObjects(3) = "<< /Type /Font /Subtype /Type1 /BaseFont /#54#69#6D#65#73#2D#42#6F#6C#64 /Encoding /WinAnsiEncoding >>"
     arrObjects(4) = _
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Arial-Bold " & _
+        "<< /Type /Font /Subtype /Type1 /BaseFont /#41#72#69#61#6C#2D#42#6F#6C#64 " & _
         "/FirstChar 32 /LastChar 255 /Widths 6 0 R /FontDescriptor 7 0 R " & _
         "/Encoding /WinAnsiEncoding >>"
-    arrObjects(5) = "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman /Encoding /WinAnsiEncoding >>"
+    arrObjects(5) = "<< /Type /Font /Subtype /Type1 /BaseFont /#54#69#6D#65#73#2D#52#6F#6D#61#6E /Encoding /WinAnsiEncoding >>"
     arrObjects(6) = GetArialBoldWidthsArray()
     arrObjects(7) = _
-        "<< /Type /FontDescriptor /FontName /Arial-Bold /Flags 32 " & _
+        "<< /Type /FontDescriptor /FontName /#41#72#69#61#6C#2D#42#6F#6C#64 /Flags 32 " & _
         "/FontBBox [-664 -324 2000 1039] /ItalicAngle 0 /Ascent 1031 " & _
         "/Descent -281 /CapHeight 750 /StemV 0 /MissingWidth 0 >>"
 
