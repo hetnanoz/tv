@@ -6531,7 +6531,7 @@ Private Sub WriteBreaksOnlyReport( _
     Set dictActions = CreateObject("Scripting.Dictionary")
     lngFileNumber = OpenNew(outputPath)
 
-    Call EmitLine(lngFileNumber, "ORACLE_COMPATIBILITY_BREAKS_ONLY_V1")
+    Call EmitLine(lngFileNumber, "ORACLE_COMPATIBILITY_BREAKS_ONLY_V2")
     Call EmitLine(lngFileNumber, "OLD|" & oldDoc.PdfPath)
     Call EmitLine(lngFileNumber, "NEW|" & newDoc.PdfPath)
     Call EmitLine(lngFileNumber, _
@@ -6847,13 +6847,20 @@ Private Sub WriteBreaksPageReport( _
         End If
     End If
 
-    If oldDoc.Pages(pageNo).ResolvedFonts <> newDoc.Pages(pageNo).ResolvedFonts Then
+    If NormalizeBreaksFontSignature(oldDoc.Pages(pageNo).ResolvedFonts) <> _
+       NormalizeBreaksFontSignature(newDoc.Pages(pageNo).ResolvedFonts) Then
+
         structuralCount = structuralCount + 1
         Call EmitLine(fileNumber, _
-            "PAGE_STREAM_BREAK|type=FONT_RESOURCES|OLD=" & oldDoc.Pages(pageNo).ResolvedFonts & _
-            "|NEW=" & newDoc.Pages(pageNo).ResolvedFonts & _
-            "|FIX=Reproduce the OLD font dictionaries/descriptors where possible.")
+            "PAGE_STREAM_BREAK|type=FONT_RESOURCES" & _
+            "|OLD=" & NormalizeBreaksFontSignature(oldDoc.Pages(pageNo).ResolvedFonts) & _
+            "|NEW=" & NormalizeBreaksFontSignature(newDoc.Pages(pageNo).ResolvedFonts) & _
+            "|FIX=Reproduce the OLD semantic font dictionaries/descriptors where possible.")
         Call IncrementDictionaryValue(actionDictionary, "PAGE_FONT_RESOURCES")
+    ElseIf oldDoc.Pages(pageNo).ResolvedFonts <> newDoc.Pages(pageNo).ResolvedFonts Then
+        Call EmitLine(fileNumber, _
+            "FONT_SERIALIZATION_ONLY|result=PASS_SEMANTIC" & _
+            "|ACTION=No generator change required for font resources; only PDF-name serialization differs.")
     End If
 
     If oldDoc.Pages(pageNo).ContentFilters <> newDoc.Pages(pageNo).ContentFilters Then
@@ -7128,57 +7135,139 @@ Private Sub WriteBreaksTargetSeparator( _
 
     Const METHOD_NAME As String = "WriteBreaksTargetSeparator"
     Dim errorManager As New ErrorManager
+    Dim blnNewUsed() As Boolean
+    Dim blnFound As Boolean
+    Dim dblBestDistance As Double
+    Dim dblDistance As Double
     Dim errDescription As String
     Dim errNumber As Long
-    Dim dictNew As Object
-    Dim dictOld As Object
-    Dim lngChanged As Long
+    Dim lngBestNewIndex As Long
+    Dim lngGeometryBreaks As Long
+    Dim lngIndex As Long
     Dim lngNewCrossings As Long
-    Dim lngNewOnly As Long
+    Dim lngNewIndex As Long
+    Dim lngNewOccurrences As Long
     Dim lngOldCrossings As Long
-    Dim lngOldOnly As Long
+    Dim lngOldOccurrences As Long
+    Dim lngStyleBreaks As Long
+    Dim lngUnmatchedNew As Long
 
     On Error GoTo ErrorHandler
 
-    Set dictOld = BuildTargetLineAuditDictionary(oldDoc, pageNo, targetX)
-    Set dictNew = BuildTargetLineAuditDictionary(newDoc, pageNo, targetX)
-    Call DictionaryDifferenceCounts(dictOld, dictNew, lngOldOnly, lngNewOnly, lngChanged)
-
+    lngOldOccurrences = CountBreaksTargetOccurrences(oldDoc, pageNo, targetX)
+    lngNewOccurrences = CountBreaksTargetOccurrences(newDoc, pageNo, targetX)
     lngOldCrossings = CountTargetTextCrossings(oldDoc, pageNo, targetX, 0, False)
     lngNewCrossings = CountTargetTextCrossings(newDoc, pageNo, targetX, 0, False)
 
-    If lngOldOnly = 0 And lngNewOnly = 0 And lngChanged = 0 And _
+    If newDoc.LineCount > 0 Then
+        ReDim blnNewUsed(0 To newDoc.LineCount - 1)
+    Else
+        ReDim blnNewUsed(0 To 0)
+    End If
+
+    For lngIndex = 0 To oldDoc.LineCount - 1
+        If oldDoc.Lines(lngIndex).PageNo = pageNo Then
+            If IsVerticalAtX(oldDoc.Lines(lngIndex), targetX) Then
+                dblBestDistance = 1E+30
+                lngBestNewIndex = -1
+
+                For lngNewIndex = 0 To newDoc.LineCount - 1
+                    If newDoc.Lines(lngNewIndex).PageNo = pageNo Then
+                        If Not blnNewUsed(lngNewIndex) Then
+                            If IsVerticalAtX(newDoc.Lines(lngNewIndex), targetX) Then
+                                dblDistance = _
+                                    Abs(MinDouble(oldDoc.Lines(lngIndex).Y1, oldDoc.Lines(lngIndex).Y2) - _
+                                        MinDouble(newDoc.Lines(lngNewIndex).Y1, newDoc.Lines(lngNewIndex).Y2)) + _
+                                    Abs(MaxDouble(oldDoc.Lines(lngIndex).Y1, oldDoc.Lines(lngIndex).Y2) - _
+                                        MaxDouble(newDoc.Lines(lngNewIndex).Y1, newDoc.Lines(lngNewIndex).Y2))
+
+                                If dblDistance < dblBestDistance Then
+                                    dblBestDistance = dblDistance
+                                    lngBestNewIndex = lngNewIndex
+                                End If
+                            End If
+                        End If
+                    End If
+                Next lngNewIndex
+
+                blnFound = lngBestNewIndex >= 0 And _
+                    dblBestDistance <= TARGET_TOLERANCE * 2#
+
+                If blnFound Then
+                    blnNewUsed(lngBestNewIndex) = True
+
+                    If Not BreaksLineStyleMatches( _
+                        oldDoc.Lines(lngIndex), _
+                        newDoc.Lines(lngBestNewIndex)) Then
+
+                        lngStyleBreaks = lngStyleBreaks + 1
+                        Call EmitLine(fileNumber, _
+                            "TARGET_SEPARATOR_STYLE" & _
+                            "|x=" & NumTxt(targetX) & _
+                            "|OLD=" & CanonicalLineGeometryKey(oldDoc.Lines(lngIndex)) & _
+                            "|" & BreaksLineStyle(oldDoc.Lines(lngIndex)) & _
+                            "|NEW=" & CanonicalLineGeometryKey(newDoc.Lines(lngBestNewIndex)) & _
+                            "|" & BreaksLineStyle(newDoc.Lines(lngBestNewIndex)) & _
+                            "|FIX=Keep geometry; reproduce OLD width/paint/source/color.")
+                    End If
+                Else
+                    lngGeometryBreaks = lngGeometryBreaks + 1
+                    Call EmitLine(fileNumber, _
+                        "TARGET_SEPARATOR_GEOMETRY" & _
+                        "|x=" & NumTxt(targetX) & _
+                        "|OLD=" & CanonicalLineGeometryKey(oldDoc.Lines(lngIndex)) & _
+                        "|NEW=(no matching segment)" & _
+                        "|FIX=Restore the OLD target-separator y-range.")
+                End If
+            End If
+        End If
+    Next lngIndex
+
+    For lngNewIndex = 0 To newDoc.LineCount - 1
+        If newDoc.Lines(lngNewIndex).PageNo = pageNo Then
+            If IsVerticalAtX(newDoc.Lines(lngNewIndex), targetX) Then
+                If Not blnNewUsed(lngNewIndex) Then
+                    lngUnmatchedNew = lngUnmatchedNew + 1
+                    Call EmitLine(fileNumber, _
+                        "TARGET_SEPARATOR_EXTRA_NEW" & _
+                        "|x=" & NumTxt(targetX) & _
+                        "|NEW=" & CanonicalLineGeometryKey(newDoc.Lines(lngNewIndex)) & _
+                        "|" & BreaksLineStyle(newDoc.Lines(lngNewIndex)) & _
+                        "|FIX=Remove/reconcile the extra NEW target-separator segment.")
+                End If
+            End If
+        End If
+    Next lngNewIndex
+
+    If lngOldOccurrences = lngNewOccurrences And _
+       lngGeometryBreaks = 0 And _
+       lngUnmatchedNew = 0 And _
+       lngStyleBreaks = 0 And _
        lngOldCrossings = lngNewCrossings Then
 
         Call EmitLine(fileNumber, _
             "TARGET_SEPARATOR|x=" & NumTxt(targetX) & _
-            "|result=PASS|occurrences=" & CStr(DictionaryValueTotal(dictOld)) & _
+            "|result=PASS" & _
+            "|occurrences=" & CStr(lngOldOccurrences) & _
             "|crossings=" & CStr(lngOldCrossings))
     Else
         criticalCount = criticalCount + 1
         Call EmitLine(fileNumber, _
             "TARGET_SEPARATOR|x=" & NumTxt(targetX) & _
-            "|result=FAIL|oldOccurrences=" & CStr(DictionaryValueTotal(dictOld)) & _
-            "|newOccurrences=" & CStr(DictionaryValueTotal(dictNew)) & _
-            "|oldOnly=" & CStr(lngOldOnly) & _
-            "|newOnly=" & CStr(lngNewOnly) & _
-            "|styleOrMultiplicity=" & CStr(lngChanged) & _
+            "|result=FAIL" & _
+            "|oldOccurrences=" & CStr(lngOldOccurrences) & _
+            "|newOccurrences=" & CStr(lngNewOccurrences) & _
+            "|geometryBreaks=" & CStr(lngGeometryBreaks) & _
+            "|extraNew=" & CStr(lngUnmatchedNew) & _
+            "|styleBreaks=" & CStr(lngStyleBreaks) & _
             "|oldCrossings=" & CStr(lngOldCrossings) & _
             "|newCrossings=" & CStr(lngNewCrossings) & _
-            "|FIX=Match OLD y-ranges, multiplicity, width, paint/source operator, and color exactly.")
+            "|FIX=Match OLD target separator geometry/style exactly.")
         Call IncrementDictionaryValue(actionDictionary, _
             "TARGET_SEPARATOR_X_" & Replace(NumTxt(targetX), ".", "_"))
-        Call WriteDictionaryDifferenceSamples( _
-            "TARGET_" & Replace(NumTxt(targetX), ".", "_"), _
-            dictOld, _
-            dictNew, _
-            fileNumber, _
-            12)
     End If
 
 ExitSub:
-    Set dictOld = Nothing
-    Set dictNew = Nothing
     Exit Sub
 
 ErrorHandler:
@@ -7306,9 +7395,16 @@ Private Sub WriteBreaksTextDifferences( _
                         infoCount = infoCount + 1
                         If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
                             Call EmitLine(fileNumber, _
-                                "WHITESPACE_ONLY|OLD=" & BreaksShortText(strOldText) & _
-                                "|NEW=" & BreaksShortText(strNewText) & _
-                                "|ACTION=No geometry change. Review only if the client parser is whitespace-sensitive.")
+                                "WHITESPACE_ONLY" & _
+                                "|OLD_VISIBLE=" & BreaksVisibleWhitespace(strOldText) & _
+                                "|NEW_VISIBLE=" & BreaksVisibleWhitespace(strNewText) & _
+                                "|leadingOld=" & CStr(BreaksLeadingSpaceCount(strOldText)) & _
+                                "|leadingNew=" & CStr(BreaksLeadingSpaceCount(strNewText)) & _
+                                "|trailingOld=" & CStr(BreaksTrailingSpaceCount(strOldText)) & _
+                                "|trailingNew=" & CStr(BreaksTrailingSpaceCount(strNewText)) & _
+                                "|lengthOld=" & CStr(Len(strOldText)) & _
+                                "|lengthNew=" & CStr(Len(strNewText)) & _
+                                "|ACTION=Whitespace differs. Use the counts above before changing text coordinates.")
                             lngWritten = lngWritten + 1
                         End If
                     ElseIf IsBreaksFixedTextRole(oldDoc, pageNo, lngIndex) Or _
@@ -8490,6 +8586,138 @@ End Function
 ' Returns:       String
 ' Description:   Normalizes horizontal whitespace without changing business characters.
 '-------------------------------------------------------------------------------
+Private Function NormalizeBreaksFontSignature(ByVal value As String) As String
+    Const METHOD_NAME As String = "NormalizeBreaksFontSignature"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim strHex As String
+    Dim strResult As String
+
+    On Error GoTo ErrorHandler
+
+    lngIndex = 1
+    Do While lngIndex <= Len(value)
+        If Mid$(value, lngIndex, 1) = "#" And lngIndex + 2 <= Len(value) Then
+            strHex = Mid$(value, lngIndex + 1, 2)
+            If IsBreaksHexPair(strHex) Then
+                strResult = strResult & Chr$(CLng("&H" & strHex))
+                lngIndex = lngIndex + 3
+            Else
+                strResult = strResult & Mid$(value, lngIndex, 1)
+                lngIndex = lngIndex + 1
+            End If
+        Else
+            strResult = strResult & Mid$(value, lngIndex, 1)
+            lngIndex = lngIndex + 1
+        End If
+    Loop
+
+    strResult = Replace(strResult, vbTab, " ")
+    strResult = Replace(strResult, vbCr, " ")
+    strResult = Replace(strResult, vbLf, " ")
+    Do While InStr(1, strResult, "  ", vbBinaryCompare) > 0
+        strResult = Replace(strResult, "  ", " ")
+    Loop
+
+    NormalizeBreaksFontSignature = Trim$(strResult)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    NormalizeBreaksFontSignature = value
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+Private Function IsBreaksHexPair(ByVal value As String) As Boolean
+    Dim lngIndex As Long
+    Dim strChar As String
+
+    If Len(value) <> 2 Then Exit Function
+
+    For lngIndex = 1 To 2
+        strChar = UCase$(Mid$(value, lngIndex, 1))
+        If InStr(1, "0123456789ABCDEF", strChar, vbBinaryCompare) = 0 Then
+            Exit Function
+        End If
+    Next lngIndex
+
+    IsBreaksHexPair = True
+End Function
+
+Private Function BreaksVisibleWhitespace(ByVal value As String) As String
+    Dim lngIndex As Long
+    Dim strChar As String
+    Dim strResult As String
+
+    For lngIndex = 1 To Len(value)
+        strChar = Mid$(value, lngIndex, 1)
+
+        Select Case strChar
+            Case " "
+                strResult = strResult & "[SP]"
+            Case vbTab
+                strResult = strResult & "[TAB]"
+            Case vbCr
+                strResult = strResult & "[CR]"
+            Case vbLf
+                strResult = strResult & "[LF]"
+            Case Chr$(160)
+                strResult = strResult & "[NBSP]"
+            Case Else
+                strResult = strResult & strChar
+        End Select
+
+        If Len(strResult) > 180 Then
+            strResult = Left$(strResult, 180) & "..."
+            Exit For
+        End If
+    Next lngIndex
+
+    If Len(strResult) = 0 Then strResult = "(empty)"
+    BreaksVisibleWhitespace = strResult
+End Function
+
+Private Function BreaksLeadingSpaceCount(ByVal value As String) As Long
+    Dim lngIndex As Long
+    Dim strChar As String
+
+    For lngIndex = 1 To Len(value)
+        strChar = Mid$(value, lngIndex, 1)
+        If strChar = " " Or strChar = Chr$(160) Or strChar = vbTab Then
+            BreaksLeadingSpaceCount = BreaksLeadingSpaceCount + 1
+        Else
+            Exit For
+        End If
+    Next lngIndex
+End Function
+
+Private Function BreaksTrailingSpaceCount(ByVal value As String) As Long
+    Dim lngIndex As Long
+    Dim strChar As String
+
+    For lngIndex = Len(value) To 1 Step -1
+        strChar = Mid$(value, lngIndex, 1)
+        If strChar = " " Or strChar = Chr$(160) Or strChar = vbTab Then
+            BreaksTrailingSpaceCount = BreaksTrailingSpaceCount + 1
+        Else
+            Exit For
+        End If
+    Next lngIndex
+End Function
+
 Private Function NormalizeBreaksWhitespace(ByVal value As String) As String
     Const METHOD_NAME As String = "NormalizeBreaksWhitespace"
     Dim errorManager As New ErrorManager
