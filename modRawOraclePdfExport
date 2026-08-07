@@ -2273,7 +2273,7 @@ Private Function ResolveOracleDataFontResource( _
     '   /F0 = Times-Bold
     '   /F1 = Times-Roman
     '   /F2 = absent on the audited data page
-    ' Therefore all normal data text uses /F1. Font size remains field-specific.
+    ' Therefore all normal data text uses /F1. Font size remains field-specific (FIX28 includes OLD 8 pt Whg-Abrech role).
     ResolveOracleDataFontResource = "/F1"
 
 ExitFunction:
@@ -2425,8 +2425,14 @@ Private Function ResolveOracleDataFontSize( _
             ResolveOracleDataFontSize = LONG_TEXT_FONT_SIZE
         End If
     Else
-        If IsOracleCurrencyField(False, lngFieldIndex) Or _
-           lngFieldIndex = BOTTOM_FIELD_SPESEN_INDEX Then
+        ' V11 structural-field audit proved that the currency cell immediately
+        ' before Devisenkurs (Whg for ausm. Betrag in Abrech. Whg) is 8 pt in
+        ' the OLD Oracle PDF. FIX27 still emitted it at 9 pt, producing the
+        ' repeated dY=-0.76 and dX about -0.74..-1.00 family.
+        If lngFieldIndex = BOTTOM_FIELD_WHG_ABRECH_INDEX Then
+            ResolveOracleDataFontSize = LONG_TEXT_FONT_SIZE
+        ElseIf IsOracleCurrencyField(False, lngFieldIndex) Or _
+               lngFieldIndex = BOTTOM_FIELD_SPESEN_INDEX Then
 
             ResolveOracleDataFontSize = DATA_FONT_SIZE
         ElseIf lngFieldIndex = BOTTOM_FIELD_DEVISENKURS_INDEX Then
