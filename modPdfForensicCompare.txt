@@ -6899,7 +6899,7 @@ Private Sub WriteBreaksExecutiveSummary( _
     '-----------------------------------------------------------------------
     lngFileOut = OpenNew(outputPath)
 
-    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V3")
+    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V4")
     Call EmitLine(lngFileOut, "OLD|" & oldDoc.PdfPath)
     Call EmitLine(lngFileOut, "NEW|" & newDoc.PdfPath)
     Call EmitLine(lngFileOut, _
@@ -7777,20 +7777,20 @@ Private Sub WriteBreaksPageReport( _
         End If
     End If
 
-    If NormalizeBreaksFontSignature(oldDoc.Pages(pageNo).ResolvedFonts) <> _
-       NormalizeBreaksFontSignature(newDoc.Pages(pageNo).ResolvedFonts) Then
+    If BreaksSemanticPageFontSetSignature(oldDoc.Pages(pageNo).ResolvedFonts) <> _
+       BreaksSemanticPageFontSetSignature(newDoc.Pages(pageNo).ResolvedFonts) Then
 
         structuralCount = structuralCount + 1
         Call EmitLine(fileNumber, _
             "PAGE_STREAM_BREAK|type=FONT_RESOURCES" & _
-            "|OLD=" & NormalizeBreaksFontSignature(oldDoc.Pages(pageNo).ResolvedFonts) & _
-            "|NEW=" & NormalizeBreaksFontSignature(newDoc.Pages(pageNo).ResolvedFonts) & _
-            "|FIX=Reproduce the OLD semantic font dictionaries/descriptors where possible.")
+            "|OLD=" & BreaksSemanticPageFontSetSignature(oldDoc.Pages(pageNo).ResolvedFonts) & _
+            "|NEW=" & BreaksSemanticPageFontSetSignature(newDoc.Pages(pageNo).ResolvedFonts) & _
+            "|FIX=Match the OLD semantic font set; resource aliases such as F1/F2 are ignored here.")
         Call IncrementDictionaryValue(actionDictionary, "PAGE_FONT_RESOURCES")
     ElseIf oldDoc.Pages(pageNo).ResolvedFonts <> newDoc.Pages(pageNo).ResolvedFonts Then
         Call EmitLine(fileNumber, _
-            "FONT_SERIALIZATION_ONLY|result=PASS_SEMANTIC" & _
-            "|ACTION=No generator change required for font resources; only PDF-name serialization differs.")
+            "FONT_RESOURCE_ALIAS_ONLY|result=PASS_SEMANTIC" & _
+            "|ACTION=No text-font change required; OLD/NEW resource aliases or serialization differ.")
     End If
 
     If oldDoc.Pages(pageNo).ContentFilters <> newDoc.Pages(pageNo).ContentFilters Then
@@ -8244,7 +8244,9 @@ Private Sub WriteBreaksTextDifferences( _
     Dim lngIndex As Long
     Dim lngNewIndex As Long
     Dim lngWritten As Long
+    Dim strNewFontSemantic As String
     Dim strNewText As String
+    Dim strOldFontSemantic As String
     Dim strOldText As String
 
     On Error GoTo ErrorHandler
@@ -8300,21 +8302,43 @@ Private Sub WriteBreaksTextDifferences( _
                         "|shiftY=" & NumTxt(dblShiftY))
                 End If
 
-                If oldDoc.Texts(lngIndex).FontName <> newDoc.Texts(lngNewIndex).FontName Or _
+                strOldFontSemantic = BreaksTextFontSemanticSignature( _
+                    oldDoc, _
+                    pageNo, _
+                    oldDoc.Texts(lngIndex).FontName)
+
+                strNewFontSemantic = BreaksTextFontSemanticSignature( _
+                    newDoc, _
+                    pageNo, _
+                    newDoc.Texts(lngNewIndex).FontName)
+
+                If strOldFontSemantic <> strNewFontSemantic Or _
                    Abs(oldDoc.Texts(lngIndex).FontSize - newDoc.Texts(lngNewIndex).FontSize) > 0.01 Then
 
                     structuralCount = structuralCount + 1
                     If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
                         Call EmitLine(fileNumber, _
                             "TEXT_FONT|text=" & BreaksShortText(oldDoc.Texts(lngIndex).TextValue) & _
-                            "|OLD=" & oldDoc.Texts(lngIndex).FontName & "@" & NumTxt(oldDoc.Texts(lngIndex).FontSize) & _
-                            "|NEW=" & newDoc.Texts(lngNewIndex).FontName & "@" & NumTxt(newDoc.Texts(lngNewIndex).FontSize) & _
-                            "|FIX=Use the OLD font resource and size for this text role.")
+                            "|OLD=" & strOldFontSemantic & "@" & NumTxt(oldDoc.Texts(lngIndex).FontSize) & _
+                            "|NEW=" & strNewFontSemantic & "@" & NumTxt(newDoc.Texts(lngNewIndex).FontSize) & _
+                            "|OLD_ALIAS=" & oldDoc.Texts(lngIndex).FontName & _
+                            "|NEW_ALIAS=" & newDoc.Texts(lngNewIndex).FontName & _
+                            "|FIX=Match the OLD semantic font and size; do not change font only because F1/F2 aliases differ.")
                         lngWritten = lngWritten + 1
                     End If
                     Call IncrementDictionaryValue(actionDictionary, _
-                        "TEXT_FONT|old=" & oldDoc.Texts(lngIndex).FontName & "@" & NumTxt(oldDoc.Texts(lngIndex).FontSize) & _
-                        "|new=" & newDoc.Texts(lngNewIndex).FontName & "@" & NumTxt(newDoc.Texts(lngNewIndex).FontSize))
+                        "TEXT_FONT|old=" & strOldFontSemantic & "@" & NumTxt(oldDoc.Texts(lngIndex).FontSize) & _
+                        "|new=" & strNewFontSemantic & "@" & NumTxt(newDoc.Texts(lngNewIndex).FontSize))
+                ElseIf oldDoc.Texts(lngIndex).FontName <> newDoc.Texts(lngNewIndex).FontName Then
+                    If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
+                        Call EmitLine(fileNumber, _
+                            "TEXT_FONT_ALIAS_ONLY|text=" & BreaksShortText(oldDoc.Texts(lngIndex).TextValue) & _
+                            "|OLD_ALIAS=" & oldDoc.Texts(lngIndex).FontName & _
+                            "|NEW_ALIAS=" & newDoc.Texts(lngNewIndex).FontName & _
+                            "|semantic=" & strOldFontSemantic & _
+                            "|ACTION=No text-font code change required from this alias difference.")
+                        lngWritten = lngWritten + 1
+                    End If
                 End If
 
                 strOldText = oldDoc.Texts(lngIndex).TextValue
@@ -8753,15 +8777,56 @@ Private Function FindBreaksNearestLine( _
     Const METHOD_NAME As String = "FindBreaksNearestLine"
     Dim errorManager As New ErrorManager
     Dim dblCandidate As Double
+    Dim dblExactBest As Double
     Dim errDescription As String
     Dim errNumber As Long
+    Dim lngExactIndex As Long
     Dim lngIndex As Long
 
     On Error GoTo ErrorHandler
 
     FindBreaksNearestLine = -1
     distance = 1E+30
+    dblExactBest = 1E+30
+    lngExactIndex = -1
 
+    ' First pass: among geometrically matching candidates, prefer the one
+    ' whose style already matches OLD. This prevents duplicate rectangle
+    ' edges from creating false VECTOR_STYLE breaks.
+    For lngIndex = 0 To newDoc.LineCount - 1
+        If newDoc.Lines(lngIndex).PageNo = pageNo Then
+            If Not newUsed(lngIndex) Then
+                If Not IsVerticalAtX(newDoc.Lines(lngIndex), TARGET_X_FIRST) And _
+                   Not IsVerticalAtX(newDoc.Lines(lngIndex), TARGET_X_SECOND) Then
+
+                    dblCandidate = BreaksLineGeometryDistance( _
+                        oldDoc.Lines(oldIndex), _
+                        newDoc.Lines(lngIndex))
+
+                    If dblCandidate <= BREAKS_LINE_MATCH_TOLERANCE Then
+                        If BreaksLineStyleMatches( _
+                            oldDoc.Lines(oldIndex), _
+                            newDoc.Lines(lngIndex)) Then
+
+                            If dblCandidate < dblExactBest Then
+                                dblExactBest = dblCandidate
+                                lngExactIndex = lngIndex
+                            End If
+                        End If
+                    End If
+                End If
+            End If
+        End If
+    Next lngIndex
+
+    If lngExactIndex >= 0 Then
+        FindBreaksNearestLine = lngExactIndex
+        distance = dblExactBest
+        GoTo ExitFunction
+    End If
+
+    ' Second pass: no exact-style partner exists; use nearest geometry so a
+    ' genuine style difference is still reported.
     For lngIndex = 0 To newDoc.LineCount - 1
         If newDoc.Lines(lngIndex).PageNo = pageNo Then
             If Not newUsed(lngIndex) Then
@@ -8934,9 +8999,10 @@ Private Function BreaksLineStyleMatches( _
 
     BreaksLineStyleMatches = _
         Abs(firstLine.LineWidth - secondLine.LineWidth) <= 0.01 And _
-        firstLine.PaintOperator = secondLine.PaintOperator And _
-        firstLine.SourceOperator = secondLine.SourceOperator And _
-        firstLine.StrokeColor = secondLine.StrokeColor
+        Trim$(firstLine.PaintOperator) = Trim$(secondLine.PaintOperator) And _
+        Trim$(firstLine.SourceOperator) = Trim$(secondLine.SourceOperator) And _
+        NormalizeBreaksStrokeColor(firstLine.StrokeColor) = _
+            NormalizeBreaksStrokeColor(secondLine.StrokeColor)
 
 ExitFunction:
     Exit Function
@@ -9516,6 +9582,118 @@ End Function
 ' Returns:       String
 ' Description:   Normalizes horizontal whitespace without changing business characters.
 '-------------------------------------------------------------------------------
+Private Function BreaksTextFontSemanticSignature( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal resourceName As String) As String
+
+    Dim arrEntries() As String
+    Dim lngIndex As Long
+    Dim strEntry As String
+    Dim strPrefix As String
+
+    If pageNo < 1 Or pageNo > pdfDoc.PageCount Then
+        BreaksTextFontSemanticSignature = resourceName
+        Exit Function
+    End If
+
+    strPrefix = resourceName & "="
+    arrEntries = Split(pdfDoc.Pages(pageNo).ResolvedFonts, ";")
+
+    For lngIndex = LBound(arrEntries) To UBound(arrEntries)
+        strEntry = Trim$(arrEntries(lngIndex))
+        If Left$(strEntry, Len(strPrefix)) = strPrefix Then
+            BreaksTextFontSemanticSignature = _
+                NormalizeBreaksFontSignature( _
+                    Mid$(strEntry, Len(strPrefix) + 1))
+            Exit Function
+        End If
+    Next lngIndex
+
+    BreaksTextFontSemanticSignature = resourceName
+End Function
+
+Private Function BreaksSemanticPageFontSetSignature( _
+    ByVal resolvedFonts As String) As String
+
+    Dim arrEntries() As String
+    Dim arrKeys As Variant
+    Dim dictSemantic As Object
+    Dim lngEquals As Long
+    Dim lngIndex As Long
+    Dim strEntry As String
+    Dim strSemantic As String
+    Dim strResult As String
+
+    Set dictSemantic = CreateObject("Scripting.Dictionary")
+
+    If Len(Trim$(resolvedFonts)) = 0 Or resolvedFonts = "(none)" Then
+        BreaksSemanticPageFontSetSignature = "(none)"
+        Set dictSemantic = Nothing
+        Exit Function
+    End If
+
+    arrEntries = Split(resolvedFonts, ";")
+
+    For lngIndex = LBound(arrEntries) To UBound(arrEntries)
+        strEntry = Trim$(arrEntries(lngIndex))
+        lngEquals = InStr(1, strEntry, "=", vbBinaryCompare)
+
+        If lngEquals > 0 Then
+            strSemantic = NormalizeBreaksFontSignature( _
+                Mid$(strEntry, lngEquals + 1))
+        Else
+            strSemantic = NormalizeBreaksFontSignature(strEntry)
+        End If
+
+        If Len(strSemantic) > 0 Then
+            dictSemantic(strSemantic) = strSemantic
+        End If
+    Next lngIndex
+
+    If dictSemantic.Count = 0 Then
+        BreaksSemanticPageFontSetSignature = "(none)"
+    Else
+        arrKeys = SortedDictionaryKeys(dictSemantic)
+        For lngIndex = LBound(arrKeys) To UBound(arrKeys)
+            If Len(strResult) > 0 Then strResult = strResult & ";"
+            strResult = strResult & CStr(arrKeys(lngIndex))
+        Next lngIndex
+        BreaksSemanticPageFontSetSignature = strResult
+    End If
+
+    Set dictSemantic = Nothing
+End Function
+
+Private Function NormalizeBreaksStrokeColor(ByVal value As String) As String
+
+    Dim arrParts() As String
+    Dim lngColon As Long
+    Dim lngIndex As Long
+    Dim strPrefix As String
+    Dim strResult As String
+    Dim strValues As String
+
+    value = Trim$(value)
+    lngColon = InStr(1, value, ":", vbBinaryCompare)
+
+    If lngColon <= 0 Then
+        NormalizeBreaksStrokeColor = value
+        Exit Function
+    End If
+
+    strPrefix = UCase$(Trim$(Left$(value, lngColon - 1)))
+    strValues = Mid$(value, lngColon + 1)
+    arrParts = Split(strValues, ",")
+
+    For lngIndex = LBound(arrParts) To UBound(arrParts)
+        If Len(strResult) > 0 Then strResult = strResult & ","
+        strResult = strResult & NumTxt(Val(Trim$(arrParts(lngIndex))))
+    Next lngIndex
+
+    NormalizeBreaksStrokeColor = strPrefix & ":" & strResult
+End Function
+
 Private Function NormalizeBreaksFontSignature(ByVal value As String) As String
     Const METHOD_NAME As String = "NormalizeBreaksFontSignature"
     Dim errorManager As New ErrorManager
