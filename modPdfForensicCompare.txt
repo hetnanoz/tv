@@ -226,7 +226,7 @@ Public Sub RunPdfComparisonBrowse()
 
     MsgBox _
         "Oracle clone audit completed." & vbCrLf & vbCrLf & _
-        "SEND / SCREENSHOT THIS FILE (V5 field diagnostics):" & vbCrLf & strBreaksSummaryPath & vbCrLf & vbCrLf & _
+        "SEND / SCREENSHOT THIS FILE (V9 focused fields):" & vbCrLf & strBreaksSummaryPath & vbCrLf & vbCrLf & _
         "Full remaining breaks:" & vbCrLf & strBreaksPath & vbCrLf & vbCrLf & _
         "Main audit:" & vbCrLf & strAuditPath & vbCrLf & vbCrLf & _
         "Detailed vector comparison:" & vbCrLf & strDetailPath, _
@@ -6931,7 +6931,7 @@ Private Sub WriteBreaksExecutiveSummary( _
     '-----------------------------------------------------------------------
     lngFileOut = OpenNew(outputPath)
 
-    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V6_FIELD_DIAGNOSTICS")
+    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V7_FOCUSED_FIELDS")
     Call EmitLine(lngFileOut, "OLD|" & oldDoc.PdfPath)
     Call EmitLine(lngFileOut, "NEW|" & newDoc.PdfPath)
     Call EmitLine(lngFileOut, _
@@ -6989,6 +6989,13 @@ Private Sub WriteBreaksExecutiveSummary( _
         lngFileOut, _
         12, _
         "FIELD_WS")
+
+    Call EmitLine(lngFileOut, vbNullString)
+    Call EmitLine(lngFileOut, "FOCUSED_FIELD_DETAILS")
+    Call BreaksWriteFocusedFieldDiagnostics( _
+        oldDoc, _
+        newDoc, _
+        lngFileOut)
 
     Call EmitLine(lngFileOut, vbNullString)
     Call EmitLine(lngFileOut, "============================================================")
@@ -8054,6 +8061,187 @@ ErrorHandler:
         errDescription, _
         "pageNo", _
         pageNo
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDoc As tPdfDocument, newDoc As tPdfDocument, fileNumber As Long
+' Returns:       ---
+' Description:   Writes compact OLD/NEW details for numeric and Whg fields even when the normal break summary omits them.
+'-------------------------------------------------------------------------------
+Private Sub BreaksWriteFocusedFieldDiagnostics( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal fileNumber As Long)
+
+    Const METHOD_NAME As String = "BreaksWriteFocusedFieldDiagnostics"
+    Dim blnNewUsed() As Boolean
+    Dim dictFocused As Object
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim lngNewIndex As Long
+    Dim lngPage As Long
+    Dim lngPages As Long
+    Dim strKey As String
+    Dim strNewText As String
+    Dim strOldText As String
+    Dim strRole As String
+
+    On Error GoTo ErrorHandler
+
+    Set dictFocused = CreateObject("Scripting.Dictionary")
+
+    lngPages = oldDoc.PageCount
+    If newDoc.PageCount < lngPages Then
+        lngPages = newDoc.PageCount
+    End If
+
+    For lngPage = 1 To lngPages
+        If newDoc.TextCount > 0 Then
+            ReDim blnNewUsed(0 To newDoc.TextCount - 1)
+        Else
+            ReDim blnNewUsed(0 To 0)
+        End If
+
+        For lngIndex = 0 To oldDoc.TextCount - 1
+            If oldDoc.Texts(lngIndex).PageNo = lngPage Then
+                lngNewIndex = FindBreaksExactTextMatch( _
+                    oldDoc, _
+                    newDoc, _
+                    lngIndex, _
+                    lngPage, _
+                    blnNewUsed)
+
+                If lngNewIndex < 0 Then
+                    lngNewIndex = FindBreaksGeometryTextMatch( _
+                        oldDoc, _
+                        newDoc, _
+                        lngIndex, _
+                        lngPage, _
+                        blnNewUsed)
+                End If
+
+                If lngNewIndex >= 0 Then
+                    blnNewUsed(lngNewIndex) = True
+
+                    strOldText = oldDoc.Texts(lngIndex).TextValue
+                    strNewText = newDoc.Texts(lngNewIndex).TextValue
+                    strRole = BreaksInferFieldRole( _
+                        strOldText, _
+                        oldDoc.Texts(lngIndex).X)
+
+                    If BreaksIsFocusedFieldRole(strRole) Then
+                        strKey = _
+                            "role=" & strRole & _
+                            "|valueOld=" & BreaksShortText(Trim$(strOldText)) & _
+                            "|valueNew=" & BreaksShortText(Trim$(strNewText)) & _
+                            "|rawOld=" & BreaksVisibleWhitespace(strOldText) & _
+                            "|rawNew=" & BreaksVisibleWhitespace(strNewText) & _
+                            "|x=" & NumTxt(oldDoc.Texts(lngIndex).X) & ">" & _
+                                NumTxt(newDoc.Texts(lngNewIndex).X) & _
+                            "|y=" & NumTxt(oldDoc.Texts(lngIndex).Y) & ">" & _
+                                NumTxt(newDoc.Texts(lngNewIndex).Y) & _
+                            "|dX=" & NumTxt(newDoc.Texts(lngNewIndex).X - oldDoc.Texts(lngIndex).X) & _
+                            "|dY=" & NumTxt(newDoc.Texts(lngNewIndex).Y - oldDoc.Texts(lngIndex).Y) & _
+                            "|fontSize=" & NumTxt(oldDoc.Texts(lngIndex).FontSize) & ">" & _
+                                NumTxt(newDoc.Texts(lngNewIndex).FontSize) & _
+                            "|fontAlias=" & oldDoc.Texts(lngIndex).FontName & ">" & _
+                                newDoc.Texts(lngNewIndex).FontName & _
+                            "|lead=" & CStr(BreaksLeadingSpaceCount(strOldText)) & ">" & _
+                                CStr(BreaksLeadingSpaceCount(strNewText)) & _
+                            "|trail=" & CStr(BreaksTrailingSpaceCount(strOldText)) & ">" & _
+                                CStr(BreaksTrailingSpaceCount(strNewText))
+
+                        Call IncrementDictionaryValue( _
+                            dictFocused, _
+                            strKey)
+                    End If
+                End If
+            End If
+        Next lngIndex
+    Next lngPage
+
+    Call BreaksSummaryWriteDictionary( _
+        dictFocused, _
+        fileNumber, _
+        36, _
+        "FOCUS")
+
+ExitSub:
+    Set dictFocused = Nothing
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    roleName As String
+' Returns:       Boolean
+' Description:   Selects parser-relevant numeric and Whg fields for compact focused diagnostics.
+'-------------------------------------------------------------------------------
+Private Function BreaksIsFocusedFieldRole(ByVal roleName As String) As Boolean
+
+    Const METHOD_NAME As String = "BreaksIsFocusedFieldRole"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    BreaksIsFocusedFieldRole = False
+
+    Select Case roleName
+        Case "MAKLERGEBUEHREN", _
+             "STEUERN", _
+             "ABWICKLUNGSPROVISION", _
+             "SPESEN", _
+             "NOMINALE_STUECKE", _
+             "KURS_OR_ABRECH_AMOUNT", _
+             "DEVISENKURS", _
+             "WHG_MAKLER", _
+             "WHG_STEUERN", _
+             "WHG_ABWICKLUNG", _
+             "WHG_SPESEN", _
+             "WHG_NOMINALE", _
+             "WHG_ABRECH"
+
+            BreaksIsFocusedFieldRole = True
+    End Select
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksIsFocusedFieldRole = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "roleName", _
+        roleName
 
     errorManager.save
     Resume ExitFunction
