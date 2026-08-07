@@ -6597,8 +6597,12 @@ Private Sub WriteBreaksExecutiveSummary( _
     Const METHOD_NAME As String = "WriteBreaksExecutiveSummary"
     Dim errorManager As New ErrorManager
     Dim dictActionTypes As Object
+    Dim dictFixNow As Object
     Dim dictFontPairs As Object
+    Dim dictIgnore As Object
     Dim dictPages As Object
+    Dim dictShiftPatterns As Object
+    Dim dictVerify As Object
     Dim dictWhitespace As Object
     Dim errDescription As String
     Dim errNumber As Long
@@ -6614,17 +6618,38 @@ Private Sub WriteBreaksExecutiveSummary( _
     Dim lngRawStructural As Long
     Dim lngTargetGeometry As Long
     Dim lngTargetStyleOnly As Long
+    Dim lngTradeMismatchPages As Long
     Dim lngVectorGeometry As Long
     Dim lngVectorStyle As Long
+    Dim oldTradeCount As Long
+    Dim newTradeCount As Long
+    Dim sampleFooter As Collection
+    Dim sampleOperator As Collection
+    Dim sampleTarget As Collection
+    Dim sampleTextShift As Collection
+    Dim sampleVector As Collection
+    Dim strFooterOld As String
+    Dim strFooterNew As String
+    Dim strKey As Variant
     Dim strLine As String
     Dim strRawStatus As String
 
     On Error GoTo ErrorHandler
 
     Set dictActionTypes = CreateObject("Scripting.Dictionary")
+    Set dictFixNow = CreateObject("Scripting.Dictionary")
     Set dictFontPairs = CreateObject("Scripting.Dictionary")
+    Set dictIgnore = CreateObject("Scripting.Dictionary")
     Set dictPages = CreateObject("Scripting.Dictionary")
+    Set dictShiftPatterns = CreateObject("Scripting.Dictionary")
+    Set dictVerify = CreateObject("Scripting.Dictionary")
     Set dictWhitespace = CreateObject("Scripting.Dictionary")
+
+    Set sampleFooter = New Collection
+    Set sampleOperator = New Collection
+    Set sampleTarget = New Collection
+    Set sampleTextShift = New Collection
+    Set sampleVector = New Collection
 
     lngFileIn = FreeFile
     Open detailedBreaksPath For Input Access Read As #lngFileIn
@@ -6634,7 +6659,9 @@ Private Sub WriteBreaksExecutiveSummary( _
 
         If Left$(strLine, 5) = "PAGE|" Then
             lngCurrentPage = CLng(Val(Mid$(strLine, 6)))
-            If lngCurrentPage > lngPagesCompared Then lngPagesCompared = lngCurrentPage
+            If lngCurrentPage > lngPagesCompared Then
+                lngPagesCompared = lngCurrentPage
+            End If
 
         ElseIf Left$(strLine, 12) = "PAGE_RESULT|" Then
             Call BreaksSummarySetPageValue( _
@@ -6656,19 +6683,27 @@ Private Sub WriteBreaksExecutiveSummary( _
                 BreaksSummaryField(strLine, "newStructural"))
 
         ElseIf Left$(strLine, 12) = "PAGE_LAYOUT|" Then
+            oldTradeCount = CLng(Val(BreaksSummaryField(strLine, "tradesOld")))
+            newTradeCount = CLng(Val(BreaksSummaryField(strLine, "tradesNew")))
+
             Call BreaksSummarySetPageValue( _
                 dictPages, _
                 lngCurrentPage, _
                 "trades", _
-                BreaksSummaryField(strLine, "tradesOld") & ">" & _
-                BreaksSummaryField(strLine, "tradesNew"))
+                CStr(oldTradeCount) & ">" & CStr(newTradeCount))
+
+            strFooterOld = BreaksSummaryField(strLine, "footerOld")
+            strFooterNew = BreaksSummaryField(strLine, "footerNew")
 
             Call BreaksSummarySetPageValue( _
                 dictPages, _
                 lngCurrentPage, _
                 "footer", _
-                BreaksSummaryField(strLine, "footerOld") & ">" & _
-                BreaksSummaryField(strLine, "footerNew"))
+                strFooterOld & ">" & strFooterNew)
+
+            If oldTradeCount <> newTradeCount Then
+                lngTradeMismatchPages = lngTradeMismatchPages + 1
+            End If
 
         ElseIf Left$(strLine, 17) = "TARGET_SEPARATOR|" Then
             Call BreaksSummaryRegisterTarget( _
@@ -6678,11 +6713,23 @@ Private Sub WriteBreaksExecutiveSummary( _
                 lngTargetStyleOnly, _
                 lngTargetGeometry)
 
+        ElseIf Left$(strLine, 23) = "TARGET_SEPARATOR_STYLE|" Then
+            Call BreaksSummaryAddSample(sampleTarget, strLine, 4)
+
+        ElseIf Left$(strLine, 26) = "TARGET_SEPARATOR_GEOMETRY|" Or _
+               Left$(strLine, 27) = "TARGET_SEPARATOR_EXTRA_NEW|" Then
+
+            Call BreaksSummaryAddSample(sampleTarget, strLine, 4)
+
         ElseIf Left$(strLine, 14) = "TEXT_POSITION|" Then
             If BreaksSummaryLikelyPairingNoise(strLine) Then
                 lngMatchingNoise = lngMatchingNoise + 1
             Else
                 lngLikelyTextShift = lngLikelyTextShift + 1
+                Call BreaksSummaryRegisterShiftPattern( _
+                    strLine, _
+                    dictShiftPatterns)
+                Call BreaksSummaryAddSample(sampleTextShift, strLine, 5)
             End If
 
         ElseIf Left$(strLine, 10) = "TEXT_FONT|" Then
@@ -6691,6 +6738,16 @@ Private Sub WriteBreaksExecutiveSummary( _
         ElseIf Left$(strLine, 16) = "WHITESPACE_ONLY|" Then
             Call BreaksSummaryRegisterWhitespace(strLine, dictWhitespace)
 
+        ElseIf Left$(strLine, 12) = "FOOTER_FONT|" Or _
+               Left$(strLine, 13) = "FOOTER_SHIFT|" Then
+
+            Call BreaksSummaryAddSample(sampleFooter, strLine, 4)
+
+        ElseIf Left$(strLine, 18) = "PAGE_STREAM_BREAK|" Then
+            If BreaksSummaryField(strLine, "type") = "OPERATOR_PROFILE" Then
+                Call BreaksSummaryAddSample(sampleOperator, strLine, 2)
+            End If
+
         ElseIf Left$(strLine, 24) = "VECTOR_GEOMETRY_SUMMARY|" Then
             lngVectorGeometry = lngVectorGeometry + _
                 CLng(Val(BreaksSummaryField(strLine, "breaks")))
@@ -6698,6 +6755,11 @@ Private Sub WriteBreaksExecutiveSummary( _
         ElseIf Left$(strLine, 21) = "VECTOR_STYLE_SUMMARY|" Then
             lngVectorStyle = lngVectorStyle + _
                 CLng(Val(BreaksSummaryField(strLine, "breaks")))
+
+        ElseIf Left$(strLine, 15) = "VECTOR_GEOMETRY|" Or _
+               Left$(strLine, 13) = "VECTOR_STYLE|" Then
+
+            Call BreaksSummaryAddSample(sampleVector, strLine, 4)
 
         ElseIf Left$(strLine, 7) = "ACTION|" Then
             Call BreaksSummaryRegisterActionType(strLine, dictActionTypes)
@@ -6713,17 +6775,136 @@ Private Sub WriteBreaksExecutiveSummary( _
     Close #lngFileIn
     lngFileIn = 0
 
+    '-----------------------------------------------------------------------
+    ' Convert raw event families into a small set of code-level decisions.
+    '-----------------------------------------------------------------------
+    For Each strKey In dictFontPairs.Keys
+        Call BreaksSummaryIncrementBy( _
+            dictFixNow, _
+            "FONT_ROLE|" & CStr(strKey) & _
+            "|ACTION=Use the OLD font resource/size for this recurring text role.", _
+            CLng(dictFontPairs(strKey)))
+    Next strKey
+
+    For Each strKey In dictWhitespace.Keys
+        Call BreaksSummaryIncrementBy( _
+            dictFixNow, _
+            "WHITESPACE|" & CStr(strKey) & _
+            "|ACTION=Make Oracle-exporter whitespace match OLD; do not change upstream business formatting.", _
+            CLng(dictWhitespace(strKey)))
+    Next strKey
+
+    If CLng(BreaksSummaryDictionaryValue( _
+        dictActionTypes, _
+        "PAGE_FONT_RESOURCES")) > 0 Then
+
+        Call BreaksSummaryIncrementBy( _
+            dictFixNow, _
+            "PAGE_FONT_RESOURCES|ACTION=Match OLD page font-resource roles/dictionaries.", _
+            CLng(BreaksSummaryDictionaryValue( _
+                dictActionTypes, _
+                "PAGE_FONT_RESOURCES")))
+    End If
+
+    If lngTargetStyleOnly > 0 Then
+        Call BreaksSummaryIncrementBy( _
+            dictFixNow, _
+            "TARGET_SEPARATOR_STYLE|ACTION=Keep X/Y geometry; reproduce OLD width/paint/source/color.", _
+            lngTargetStyleOnly)
+    End If
+
+    If lngVectorStyle > 0 Then
+        Call BreaksSummaryIncrementBy( _
+            dictFixNow, _
+            "VECTOR_STYLE|ACTION=Reproduce OLD paint/source operator families; prioritize repeated rectangle/separator roles.", _
+            lngVectorStyle)
+    End If
+
+    If sampleFooter.Count > 0 Then
+        If CLng(BreaksSummaryDictionaryValue( _
+            dictActionTypes, _
+            "FOOTER_FONT")) > 0 Then
+
+            Call BreaksSummaryIncrementBy( _
+                dictFixNow, _
+                "FOOTER_FONT|ACTION=Use the OLD footer font resource and size.", _
+                CLng(BreaksSummaryDictionaryValue( _
+                    dictActionTypes, _
+                    "FOOTER_FONT")))
+        End If
+
+        If CLng(BreaksSummaryDictionaryValue( _
+            dictActionTypes, _
+            "FOOTER_SHIFT")) > 0 Then
+
+            Call BreaksSummaryIncrementBy( _
+                dictVerify, _
+                "FOOTER_SHIFT|ACTION=Verify on matched pagination before moving footer coordinates.", _
+                CLng(BreaksSummaryDictionaryValue( _
+                    dictActionTypes, _
+                    "FOOTER_SHIFT")))
+        End If
+    End If
+
+    If lngTargetGeometry > 0 Then
+        Call BreaksSummaryIncrementBy( _
+            dictVerify, _
+            "TARGET_SEPARATOR_GEOMETRY|ACTION=Review representative detail before changing X/Y.", _
+            lngTargetGeometry)
+    End If
+
+    For Each strKey In dictShiftPatterns.Keys
+        Call BreaksSummaryIncrementBy( _
+            dictVerify, _
+            "TEXT_SHIFT_PATTERN|" & CStr(strKey) & _
+            "|ACTION=Apply only when the same delta repeats on logically matching fields.", _
+            CLng(dictShiftPatterns(strKey)))
+    Next strKey
+
+    If CLng(BreaksSummaryDictionaryValue( _
+        dictActionTypes, _
+        "OPERATOR_PROFILE")) > 0 Then
+
+        Call BreaksSummaryIncrementBy( _
+            dictVerify, _
+            "OPERATOR_PROFILE|ACTION=Tune after fonts/vector roles are stable; use representative sample below.", _
+            CLng(BreaksSummaryDictionaryValue( _
+                dictActionTypes, _
+                "OPERATOR_PROFILE")))
+    End If
+
+    If lngTradeMismatchPages > 0 Then
+        Call BreaksSummaryIncrementBy( _
+            dictIgnore, _
+            "TRADE_COUNT/PAGINATION|" & CStr(lngTradeMismatchPages) & _
+            " page(s) differ|ACTION=Treat downstream row/text/vector count differences as input-contaminated unless reproduced on matched input.", _
+            lngTradeMismatchPages)
+    End If
+
+    If lngMatchingNoise > 0 Then
+        Call BreaksSummaryIncrementBy( _
+            dictIgnore, _
+            "TEXT_PAIRING_NOISE|ACTION=Do not change generator coordinates from implausibly large repeated-text deltas.", _
+            lngMatchingNoise)
+    End If
+
+    Call BreaksSummaryIncrementBy( _
+        dictIgnore, _
+        "EXPECTED_INPUT_VALUES|ACTION=Security description/WKN/business-value differences remain informational when OLD and NEW inputs differ.", _
+        1)
+
+    '-----------------------------------------------------------------------
+    ' Write compact decision-oriented summary.
+    '-----------------------------------------------------------------------
     lngFileOut = OpenNew(outputPath)
 
-    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_EXECUTIVE_SUMMARY_V1")
+    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V2")
     Call EmitLine(lngFileOut, "OLD|" & oldDoc.PdfPath)
     Call EmitLine(lngFileOut, "NEW|" & newDoc.PdfPath)
     Call EmitLine(lngFileOut, _
-        "PURPOSE|Short screenshot-friendly summary. Full forensic details remain in BREAKS_ONLY.")
+        "PURPOSE|Show this file first. It converts raw events into code-level decisions and includes representative detail samples.")
     Call EmitLine(lngFileOut, _
-        "IMPORTANT|RAW critical/structural counts are event counts, not the number of unique code fixes.")
-    Call EmitLine(lngFileOut, _
-        "PAIRING_NOISE_RULE|Repeated text is flagged as diagnostic noise when abs(deltaY)>5 pt or abs(deltaX)>50 pt.")
+        "IMPORTANT|Raw critical/structural numbers are event counts, NOT the number of unique code fixes.")
 
     Call EmitLine(lngFileOut, vbNullString)
     Call EmitLine(lngFileOut, "============================================================")
@@ -6736,84 +6917,144 @@ Private Sub WriteBreaksExecutiveSummary( _
         "|informationalEvents=" & CStr(lngRawInfo) & _
         "|pagesCompared=" & CStr(lngPagesCompared))
     Call EmitLine(lngFileOut, _
-        "TEXT_POSITION|likelyReal=" & CStr(lngLikelyTextShift) & _
-        "|likelyPairingNoise=" & CStr(lngMatchingNoise))
+        "DECISIONS|fixNowFamilies=" & CStr(dictFixNow.Count) & _
+        "|verifyFamilies=" & CStr(dictVerify.Count) & _
+        "|ignoreFamilies=" & CStr(dictIgnore.Count))
     Call EmitLine(lngFileOut, _
-        "TARGET_SEPARATORS|styleOnlyEvents=" & CStr(lngTargetStyleOnly) & _
-        "|geometryOrCrossingEvents=" & CStr(lngTargetGeometry))
+        "TEXT_POSITION|likelyRealEvents=" & CStr(lngLikelyTextShift) & _
+        "|pairingNoiseEvents=" & CStr(lngMatchingNoise))
     Call EmitLine(lngFileOut, _
         "VECTORS|geometryEvents=" & CStr(lngVectorGeometry) & _
         "|styleEvents=" & CStr(lngVectorStyle))
     Call EmitLine(lngFileOut, _
-        "UNIQUE_ACTION_FAMILIES|" & CStr(dictActionTypes.Count))
+        "TARGET_SEPARATORS|styleOnlyEvents=" & CStr(lngTargetStyleOnly) & _
+        "|geometryOrCrossingEvents=" & CStr(lngTargetGeometry))
+    Call EmitLine(lngFileOut, _
+        "INPUT_CONTAMINATION|tradeMismatchPages=" & CStr(lngTradeMismatchPages))
 
     Call EmitLine(lngFileOut, vbNullString)
     Call EmitLine(lngFileOut, "============================================================")
-    Call EmitLine(lngFileOut, "PAGE_MATRIX")
+    Call EmitLine(lngFileOut, "FIX_NOW_STRONG")
+    Call EmitLine(lngFileOut, "============================================================")
+    Call BreaksSummaryWriteDictionary( _
+        dictFixNow, _
+        lngFileOut, _
+        10, _
+        "FIX_NOW")
+
+    Call EmitLine(lngFileOut, vbNullString)
+    Call EmitLine(lngFileOut, "============================================================")
+    Call EmitLine(lngFileOut, "VERIFY_BEFORE_CODE_CHANGE")
+    Call EmitLine(lngFileOut, "============================================================")
+    Call BreaksSummaryWriteDictionary( _
+        dictVerify, _
+        lngFileOut, _
+        8, _
+        "VERIFY")
+
+    Call EmitLine(lngFileOut, vbNullString)
+    Call EmitLine(lngFileOut, "============================================================")
+    Call EmitLine(lngFileOut, "IGNORE_OR_DEFER")
+    Call EmitLine(lngFileOut, "============================================================")
+    Call BreaksSummaryWriteDictionary( _
+        dictIgnore, _
+        lngFileOut, _
+        6, _
+        "IGNORE")
+
+    Call EmitLine(lngFileOut, vbNullString)
+    Call EmitLine(lngFileOut, "============================================================")
+    Call EmitLine(lngFileOut, "PAGE_HEALTH")
     Call EmitLine(lngFileOut, "============================================================")
 
     For lngPage = 1 To lngPagesCompared
         Call EmitLine(lngFileOut, _
             "PAGE|" & CStr(lngPage) & _
-            "|result=" & BreaksSummaryGetPageValue(dictPages, lngPage, "result", "?") & _
-            "|rawCritical=" & BreaksSummaryGetPageValue(dictPages, lngPage, "critical", "0") & _
-            "|rawStructural=" & BreaksSummaryGetPageValue(dictPages, lngPage, "structural", "0") & _
-            "|tradesOld>New=" & BreaksSummaryGetPageValue(dictPages, lngPage, "trades", "?") & _
-            "|footerOld>New=" & BreaksSummaryGetPageValue(dictPages, lngPage, "footer", "?") & _
-            "|x468=" & BreaksSummaryGetPageValue(dictPages, lngPage, "x468", "?") & _
-            "|x639=" & BreaksSummaryGetPageValue(dictPages, lngPage, "x639", "?"))
+            "|result=" & BreaksSummaryGetPageValue( _
+                dictPages, lngPage, "result", "?") & _
+            "|trades=" & BreaksSummaryGetPageValue( _
+                dictPages, lngPage, "trades", "?") & _
+            "|footer=" & BreaksSummaryGetPageValue( _
+                dictPages, lngPage, "footer", "?") & _
+            "|x468=" & BreaksSummaryGetPageValue( _
+                dictPages, lngPage, "x468", "?") & _
+            "|x639=" & BreaksSummaryGetPageValue( _
+                dictPages, lngPage, "x639", "?"))
     Next lngPage
 
     Call EmitLine(lngFileOut, vbNullString)
     Call EmitLine(lngFileOut, "============================================================")
-    Call EmitLine(lngFileOut, "WHITESPACE_PATTERNS")
+    Call EmitLine(lngFileOut, "REPRESENTATIVE_DETAIL_SAMPLES")
     Call EmitLine(lngFileOut, "============================================================")
-    Call BreaksSummaryWriteDictionary(dictWhitespace, lngFileOut, 12, "WHITESPACE")
+
+    Call BreaksSummaryWriteSamples( _
+        sampleOperator, _
+        lngFileOut, _
+        "OPERATOR_PROFILE")
+
+    Call BreaksSummaryWriteSamples( _
+        sampleFooter, _
+        lngFileOut, _
+        "FOOTER")
+
+    Call BreaksSummaryWriteSamples( _
+        sampleTarget, _
+        lngFileOut, _
+        "TARGET_SEPARATOR")
+
+    Call BreaksSummaryWriteSamples( _
+        sampleTextShift, _
+        lngFileOut, _
+        "TEXT_POSITION")
+
+    Call BreaksSummaryWriteSamples( _
+        sampleVector, _
+        lngFileOut, _
+        "VECTOR")
 
     Call EmitLine(lngFileOut, vbNullString)
     Call EmitLine(lngFileOut, "============================================================")
-    Call EmitLine(lngFileOut, "FONT_PAIRS")
-    Call EmitLine(lngFileOut, "============================================================")
-    Call BreaksSummaryWriteDictionary(dictFontPairs, lngFileOut, 12, "FONT")
-
-    Call EmitLine(lngFileOut, vbNullString)
-    Call EmitLine(lngFileOut, "============================================================")
-    Call EmitLine(lngFileOut, "GROUPED_ACTIONS")
-    Call EmitLine(lngFileOut, "============================================================")
-    Call BreaksSummaryWriteDictionary(dictActionTypes, lngFileOut, 20, "ACTION")
-
-    Call EmitLine(lngFileOut, vbNullString)
-    Call EmitLine(lngFileOut, "============================================================")
-    Call EmitLine(lngFileOut, "INTERPRETATION")
+    Call EmitLine(lngFileOut, "NEXT_STEP")
     Call EmitLine(lngFileOut, "============================================================")
 
-    If lngTargetGeometry = 0 And lngTargetStyleOnly > 0 Then
+    If dictFixNow.Count > 0 Then
         Call EmitLine(lngFileOut, _
-            "TARGET_SEPARATOR_NOTE|Geometry/crossings match; remaining x=468/x=639 differences are STYLE_ONLY and should be treated as STRUCTURAL tuning, not coordinate failure.")
+            "NEXT|Apply FIX_NOW_STRONG families first, rerun the audit, then reassess VERIFY families.")
+    ElseIf dictVerify.Count > 0 Then
+        Call EmitLine(lngFileOut, _
+            "NEXT|No strong automatic fix remains. Use the representative samples above for the next targeted code change.")
+    Else
+        Call EmitLine(lngFileOut, _
+            "NEXT|No actionable parser-sensitive family was detected in this summary.")
     End If
 
-    If lngMatchingNoise > 0 Then
+    If lngTradeMismatchPages > 0 Then
         Call EmitLine(lngFileOut, _
-            "TEXT_PAIRING_NOTE|" & CStr(lngMatchingNoise) & _
-            " text-position events have implausibly large deltas and are likely repeated-text matching noise. Do not change generator coordinates from those events.")
-    End If
-
-    If dictWhitespace.Count > 0 Then
-        Call EmitLine(lngFileOut, _
-            "WHITESPACE_NOTE|Use the grouped leading/trailing-space patterns before changing numeric text X positions.")
+            "MATCHED_INPUT_TEST|Recommended for final coordinate/pagination proof because OLD and NEW trade counts differ on " & _
+            CStr(lngTradeMismatchPages) & " page(s).")
     End If
 
     Call EmitLine(lngFileOut, _
-        "SEND_ME|Normally this SUMMARY file alone is enough. Send extra BREAKS_ONLY screenshots only for a specific group I ask for.")
+        "SEND_ME|Normally this ACTIONABLE_SUMMARY file alone is enough. Full BREAKS_ONLY is only needed if I explicitly ask for one unresolved family.")
 
 ExitSub:
     If lngFileIn > 0 Then Close #lngFileIn
     If lngFileOut > 0 Then Close #lngFileOut
 
     Set dictActionTypes = Nothing
+    Set dictFixNow = Nothing
     Set dictFontPairs = Nothing
+    Set dictIgnore = Nothing
     Set dictPages = Nothing
+    Set dictShiftPatterns = Nothing
+    Set dictVerify = Nothing
     Set dictWhitespace = Nothing
+
+    Set sampleFooter = Nothing
+    Set sampleOperator = Nothing
+    Set sampleTarget = Nothing
+    Set sampleTextShift = Nothing
+    Set sampleVector = Nothing
     Exit Sub
 
 ErrorHandler:
@@ -6831,6 +7072,92 @@ ErrorHandler:
 
     errorManager.save
     Resume ExitSub
+End Sub
+
+Private Sub BreaksSummaryRegisterShiftPattern( _
+    ByVal lineText As String, _
+    ByVal dictionary As Object)
+
+    Dim dblDeltaX As Double
+    Dim dblDeltaY As Double
+    Dim strDelta As String
+    Dim strKey As String
+
+    strDelta = BreaksSummaryField(lineText, "DELTA_NEW_MINUS_OLD")
+    If Len(strDelta) = 0 Then Exit Sub
+
+    dblDeltaX = Val(BreaksSummarySubField(strDelta, "x"))
+    dblDeltaY = Val(BreaksSummarySubField(strDelta, "y"))
+
+    strKey = _
+        "shiftX=" & BreaksSummaryRoundedDelta(dblDeltaX) & _
+        "|shiftY=" & BreaksSummaryRoundedDelta(dblDeltaY)
+
+    Call IncrementDictionaryValue(dictionary, strKey)
+End Sub
+
+Private Function BreaksSummaryRoundedDelta(ByVal value As Double) As String
+    BreaksSummaryRoundedDelta = _
+        Replace(Format$(Round(value, 2), "0.00"), ",", ".")
+End Function
+
+Private Function BreaksSummaryDictionaryValue( _
+    ByVal dictionary As Object, _
+    ByVal keyName As String) As Long
+
+    If dictionary Is Nothing Then Exit Function
+
+    If dictionary.Exists(keyName) Then
+        BreaksSummaryDictionaryValue = CLng(dictionary(keyName))
+    End If
+End Function
+
+Private Sub BreaksSummaryAddSample( _
+    ByRef samples As Collection, _
+    ByVal lineText As String, _
+    ByVal maxSamples As Long)
+
+    If samples Is Nothing Then Exit Sub
+    If samples.Count >= maxSamples Then Exit Sub
+
+    samples.Add BreaksSummaryCompactSample(lineText)
+End Sub
+
+Private Function BreaksSummaryCompactSample(ByVal lineText As String) As String
+    Const MAX_SAMPLE_LENGTH As Long = 360
+
+    lineText = Replace(lineText, vbCr, " ")
+    lineText = Replace(lineText, vbLf, " ")
+
+    If Len(lineText) > MAX_SAMPLE_LENGTH Then
+        lineText = Left$(lineText, MAX_SAMPLE_LENGTH) & "..."
+    End If
+
+    BreaksSummaryCompactSample = lineText
+End Function
+
+Private Sub BreaksSummaryWriteSamples( _
+    ByVal samples As Collection, _
+    ByVal fileNumber As Long, _
+    ByVal sampleType As String)
+
+    Dim lngIndex As Long
+
+    If samples Is Nothing Then
+        Call EmitLine(fileNumber, "SAMPLE|" & sampleType & "|(none)")
+        Exit Sub
+    End If
+
+    If samples.Count = 0 Then
+        Call EmitLine(fileNumber, "SAMPLE|" & sampleType & "|(none)")
+        Exit Sub
+    End If
+
+    For lngIndex = 1 To samples.Count
+        Call EmitLine(fileNumber, _
+            "SAMPLE|" & sampleType & "|" & CStr(lngIndex) & _
+            "|" & CStr(samples.Item(lngIndex)))
+    Next lngIndex
 End Sub
 
 Private Sub BreaksSummaryRegisterTarget( _
@@ -6870,10 +7197,10 @@ Private Sub BreaksSummaryRegisterTarget( _
         End If
     End If
 
-    If strTargetX = "468" Then
+    If Abs(Val(strTargetX) - 468#) <= 0.01 Then
         Call BreaksSummarySetPageValue( _
             pageDictionary, pageNo, "x468", strClassification)
-    ElseIf strTargetX = "639" Then
+    ElseIf Abs(Val(strTargetX) - 639#) <= 0.01 Then
         Call BreaksSummarySetPageValue( _
             pageDictionary, pageNo, "x639", strClassification)
     End If
