@@ -20,6 +20,8 @@ Private Const ORACLE_FIRST_PAGE_MAX_TRADES As Long = 11
 Private Const ORACLE_CONTINUATION_PAGE_MAX_TRADES As Long = 12
 Private Const ORACLE_MIN_DATA_ROW_STEP As Double = 16#
 Private Const ORACLE_MAX_DATA_ROW_STEP As Double = 20#
+Private Const BREAKS_FIELD_X_TOLERANCE As Double = 3#
+Private Const BREAKS_NEAR_RULE_Y_TOLERANCE As Double = 0.75
 
 Private Type tPdfLine
     PageNo As Long
@@ -224,7 +226,7 @@ Public Sub RunPdfComparisonBrowse()
 
     MsgBox _
         "Oracle clone audit completed." & vbCrLf & vbCrLf & _
-        "SEND / SCREENSHOT THIS FILE:" & vbCrLf & strBreaksSummaryPath & vbCrLf & vbCrLf & _
+        "SEND / SCREENSHOT THIS FILE (V5 field diagnostics):" & vbCrLf & strBreaksSummaryPath & vbCrLf & vbCrLf & _
         "Full remaining breaks:" & vbCrLf & strBreaksPath & vbCrLf & vbCrLf & _
         "Main audit:" & vbCrLf & strAuditPath & vbCrLf & vbCrLf & _
         "Detailed vector comparison:" & vbCrLf & strDetailPath, _
@@ -6604,7 +6606,9 @@ Private Sub WriteBreaksExecutiveSummary( _
     Dim dictPages As Object
     Dim dictShiftPatterns As Object
     Dim dictVerify As Object
+    Dim dictWhgShifts As Object
     Dim dictWhitespace As Object
+    Dim dictWhitespaceFields As Object
     Dim errDescription As String
     Dim errNumber As Long
     Dim lngCurrentPage As Long
@@ -6644,7 +6648,9 @@ Private Sub WriteBreaksExecutiveSummary( _
     Set dictPages = CreateObject("Scripting.Dictionary")
     Set dictShiftPatterns = CreateObject("Scripting.Dictionary")
     Set dictVerify = CreateObject("Scripting.Dictionary")
+    Set dictWhgShifts = CreateObject("Scripting.Dictionary")
     Set dictWhitespace = CreateObject("Scripting.Dictionary")
+    Set dictWhitespaceFields = CreateObject("Scripting.Dictionary")
 
     Set sampleFooter = New Collection
     Set sampleOperator = New Collection
@@ -6730,6 +6736,15 @@ Private Sub WriteBreaksExecutiveSummary( _
                 Call BreaksSummaryRegisterShiftPattern( _
                     strLine, _
                     dictShiftPatterns)
+
+                If Left$(BreaksSummaryField(strLine, "role"), 4) = "WHG_" Then
+                    Call IncrementDictionaryValue( _
+                        dictWhgShifts, _
+                        "role=" & BreaksSummaryField(strLine, "role") & _
+                        "|value=" & BreaksSummaryField(strLine, "text") & _
+                        "|delta=" & BreaksSummaryField(strLine, "DELTA_NEW_MINUS_OLD"))
+                End If
+
                 Call BreaksSummaryAddSample(sampleTextShift, strLine, 5)
             End If
 
@@ -6738,6 +6753,15 @@ Private Sub WriteBreaksExecutiveSummary( _
 
         ElseIf Left$(strLine, 16) = "WHITESPACE_ONLY|" Then
             Call BreaksSummaryRegisterWhitespace(strLine, dictWhitespace)
+
+            Call IncrementDictionaryValue( _
+                dictWhitespaceFields, _
+                "role=" & BreaksSummaryField(strLine, "role") & _
+                "|text=" & BreaksSummaryField(strLine, "text") & _
+                "|leading=" & BreaksSummaryField(strLine, "leadingOld") & ">" & _
+                    BreaksSummaryField(strLine, "leadingNew") & _
+                "|trailing=" & BreaksSummaryField(strLine, "trailingOld") & ">" & _
+                    BreaksSummaryField(strLine, "trailingNew"))
 
         ElseIf Left$(strLine, 12) = "FOOTER_FONT|" Or _
                Left$(strLine, 13) = "FOOTER_SHIFT|" Then
@@ -6899,7 +6923,7 @@ Private Sub WriteBreaksExecutiveSummary( _
     '-----------------------------------------------------------------------
     lngFileOut = OpenNew(outputPath)
 
-    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V4")
+    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V5_FIELD_DIAGNOSTICS")
     Call EmitLine(lngFileOut, "OLD|" & oldDoc.PdfPath)
     Call EmitLine(lngFileOut, "NEW|" & newDoc.PdfPath)
     Call EmitLine(lngFileOut, _
@@ -6932,6 +6956,24 @@ Private Sub WriteBreaksExecutiveSummary( _
         "|geometryOrCrossingEvents=" & CStr(lngTargetGeometry))
     Call EmitLine(lngFileOut, _
         "INPUT_CONTAMINATION|tradeMismatchPages=" & CStr(lngTradeMismatchPages))
+
+    Call EmitLine(lngFileOut, vbNullString)
+    Call EmitLine(lngFileOut, "============================================================")
+    Call EmitLine(lngFileOut, "FIELD_DIAGNOSTICS")
+    Call EmitLine(lngFileOut, "============================================================")
+    Call EmitLine(lngFileOut, "WHG_ALIGNMENT")
+    Call BreaksSummaryWriteDictionary( _
+        dictWhgShifts, _
+        lngFileOut, _
+        12, _
+        "WHG")
+
+    Call EmitLine(lngFileOut, "WHITESPACE_BY_FIELD")
+    Call BreaksSummaryWriteDictionary( _
+        dictWhitespaceFields, _
+        lngFileOut, _
+        12, _
+        "FIELD_WS")
 
     Call EmitLine(lngFileOut, vbNullString)
     Call EmitLine(lngFileOut, "============================================================")
@@ -6982,6 +7024,19 @@ Private Sub WriteBreaksExecutiveSummary( _
                 dictPages, lngPage, "x468", "?") & _
             "|x639=" & BreaksSummaryGetPageValue( _
                 dictPages, lngPage, "x639", "?"))
+    Next lngPage
+
+    Call EmitLine(lngFileOut, vbNullString)
+    Call EmitLine(lngFileOut, "============================================================")
+    Call EmitLine(lngFileOut, "HORIZONTAL_RULE_SANITY")
+    Call EmitLine(lngFileOut, "============================================================")
+
+    For lngPage = 1 To lngPagesCompared
+        Call BreaksWriteHorizontalRuleSanity( _
+            oldDoc, _
+            newDoc, _
+            lngPage, _
+            lngFileOut)
     Next lngPage
 
     Call EmitLine(lngFileOut, vbNullString)
@@ -7050,7 +7105,9 @@ ExitSub:
     Set dictPages = Nothing
     Set dictShiftPatterns = Nothing
     Set dictVerify = Nothing
+    Set dictWhgShifts = Nothing
     Set dictWhitespace = Nothing
+    Set dictWhitespaceFields = Nothing
 
     Set sampleFooter = Nothing
     Set sampleOperator = Nothing
@@ -7303,6 +7360,576 @@ Private Function BreaksSummarySubField( _
             Exit Function
         End If
     Next lngIndex
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    textValue As String, x As Double
+' Returns:       String
+' Description:   Infers the Oracle report field role from text content and X position.
+'-------------------------------------------------------------------------------
+Private Function BreaksInferFieldRole( _
+    ByVal textValue As String, _
+    ByVal x As Double) As String
+
+    Const METHOD_NAME As String = "BreaksInferFieldRole"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strWhgRole As String
+
+    On Error GoTo ErrorHandler
+
+    BreaksInferFieldRole = "GENERAL"
+
+    If BreaksLooksLikeCurrency(textValue) Then
+        strWhgRole = BreaksInferWhgRoleByX(x)
+        If Len(strWhgRole) > 0 Then
+            BreaksInferFieldRole = strWhgRole
+            GoTo ExitFunction
+        End If
+    End If
+
+    If BreaksLooksLikeNumericText(textValue) Then
+        If x >= 126# - BREAKS_FIELD_X_TOLERANCE And _
+           x < 283.52 + BREAKS_FIELD_X_TOLERANCE Then
+            BreaksInferFieldRole = "MAKLERGEBUEHREN"
+        ElseIf x >= 328.52 - BREAKS_FIELD_X_TOLERANCE And _
+               x < 468# + BREAKS_FIELD_X_TOLERANCE Then
+            BreaksInferFieldRole = "STEUERN"
+        ElseIf x >= 504# - BREAKS_FIELD_X_TOLERANCE And _
+               x < 639# + BREAKS_FIELD_X_TOLERANCE Then
+            BreaksInferFieldRole = "ABWICKLUNGSPROVISION"
+        ElseIf x >= 675# - BREAKS_FIELD_X_TOLERANCE And _
+               x < 855# + BREAKS_FIELD_X_TOLERANCE Then
+            BreaksInferFieldRole = "SPESEN"
+        ElseIf x >= 891# - BREAKS_FIELD_X_TOLERANCE And _
+               x < 1026# + BREAKS_FIELD_X_TOLERANCE Then
+            BreaksInferFieldRole = "NOMINALE_STUECKE"
+        ElseIf x >= 1053# - BREAKS_FIELD_X_TOLERANCE And _
+               x < 1179# + BREAKS_FIELD_X_TOLERANCE Then
+            BreaksInferFieldRole = "KURS_OR_ABRECH_AMOUNT"
+        ElseIf x >= 1206# - BREAKS_FIELD_X_TOLERANCE Then
+            BreaksInferFieldRole = "DEVISENKURS"
+        End If
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksInferFieldRole = "GENERAL"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "textValue;x", _
+        textValue, _
+        x
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    x As Double
+' Returns:       String
+' Description:   Returns the specific Whg field role for an Oracle text X position.
+'-------------------------------------------------------------------------------
+Private Function BreaksInferWhgRoleByX(ByVal x As Double) As String
+
+    Const METHOD_NAME As String = "BreaksInferWhgRoleByX"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    BreaksInferWhgRoleByX = vbNullString
+
+    If x >= 283.52 - BREAKS_FIELD_X_TOLERANCE And _
+       x <= 328.52 + BREAKS_FIELD_X_TOLERANCE Then
+        BreaksInferWhgRoleByX = "WHG_MAKLER"
+    ElseIf x >= 468# - BREAKS_FIELD_X_TOLERANCE And _
+           x <= 504# + BREAKS_FIELD_X_TOLERANCE Then
+        BreaksInferWhgRoleByX = "WHG_STEUERN"
+    ElseIf x >= 639# - BREAKS_FIELD_X_TOLERANCE And _
+           x <= 675# + BREAKS_FIELD_X_TOLERANCE Then
+        BreaksInferWhgRoleByX = "WHG_ABWICKLUNG"
+    ElseIf x >= 855# - BREAKS_FIELD_X_TOLERANCE And _
+           x <= 891# + BREAKS_FIELD_X_TOLERANCE Then
+        BreaksInferWhgRoleByX = "WHG_SPESEN"
+    ElseIf x >= 1026# - BREAKS_FIELD_X_TOLERANCE And _
+           x <= 1053# + BREAKS_FIELD_X_TOLERANCE Then
+        BreaksInferWhgRoleByX = "WHG_NOMINALE"
+    ElseIf x >= 1179# - BREAKS_FIELD_X_TOLERANCE And _
+           x <= 1206# + BREAKS_FIELD_X_TOLERANCE Then
+        BreaksInferWhgRoleByX = "WHG_ABRECH"
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksInferWhgRoleByX = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "x", _
+        x
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    textValue As String
+' Returns:       Boolean
+' Description:   Identifies three-letter currency-like report values.
+'-------------------------------------------------------------------------------
+Private Function BreaksLooksLikeCurrency(ByVal textValue As String) As Boolean
+
+    Const METHOD_NAME As String = "BreaksLooksLikeCurrency"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim strText As String
+    Dim strChar As String
+
+    On Error GoTo ErrorHandler
+
+    BreaksLooksLikeCurrency = False
+    strText = UCase$(Trim$(textValue))
+
+    If Len(strText) <> 3 Then
+        GoTo ExitFunction
+    End If
+
+    For lngIndex = 1 To 3
+        strChar = Mid$(strText, lngIndex, 1)
+        If strChar < "A" Or strChar > "Z" Then
+            GoTo ExitFunction
+        End If
+    Next lngIndex
+
+    BreaksLooksLikeCurrency = True
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksLooksLikeCurrency = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "textValue", _
+        textValue
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    textValue As String
+' Returns:       Boolean
+' Description:   Identifies numeric-looking report text without changing its formatting.
+'-------------------------------------------------------------------------------
+Private Function BreaksLooksLikeNumericText(ByVal textValue As String) As Boolean
+
+    Const METHOD_NAME As String = "BreaksLooksLikeNumericText"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim strChar As String
+    Dim strText As String
+
+    On Error GoTo ErrorHandler
+
+    BreaksLooksLikeNumericText = False
+    strText = Trim$(textValue)
+    strText = Replace(strText, " ", vbNullString)
+
+    If Len(strText) = 0 Then
+        GoTo ExitFunction
+    End If
+
+    For lngIndex = 1 To Len(strText)
+        strChar = Mid$(strText, lngIndex, 1)
+
+        If (strChar < "0" Or strChar > "9") And _
+           strChar <> "." And _
+           strChar <> "," And _
+           strChar <> "-" And _
+           strChar <> "+" Then
+            GoTo ExitFunction
+        End If
+    Next lngIndex
+
+    BreaksLooksLikeNumericText = True
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksLooksLikeNumericText = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "textValue", _
+        textValue
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDoc As tPdfDocument, newDoc As tPdfDocument, pageNo As Long, fileNumber As Long
+' Returns:       ---
+' Description:   Checks whether NEW contains extra exact or near full-width horizontal overdraws.
+'-------------------------------------------------------------------------------
+Private Sub BreaksWriteHorizontalRuleSanity( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal fileNumber As Long)
+
+    Const METHOD_NAME As String = "BreaksWriteHorizontalRuleSanity"
+    Dim errorManager As New ErrorManager
+    Dim dictNew As Object
+    Dim dictOld As Object
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngExtraNew As Long
+    Dim lngMaxNew As Long
+    Dim lngMaxOld As Long
+    Dim lngNearNew As Long
+    Dim lngNearOld As Long
+    Dim strSample As String
+    Dim strStatus As String
+
+    On Error GoTo ErrorHandler
+
+    Set dictOld = BreaksBuildHorizontalGeometryMultiplicity(oldDoc, pageNo)
+    Set dictNew = BreaksBuildHorizontalGeometryMultiplicity(newDoc, pageNo)
+
+    lngMaxOld = BreaksDictionaryMaxLong(dictOld)
+    lngMaxNew = BreaksDictionaryMaxLong(dictNew)
+    lngExtraNew = BreaksCountDictionaryExcess(dictOld, dictNew, strSample)
+
+    lngNearOld = BreaksCountNearFullWidthHorizontalPairs(oldDoc, pageNo)
+    lngNearNew = BreaksCountNearFullWidthHorizontalPairs(newDoc, pageNo)
+
+    If lngExtraNew > 0 Or lngNearNew > lngNearOld Then
+        strStatus = "SUSPECT"
+    Else
+        strStatus = "PASS"
+    End If
+
+    Call EmitLine(fileNumber, _
+        "RULES|page=" & CStr(pageNo) & _
+        "|status=" & strStatus & _
+        "|extraExactNew=" & CStr(lngExtraNew) & _
+        "|maxMultiplicityOld=" & CStr(lngMaxOld) & _
+        "|maxMultiplicityNew=" & CStr(lngMaxNew) & _
+        "|nearFullWidthPairsOld=" & CStr(lngNearOld) & _
+        "|nearFullWidthPairsNew=" & CStr(lngNearNew) & _
+        "|sample=" & strSample)
+
+ExitSub:
+    Set dictNew = Nothing
+    Set dictOld = Nothing
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo", _
+        pageNo
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pdfDoc As tPdfDocument, pageNo As Long
+' Returns:       Object
+' Description:   Builds exact horizontal-line geometry multiplicities for one page.
+'-------------------------------------------------------------------------------
+Private Function BreaksBuildHorizontalGeometryMultiplicity( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long) As Object
+
+    Const METHOD_NAME As String = "BreaksBuildHorizontalGeometryMultiplicity"
+    Dim errorManager As New ErrorManager
+    Dim dict As Object
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim strKey As String
+
+    On Error GoTo ErrorHandler
+
+    Set dict = CreateObject("Scripting.Dictionary")
+
+    For lngIndex = 0 To pdfDoc.LineCount - 1
+        If pdfDoc.Lines(lngIndex).PageNo = pageNo Then
+            If BreaksLineOrientation(pdfDoc.Lines(lngIndex)) = "H" Then
+                strKey = CanonicalLineGeometryKey(pdfDoc.Lines(lngIndex))
+                Call IncrementDictionaryValue(dict, strKey)
+            End If
+        End If
+    Next lngIndex
+
+    Set BreaksBuildHorizontalGeometryMultiplicity = dict
+    GoTo ExitFunction
+
+ExitFunction:
+    Set dict = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    Set BreaksBuildHorizontalGeometryMultiplicity = CreateObject("Scripting.Dictionary")
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo", _
+        pageNo
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    dictionary As Object
+' Returns:       Long
+' Description:   Returns the largest multiplicity in a dictionary of line geometries.
+'-------------------------------------------------------------------------------
+Private Function BreaksDictionaryMaxLong(ByVal dictionary As Object) As Long
+
+    Const METHOD_NAME As String = "BreaksDictionaryMaxLong"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strKey As Variant
+
+    On Error GoTo ErrorHandler
+
+    If dictionary Is Nothing Then
+        GoTo ExitFunction
+    End If
+
+    For Each strKey In dictionary.Keys
+        If CLng(dictionary(strKey)) > BreaksDictionaryMaxLong Then
+            BreaksDictionaryMaxLong = CLng(dictionary(strKey))
+        End If
+    Next strKey
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksDictionaryMaxLong = 0
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDictionary As Object, newDictionary As Object, ByRef sample As String
+' Returns:       Long
+' Description:   Counts exact horizontal geometry occurrences present more often in NEW than OLD.
+'-------------------------------------------------------------------------------
+Private Function BreaksCountDictionaryExcess( _
+    ByVal oldDictionary As Object, _
+    ByVal newDictionary As Object, _
+    ByRef sample As String) As Long
+
+    Const METHOD_NAME As String = "BreaksCountDictionaryExcess"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngDifference As Long
+    Dim lngOldCount As Long
+    Dim strKey As Variant
+
+    On Error GoTo ErrorHandler
+
+    sample = vbNullString
+
+    If newDictionary Is Nothing Then
+        GoTo ExitFunction
+    End If
+
+    For Each strKey In newDictionary.Keys
+        lngOldCount = 0
+
+        If Not oldDictionary Is Nothing Then
+            If oldDictionary.Exists(CStr(strKey)) Then
+                lngOldCount = CLng(oldDictionary(CStr(strKey)))
+            End If
+        End If
+
+        lngDifference = CLng(newDictionary(strKey)) - lngOldCount
+
+        If lngDifference > 0 Then
+            BreaksCountDictionaryExcess = _
+                BreaksCountDictionaryExcess + lngDifference
+
+            If Len(sample) = 0 Then
+                sample = CStr(strKey) & _
+                    " old=" & CStr(lngOldCount) & _
+                    " new=" & CStr(newDictionary(strKey))
+            End If
+        End If
+    Next strKey
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksCountDictionaryExcess = 0
+    sample = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pdfDoc As tPdfDocument, pageNo As Long
+' Returns:       Long
+' Description:   Counts near-parallel full-width horizontal rules that could rasterize as a thick band.
+'-------------------------------------------------------------------------------
+Private Function BreaksCountNearFullWidthHorizontalPairs( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long) As Long
+
+    Const METHOD_NAME As String = "BreaksCountNearFullWidthHorizontalPairs"
+    Dim errorManager As New ErrorManager
+    Dim dblLengthA As Double
+    Dim dblLengthB As Double
+    Dim dblYA As Double
+    Dim dblYB As Double
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngA As Long
+    Dim lngB As Long
+
+    On Error GoTo ErrorHandler
+
+    For lngA = 0 To pdfDoc.LineCount - 2
+        If pdfDoc.Lines(lngA).PageNo = pageNo And _
+           BreaksLineOrientation(pdfDoc.Lines(lngA)) = "H" Then
+
+            dblLengthA = Abs(pdfDoc.Lines(lngA).X2 - pdfDoc.Lines(lngA).X1)
+
+            If dblLengthA >= BREAKS_FULL_WIDTH_MIN Then
+                dblYA = (pdfDoc.Lines(lngA).Y1 + pdfDoc.Lines(lngA).Y2) / 2#
+
+                For lngB = lngA + 1 To pdfDoc.LineCount - 1
+                    If pdfDoc.Lines(lngB).PageNo = pageNo And _
+                       BreaksLineOrientation(pdfDoc.Lines(lngB)) = "H" Then
+
+                        dblLengthB = Abs(pdfDoc.Lines(lngB).X2 - pdfDoc.Lines(lngB).X1)
+
+                        If dblLengthB >= BREAKS_FULL_WIDTH_MIN Then
+                            dblYB = (pdfDoc.Lines(lngB).Y1 + pdfDoc.Lines(lngB).Y2) / 2#
+
+                            If Abs(dblYA - dblYB) > COORD_TOLERANCE And _
+                               Abs(dblYA - dblYB) <= BREAKS_NEAR_RULE_Y_TOLERANCE Then
+
+                                BreaksCountNearFullWidthHorizontalPairs = _
+                                    BreaksCountNearFullWidthHorizontalPairs + 1
+                            End If
+                        End If
+                    End If
+                Next lngB
+            End If
+        End If
+    Next lngA
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksCountNearFullWidthHorizontalPairs = 0
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo", _
+        pageNo
+
+    errorManager.save
+    Resume ExitFunction
 End Function
 
 Private Function BreaksSummaryField( _
@@ -8244,6 +8871,7 @@ Private Sub WriteBreaksTextDifferences( _
     Dim lngIndex As Long
     Dim lngNewIndex As Long
     Dim lngWritten As Long
+    Dim strFieldRole As String
     Dim strNewFontSemantic As String
     Dim strNewText As String
     Dim strOldFontSemantic As String
@@ -8277,6 +8905,10 @@ Private Sub WriteBreaksTextDifferences( _
 
             If lngNewIndex >= 0 Then
                 blnNewUsed(lngNewIndex) = True
+                strFieldRole = BreaksInferFieldRole( _
+                    oldDoc.Texts(lngIndex).TextValue, _
+                    oldDoc.Texts(lngIndex).X)
+
                 dblShiftX = oldDoc.Texts(lngIndex).X - newDoc.Texts(lngNewIndex).X
                 dblShiftY = oldDoc.Texts(lngIndex).Y - newDoc.Texts(lngNewIndex).Y
 
@@ -8287,6 +8919,7 @@ Private Sub WriteBreaksTextDifferences( _
                     If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
                         Call EmitLine(fileNumber, _
                             "TEXT_POSITION|text=" & BreaksShortText(oldDoc.Texts(lngIndex).TextValue) & _
+                            "|role=" & strFieldRole & _
                             "|OLD=x=" & NumTxt(oldDoc.Texts(lngIndex).X) & _
                             ",y=" & NumTxt(oldDoc.Texts(lngIndex).Y) & _
                             "|NEW=x=" & NumTxt(newDoc.Texts(lngNewIndex).X) & _
@@ -8350,6 +8983,10 @@ Private Sub WriteBreaksTextDifferences( _
                         If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
                             Call EmitLine(fileNumber, _
                                 "WHITESPACE_ONLY" & _
+                                "|role=" & strFieldRole & _
+                                "|text=" & BreaksShortText(strOldText) & _
+                                "|OLD_XY=" & NumTxt(oldDoc.Texts(lngIndex).X) & "," & NumTxt(oldDoc.Texts(lngIndex).Y) & _
+                                "|NEW_XY=" & NumTxt(newDoc.Texts(lngNewIndex).X) & "," & NumTxt(newDoc.Texts(lngNewIndex).Y) & _
                                 "|OLD_VISIBLE=" & BreaksVisibleWhitespace(strOldText) & _
                                 "|NEW_VISIBLE=" & BreaksVisibleWhitespace(strNewText) & _
                                 "|leadingOld=" & CStr(BreaksLeadingSpaceCount(strOldText)) & _
