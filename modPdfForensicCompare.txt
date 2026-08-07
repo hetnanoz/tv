@@ -16,7 +16,8 @@ Private Const BREAKS_FULL_WIDTH_MIN As Double = 1200#
 Private Const BREAKS_BASELINE_TOLERANCE As Double = 1#
 Private Const BREAKS_MAX_DETAILS_PER_PAGE As Long = 120
 Private Const BREAKS_IGNORE_INPUT_CONTENT_DIFFERENCES As Boolean = True
-Private Const ORACLE_MAX_TRADES_PER_PAGE As Long = 11
+Private Const ORACLE_FIRST_PAGE_MAX_TRADES As Long = 11
+Private Const ORACLE_CONTINUATION_PAGE_MAX_TRADES As Long = 12
 Private Const ORACLE_MIN_DATA_ROW_STEP As Double = 16#
 Private Const ORACLE_MAX_DATA_ROW_STEP As Double = 20#
 
@@ -6898,7 +6899,7 @@ Private Sub WriteBreaksExecutiveSummary( _
     '-----------------------------------------------------------------------
     lngFileOut = OpenNew(outputPath)
 
-    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V2")
+    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V3")
     Call EmitLine(lngFileOut, "OLD|" & oldDoc.PdfPath)
     Call EmitLine(lngFileOut, "NEW|" & newDoc.PdfPath)
     Call EmitLine(lngFileOut, _
@@ -6974,6 +6975,7 @@ Private Sub WriteBreaksExecutiveSummary( _
                 dictPages, lngPage, "result", "?") & _
             "|trades=" & BreaksSummaryGetPageValue( _
                 dictPages, lngPage, "trades", "?") & _
+            "|expectedMax=" & CStr(BreaksOracleMaxTradesForPage(lngPage)) & _
             "|footer=" & BreaksSummaryGetPageValue( _
                 dictPages, lngPage, "footer", "?") & _
             "|x468=" & BreaksSummaryGetPageValue( _
@@ -7561,6 +7563,16 @@ End Sub
 ' Returns:       ---
 ' Description:   Writes one concise page section including pagination, fingerprint, text, vector, and target checks.
 '-------------------------------------------------------------------------------
+Private Function BreaksOracleMaxTradesForPage( _
+    ByVal pageNo As Long) As Long
+
+    If pageNo = 1 Then
+        BreaksOracleMaxTradesForPage = ORACLE_FIRST_PAGE_MAX_TRADES
+    Else
+        BreaksOracleMaxTradesForPage = ORACLE_CONTINUATION_PAGE_MAX_TRADES
+    End If
+End Function
+
 Private Sub WriteBreaksPageReport( _
     ByRef oldDoc As tPdfDocument, _
     ByRef newDoc As tPdfDocument, _
@@ -7676,6 +7688,7 @@ Private Sub WriteBreaksPageReport( _
         "|bottomHeaderYNew=" & NumTxt(dblNewBottomHeaderY) & _
         "|tradesOld=" & CStr(lngOldTradeCount) & _
         "|tradesNew=" & CStr(lngNewTradeCount) & _
+        "|expectedMax=" & CStr(BreaksOracleMaxTradesForPage(pageNo)) & _
         "|unpairedRowsOld=" & CStr(lngOldUnpaired) & _
         "|unpairedRowsNew=" & CStr(lngNewUnpaired) & _
         "|footerOld=" & BoolText(blnOldFooter) & _
@@ -7709,12 +7722,13 @@ Private Sub WriteBreaksPageReport( _
             "TRADE_COUNT|old=" & CStr(lngOldTradeCount) & "|new=" & CStr(lngNewTradeCount))
     End If
 
-    If lngNewTradeCount > ORACLE_MAX_TRADES_PER_PAGE Then
+    If lngNewTradeCount > BreaksOracleMaxTradesForPage(pageNo) Then
         criticalCount = criticalCount + 1
         Call EmitLine(fileNumber, _
             "PAGE_BREAK|type=MAX_TRADES|NEW=" & CStr(lngNewTradeCount) & _
-            "|EXPECTED_MAX=" & CStr(ORACLE_MAX_TRADES_PER_PAGE) & _
-            "|FIX=Paginate at the Oracle maximum.")
+            "|EXPECTED_MAX=" & CStr(BreaksOracleMaxTradesForPage(pageNo)) & _
+            "|PAGE_TYPE=" & IIf(pageNo = 1, "FIRST", "CONTINUATION") & _
+            "|FIX=Paginate OLD Oracle style: first page max 11, continuation page max 12.")
         Call IncrementDictionaryValue(actionDictionary, "MAX_TRADES_PER_PAGE")
     End If
 
