@@ -45,6 +45,7 @@ Private Const ORACLE_TABLE_RIGHT_X As Double = 1323.04
 Private Const ORACLE_MIN_DATA_ROW_STEP As Double = 16#
 Private Const ORACLE_MAX_DATA_ROW_STEP As Double = 20#
 Private Const ORACLE_GRID_MATCH_TOLERANCE As Double = 1#
+Private Const ORACLE_MAX_TRADES_PER_PAGE As Long = 11
 
 Private Type tHuffman
     Cnt(0 To MAX_BITS) As Long
@@ -154,6 +155,7 @@ Public Sub PdfAnalyse(ByVal pdfPath As String, ByVal outFolder As String)
     Dim pageCount As Long
     Dim pageTradeCount As Long
     Dim maxTradeCount As Long
+    Dim totalPageCount As Long
 
     m_pdf = ReadBytes(pdfPath)
     BuildObjectIndex
@@ -190,6 +192,7 @@ Public Sub PdfAnalyse(ByVal pdfPath As String, ByVal outFolder As String)
         EmitLine fOracle, "ERROR|no /Type/Page objects found"
     Else
         refs = Split(pageRefs, ",")
+        totalPageCount = UBound(refs) - LBound(refs) + 1
         For i = LBound(refs) To UBound(refs)
             objIdx = IndexOfObject(CLng(refs(i)))
             If objIdx >= 0 Then
@@ -201,7 +204,12 @@ Public Sub PdfAnalyse(ByVal pdfPath As String, ByVal outFolder As String)
                 EmitLayoutFull fLayout, pageCount, CLng(refs(i)), pageDict, Len(content)
                 EmitSpecShort fSpec, pageCount, CLng(refs(i)), pageDict, Len(content)
                 EmitCellMap fCells, pageCount, CLng(refs(i)), pageDict
-                pageTradeCount = EmitOraclePageSchema(fOracle, pageCount, CLng(refs(i)), pageDict)
+                pageTradeCount = EmitOraclePageSchema( _
+                    fOracle, _
+                    pageCount, _
+                    CLng(refs(i)), _
+                    pageDict, _
+                    totalPageCount)
                 If pageTradeCount > maxTradeCount Then maxTradeCount = pageTradeCount
             End If
         Next i
@@ -1245,7 +1253,8 @@ Private Sub WriteOracleSchemaHeader(ByVal fileNum As Integer, ByVal pdfPath As S
 End Sub
 
 Private Function EmitOraclePageSchema(ByVal fileNum As Integer, ByVal pageNo As Long, _
-                                      ByVal objNo As Long, ByVal pageDict As String) As Long
+                                      ByVal objNo As Long, ByVal pageDict As String, _
+                                      ByVal totalPages As Long) As Long
 
     Dim topX() As Double
     Dim topW() As Double
@@ -1260,15 +1269,29 @@ Private Function EmitOraclePageSchema(ByVal fileNum As Integer, ByVal pageNo As 
     Dim topTradeY() As Double
     Dim bottomTradeY() As Double
     Dim tradeCount As Long
+    Dim dataBaselineCount As Long
+    Dim unpairedRows As Long
+    Dim hRuleCount As Long
+    Dim vRuleCount As Long
     Dim i As Long
     Dim pageType As String
     Dim topLabels As String
     Dim bottomLabels As String
     Dim topLabelX As String
     Dim bottomLabelX As String
+    Dim topGridCheck As String
+    Dim bottomGridCheck As String
     Dim footerText As String
     Dim footerX As Double
     Dim footerY As Double
+    Dim footerFound As Boolean
+    Dim footerExpected As Boolean
+    Dim headerMatch As Boolean
+    Dim gridMatch As Boolean
+    Dim tradePairMatch As Boolean
+    Dim tradeLimitMatch As Boolean
+    Dim footerMatch As Boolean
+    Dim layoutResult As String
 
     FillOracleTopGrid topX, topW
     FillOracleBottomGrid bottomX, bottomW
@@ -1305,14 +1328,23 @@ Private Function EmitOraclePageSchema(ByVal fileNum As Integer, ByVal pageNo As 
     EmitLine fileNum, "HEADER_BOTTOM|baseline=" & NumTxt(bottomHeaderY) & _
                            "|band=" & OracleFullWidthBand(bottomHeaderY) & _
                            "|labels=" & bottomLabels & "|textX=" & bottomLabelX
-    EmitLine fileNum, "TOP_GRID_CHECK|" & OracleGridCheck(topX, topW, ORACLE_TOP_COLUMN_COUNT)
-    EmitLine fileNum, "BOTTOM_GRID_CHECK|" & OracleGridCheck(bottomX, bottomW, ORACLE_BOTTOM_COLUMN_COUNT)
+
+    topGridCheck = OracleGridCheck(topX, topW, ORACLE_TOP_COLUMN_COUNT)
+    bottomGridCheck = OracleGridCheck(bottomX, bottomW, ORACLE_BOTTOM_COLUMN_COUNT)
+    EmitLine fileNum, "TOP_GRID_CHECK|" & topGridCheck
+    EmitLine fileNum, "BOTTOM_GRID_CHECK|" & bottomGridCheck
 
     tradeCount = CollectOracleTradeBaselines(bottomHeaderY, frameY, topTradeY, bottomTradeY)
+    dataBaselineCount = CountOracleDataBaselines(bottomHeaderY, frameY)
+    unpairedRows = dataBaselineCount - (tradeCount * 2)
+    If unpairedRows < 0 Then unpairedRows = 0
+
     EmitLine fileNum, "TRADES|count=" & CStr(tradeCount) & _
                            "|topBaselines=" & OracleJoinDoubles(topTradeY, tradeCount) & _
                            "|bottomBaselines=" & OracleJoinDoubles(bottomTradeY, tradeCount) & _
-                           "|pitches=" & OracleTradePitches(topTradeY, tradeCount)
+                           "|pitches=" & OracleTradePitches(topTradeY, tradeCount) & _
+                           "|dataBaselines=" & CStr(dataBaselineCount) & _
+                           "|unpairedRows=" & CStr(unpairedRows)
 
     For i = 0 To tradeCount - 1
         EmitLine fileNum, "TRADE|" & Format$(i + 1, "00") & _
@@ -1324,18 +1356,68 @@ Private Function EmitOraclePageSchema(ByVal fileNum As Integer, ByVal pageNo As 
         EmitLine fileNum, "BOTTOM|" & OracleRowValues(bottomTradeY(i), bottomX, bottomW, ORACLE_BOTTOM_COLUMN_COUNT, True)
     Next i
 
-    If topHeaderY = 0 Or bottomHeaderY = 0 Then
-        EmitLine fileNum, "WARNING|header baseline not detected"
-    End If
-    If tradeCount > 11 Then
-        EmitLine fileNum, "WARNING|trade count exceeds expected maximum 11"
-    End If
+    footerFound = FindOracleFooter(footerText, footerX, footerY)
+    footerExpected = (pageNo = totalPages)
 
-    If FindOracleFooter(footerText, footerX, footerY) Then
+    If footerFound Then
         EmitLine fileNum, "FOOTER|x=" & NumTxt(footerX) & "|y=" & NumTxt(footerY) & _
                                "|text=" & OracleCleanText(footerText)
     Else
         EmitLine fileNum, "FOOTER|(none)"
+    End If
+
+    hRuleCount = OracleClusteredRuleCount(False)
+    vRuleCount = OracleClusteredRuleCount(True)
+
+    EmitLine fileNum, "PAGE_FINGERPRINT|textRuns=" & CStr(m_txN) & _
+                           "|segments=" & CStr(m_segN) & _
+                           "|rectangles=" & CStr(m_recN) & _
+                           "|hRules=" & CStr(hRuleCount) & _
+                           "|vRules=" & CStr(vRuleCount) & _
+                           "|fullWidthY=" & OracleFullWidthYRules() & _
+                           "|topHeaderY=" & NumTxt(topHeaderY) & _
+                           "|bottomHeaderY=" & NumTxt(bottomHeaderY) & _
+                           "|trades=" & CStr(tradeCount) & _
+                           "|unpairedRows=" & CStr(unpairedRows) & _
+                           "|footer=" & UCase$(CStr(footerFound))
+
+    headerMatch = (topHeaderY <> 0 And bottomHeaderY <> 0)
+    gridMatch = _
+        InStr(1, topGridCheck, "match=TRUE", vbTextCompare) > 0 And _
+        InStr(1, bottomGridCheck, "match=TRUE", vbTextCompare) > 0
+    tradePairMatch = (unpairedRows = 0)
+    tradeLimitMatch = (tradeCount <= ORACLE_MAX_TRADES_PER_PAGE)
+    footerMatch = (footerFound = footerExpected)
+
+    If headerMatch And gridMatch And tradePairMatch And tradeLimitMatch And footerMatch Then
+        layoutResult = "PASS"
+    Else
+        layoutResult = "WARN"
+    End If
+
+    EmitLine fileNum, "PAGE_LAYOUT_CHECK|header=" & UCase$(CStr(headerMatch)) & _
+                           "|grid=" & UCase$(CStr(gridMatch)) & _
+                           "|tradePairs=" & UCase$(CStr(tradePairMatch)) & _
+                           "|maxTrades=" & UCase$(CStr(tradeLimitMatch)) & _
+                           "|footerExpected=" & UCase$(CStr(footerExpected)) & _
+                           "|footerFound=" & UCase$(CStr(footerFound)) & _
+                           "|footerMatch=" & UCase$(CStr(footerMatch)) & _
+                           "|result=" & layoutResult
+
+    If Not headerMatch Then
+        EmitLine fileNum, "WARNING|header baseline not detected"
+    End If
+    If Not gridMatch Then
+        EmitLine fileNum, "WARNING|top or bottom Oracle grid does not match expected coordinates"
+    End If
+    If Not tradePairMatch Then
+        EmitLine fileNum, "WARNING|unpaired data baseline detected - possible split or malformed two-row transaction"
+    End If
+    If Not tradeLimitMatch Then
+        EmitLine fileNum, "WARNING|trade count exceeds expected maximum " & CStr(ORACLE_MAX_TRADES_PER_PAGE)
+    End If
+    If Not footerMatch Then
+        EmitLine fileNum, "WARNING|footer placement does not match last-page-only Oracle convention"
     End If
 
     EmitOraclePageSchema = tradeCount
@@ -1813,6 +1895,45 @@ Private Function OracleJoinDoubles(ByRef values() As Double, ByVal count As Long
     Next i
 
     OracleJoinDoubles = result
+
+End Function
+
+
+'------------------------------------------------------------------------------
+' Counts text baselines in the Oracle data area. Used to detect split/odd rows
+' that CollectOracleTradeBaselines cannot pair into normal two-row trades.
+'------------------------------------------------------------------------------
+Private Function CountOracleDataBaselines(ByVal bottomHeaderY As Double, _
+                                          ByVal frameBottomY As Double) As Long
+
+    Dim allY() As Double
+    Dim allCount As Long
+    Dim i As Long
+
+    allCount = ClusterValues(m_txY, m_txN, allY, False)
+
+    For i = 0 To allCount - 1
+        If allY(i) < bottomHeaderY - TOL And allY(i) > frameBottomY + TOL Then
+            If HasOracleDataText(allY(i)) Then
+                CountOracleDataBaselines = CountOracleDataBaselines + 1
+            End If
+        End If
+    Next i
+
+End Function
+
+'------------------------------------------------------------------------------
+' Returns the number of distinct clustered horizontal or vertical grid rules.
+'------------------------------------------------------------------------------
+Private Function OracleClusteredRuleCount(ByVal verticalRules As Boolean) As Long
+
+    Dim values() As Double
+
+    If verticalRules Then
+        OracleClusteredRuleCount = ClusterValues(m_vRuleX, m_vRuleN, values, True)
+    Else
+        OracleClusteredRuleCount = ClusterValues(m_hRuleY, m_hRuleN, values, False)
+    End If
 
 End Function
 
