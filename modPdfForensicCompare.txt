@@ -29,13 +29,29 @@ Private Type tPdfText
     TextValue As String
 End Type
 
+Private Type tPdfImage
+    PageNo As Long
+    ResourceName As String
+    A As Double
+    B As Double
+    C As Double
+    D As Double
+    E As Double
+    F As Double
+End Type
+
 Private Type tPdfPage
     ObjectNo As Long
     MediaBox As String
     CropBox As String
     RotateValue As String
     FontDictionary As String
+    ResolvedFonts As String
+    ContentFilters As String
+    ContentText As String
     ContentLength As Long
+    ImageStart As Long
+    ImageCount As Long
     LineStart As Long
     LineCount As Long
     TextStart As Long
@@ -52,6 +68,8 @@ Private Type tPdfDocument
     Pages() As tPdfPage
     Lines() As tPdfLine
     LineCount As Long
+    Images() As tPdfImage
+    ImageCount As Long
     Texts() As tPdfText
     TextCount As Long
 End Type
@@ -156,13 +174,14 @@ Public Sub RunPdfComparisonBrowse()
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
+    Dim strAuditPath As String
+    Dim strDetailPath As String
     Dim strNewPdfPath As String
     Dim strOldPdfPath As String
-    Dim strOutputPath As String
 
     On Error GoTo ErrorHandler
 
-    strOldPdfPath = SelectPdfFile("Select the OLD reference PDF")
+    strOldPdfPath = SelectPdfFile("Select the OLD Oracle reference PDF")
     If Len(strOldPdfPath) = 0 Then
         GoTo ExitSub
     End If
@@ -172,15 +191,18 @@ Public Sub RunPdfComparisonBrowse()
         GoTo ExitSub
     End If
 
-    strOutputPath = BuildComparisonOutputPath(strOldPdfPath, strNewPdfPath)
-    If Not PdfCompare(strOldPdfPath, strNewPdfPath, strOutputPath) Then
-        Err.Raise ERR_BASE + 2, METHOD_NAME, "The PDF comparison could not be completed."
+    strAuditPath = BuildOracleAuditOutputPath(strOldPdfPath, strNewPdfPath)
+    strDetailPath = BuildComparisonOutputPath(strOldPdfPath, strNewPdfPath)
+    If Not PdfOracleCloneAudit(strOldPdfPath, strNewPdfPath, strAuditPath, strDetailPath) Then
+        Err.Raise ERR_BASE + 2, METHOD_NAME, "The Oracle clone PDF audit could not be completed."
     End If
 
     MsgBox _
-        "PDF comparison completed:" & vbCrLf & strOutputPath, _
+        "Oracle clone audit completed." & vbCrLf & vbCrLf & _
+        "Main audit:" & vbCrLf & strAuditPath & vbCrLf & vbCrLf & _
+        "Detailed vector comparison:" & vbCrLf & strDetailPath, _
         vbInformation, _
-        "PDF comparison"
+        "Oracle PDF audit"
 
 ExitSub:
     Exit Sub
@@ -194,13 +216,14 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "oldPdfPath;newPdfPath;outputPath", _
+        "oldPdfPath;newPdfPath;auditPath;detailPath", _
         strOldPdfPath, _
         strNewPdfPath, _
-        strOutputPath
+        strAuditPath, _
+        strDetailPath
 
     errorManager.save
-    errorManager.display "The PDF comparison failed."
+    errorManager.display "The Oracle PDF audit failed."
     Resume ExitSub
 End Sub
 
@@ -501,6 +524,7 @@ Private Sub LoadPdfDocument( _
     pdfDoc.XrefKind = DetectXrefKind
     ReDim pdfDoc.Pages(1 To 8)
     ReDim pdfDoc.Lines(0 To 2047)
+    ReDim pdfDoc.Images(0 To 255)
     ReDim pdfDoc.Texts(0 To 2047)
 
     lngPageCount = PageObjectOrder(arrPageRefs)
@@ -602,26 +626,26 @@ Private Function ReadBytes(ByVal filePath As String) As Byte()
     Dim errNumber As Long
     Dim arrBuffer() As Byte
     Dim blnFileOpen As Boolean
-    Dim intFileNumber As Integer
+    Dim lngFileNumber As Long
     Dim lngFileSize As Long
 
     On Error GoTo ErrorHandler
 
-    intFileNumber = FreeFile
-    Open filePath For Binary Access Read As #intFileNumber
+    lngFileNumber = FreeFile
+    Open filePath For Binary Access Read As #lngFileNumber
     blnFileOpen = True
-    lngFileSize = LOF(intFileNumber)
+    lngFileSize = LOF(lngFileNumber)
     If lngFileSize <= 0 Then
         Err.Raise 1011, METHOD_NAME, "The PDF file is empty."
     End If
 
     ReDim arrBuffer(0 To lngFileSize - 1)
-    Get #intFileNumber, 1, arrBuffer
+    Get #lngFileNumber, 1, arrBuffer
     ReadBytes = arrBuffer
 
 ExitFunction:
     If blnFileOpen Then
-        Close #intFileNumber
+        Close #lngFileNumber
     End If
     Exit Function
 
@@ -1932,15 +1956,15 @@ Private Function DecodeAsciiHexBytes( _
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
-    Dim intHighNibble As Integer
-    Dim intValue As Integer
+    Dim lngHighNibble As Long
+    Dim lngValue As Long
     Dim lngByte As Long
     Dim lngIndex As Long
     Dim lngOutputIndex As Long
 
     On Error GoTo ErrorHandler
 
-    intHighNibble = -1
+    lngHighNibble = -1
     ReDim resultBytes(0 To sourceLength \ 2 + 1)
 
     For lngIndex = 0 To sourceLength - 1
@@ -1952,23 +1976,23 @@ Private Function DecodeAsciiHexBytes( _
             Exit For
         End If
 
-        intValue = HexByteValue(lngByte)
-        If intValue < 0 Then
+        lngValue = HexByteValue(lngByte)
+        If lngValue < 0 Then
             Err.Raise 1027, METHOD_NAME, "Invalid ASCIIHex character code: " & CStr(lngByte)
         End If
 
-        If intHighNibble < 0 Then
-            intHighNibble = intValue
+        If lngHighNibble < 0 Then
+            lngHighNibble = lngValue
         Else
-            resultBytes(lngOutputIndex) = CByte(intHighNibble * 16 + intValue)
+            resultBytes(lngOutputIndex) = CByte(lngHighNibble * 16 + lngValue)
             lngOutputIndex = lngOutputIndex + 1
-            intHighNibble = -1
+            lngHighNibble = -1
         End If
 ContinueLoop:
     Next lngIndex
 
-    If intHighNibble >= 0 Then
-        resultBytes(lngOutputIndex) = CByte(intHighNibble * 16)
+    If lngHighNibble >= 0 Then
+        resultBytes(lngOutputIndex) = CByte(lngHighNibble * 16)
         lngOutputIndex = lngOutputIndex + 1
     End If
 
@@ -2010,7 +2034,7 @@ End Function
 ' Returns:       Integer
 ' Description:   Converts one ASCII hexadecimal character to a nibble.
 '-------------------------------------------------------------------------------
-Private Function HexByteValue(ByVal byteValue As Long) As Integer
+Private Function HexByteValue(ByVal byteValue As Long) As Long
     Const METHOD_NAME As String = "HexByteValue"
     Dim errorManager As New ErrorManager
     Dim errDescription As String
@@ -2350,13 +2374,18 @@ Private Sub ParsePage( _
         .CropBox = DictValue(strDictionary, "/CropBox")
         .RotateValue = DictValue(strDictionary, "/Rotate")
         .FontDictionary = DictValue(strDictionary, "/Font")
+        .ResolvedFonts = ResolvePageFontSignature(strDictionary)
+        .ContentFilters = PageContentFilterSignature(strDictionary)
+        .ContentText = strContent
         .ContentLength = Len(strContent)
+        .ImageStart = pdfDoc.ImageCount
         .LineStart = pdfDoc.LineCount
         .TextStart = pdfDoc.TextCount
     End With
 
     Call AnalysePageContent(strContent, pageNo, pdfDoc)
 
+    pdfDoc.Pages(pdfDoc.PageCount).ImageCount = pdfDoc.ImageCount - pdfDoc.Pages(pdfDoc.PageCount).ImageStart
     pdfDoc.Pages(pdfDoc.PageCount).LineCount = pdfDoc.LineCount - pdfDoc.Pages(pdfDoc.PageCount).LineStart
     pdfDoc.Pages(pdfDoc.PageCount).TextCount = pdfDoc.TextCount - pdfDoc.Pages(pdfDoc.PageCount).TextStart
 
@@ -2488,6 +2517,9 @@ Private Sub AnalysePageContent( _
 
             Case "f", "f*", "F", "n"
                 Call ClearPendingPath
+
+            Case "Do"
+                Call AppendDocumentImage(pageNo, h0, m_ctmA, m_ctmB, m_ctmC, m_ctmD, m_ctmE, m_ctmF, pdfDoc)
 
             Case "BT"
                 dblLineX = 0
@@ -3094,6 +3126,67 @@ End Sub
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pageNo As Long, resourceName As String, matrixA As Double, matrixB As Double, matrixC As Double, matrixD As Double, matrixE As Double, matrixF As Double, pdfDoc As tPdfDocument
+' Returns:       ---
+' Description:   Stores one PDF XObject placement matrix for page-level image and form-placement auditing.
+'-------------------------------------------------------------------------------
+Private Sub AppendDocumentImage( _
+    ByVal pageNo As Long, _
+    ByVal resourceName As String, _
+    ByVal matrixA As Double, _
+    ByVal matrixB As Double, _
+    ByVal matrixC As Double, _
+    ByVal matrixD As Double, _
+    ByVal matrixE As Double, _
+    ByVal matrixF As Double, _
+    ByRef pdfDoc As tPdfDocument)
+
+    Const METHOD_NAME As String = "AppendDocumentImage"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If pdfDoc.ImageCount > UBound(pdfDoc.Images) Then
+        ReDim Preserve pdfDoc.Images(0 To pdfDoc.ImageCount * 2)
+    End If
+
+    With pdfDoc.Images(pdfDoc.ImageCount)
+        .PageNo = pageNo
+        .ResourceName = resourceName
+        .A = matrixA
+        .B = matrixB
+        .C = matrixC
+        .D = matrixD
+        .E = matrixE
+        .F = matrixF
+    End With
+    pdfDoc.ImageCount = pdfDoc.ImageCount + 1
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;resourceName", _
+        pageNo, _
+        resourceName
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
 ' Creation date: 2026-08-06
 ' Parameters:    pageNo As Long, x As Double, y As Double, fontSize As Double, fontName As String, textValue As String, pdfDoc As tPdfDocument
 ' Returns:       ---
@@ -3374,25 +3467,25 @@ Private Sub WriteForensicReport( _
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
-    Dim intFileNumber As Integer
+    Dim lngFileNumber As Long
     Dim lngPage As Long
 
     On Error GoTo ErrorHandler
 
-    intFileNumber = OpenNew(outputPath)
-    Call EmitLine(intFileNumber, "PDF FORENSIC GEOMETRY REPORT V1")
-    Call EmitLine(intFileNumber, "SOURCE|" & pdfDoc.PdfPath)
-    Call EmitLine(intFileNumber, "DOCUMENT|version=" & pdfDoc.PdfVersion & "|bytes=" & CStr(pdfDoc.FileSize) & "|objects=" & CStr(pdfDoc.ObjectCount) & "|xref=" & pdfDoc.XrefKind & "|pages=" & CStr(pdfDoc.PageCount))
-    Call EmitLine(intFileNumber, "TARGET_X|" & NumTxt(TARGET_X_FIRST) & "|" & NumTxt(TARGET_X_SECOND))
-    Call EmitLine(intFileNumber, "NOTE|CROSSING_TEXT uses an estimated Times font bounding width and is diagnostic, not a PDF rendering measurement.")
+    lngFileNumber = OpenNew(outputPath)
+    Call EmitLine(lngFileNumber, "PDF FORENSIC GEOMETRY REPORT V2")
+    Call EmitLine(lngFileNumber, "SOURCE|" & pdfDoc.PdfPath)
+    Call EmitLine(lngFileNumber, "DOCUMENT|version=" & pdfDoc.PdfVersion & "|bytes=" & CStr(pdfDoc.FileSize) & "|objects=" & CStr(pdfDoc.ObjectCount) & "|xref=" & pdfDoc.XrefKind & "|pages=" & CStr(pdfDoc.PageCount))
+    Call EmitLine(lngFileNumber, "TARGET_X|" & NumTxt(TARGET_X_FIRST) & "|" & NumTxt(TARGET_X_SECOND))
+    Call EmitLine(lngFileNumber, "NOTE|CROSSING_TEXT uses an estimated Times font bounding width and is diagnostic, not a PDF rendering measurement.")
 
     For lngPage = 1 To pdfDoc.PageCount
-        Call WritePageForensic(pdfDoc, lngPage, intFileNumber)
+        Call WritePageForensic(pdfDoc, lngPage, lngFileNumber)
     Next lngPage
 
 ExitSub:
-    If intFileNumber > 0 Then
-        Close #intFileNumber
+    If lngFileNumber > 0 Then
+        Close #lngFileNumber
     End If
     Exit Sub
 
@@ -3415,14 +3508,14 @@ End Sub
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-06
-' Parameters:    pdfDoc As tPdfDocument, pageNo As Long, fileNumber As Integer
+' Parameters:    pdfDoc As tPdfDocument, pageNo As Long, fileNumber As Long
 ' Returns:       ---
 ' Description:   Writes one page section of the forensic report.
 '-------------------------------------------------------------------------------
 Private Sub WritePageForensic( _
     ByRef pdfDoc As tPdfDocument, _
     ByVal pageNo As Long, _
-    ByVal fileNumber As Integer)
+    ByVal fileNumber As Long)
 
     Const METHOD_NAME As String = "WritePageForensic"
     Dim errorManager As New ErrorManager
@@ -3462,14 +3555,14 @@ End Sub
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-06
-' Parameters:    pdfDoc As tPdfDocument, pageNo As Long, fileNumber As Integer
+' Parameters:    pdfDoc As tPdfDocument, pageNo As Long, fileNumber As Long
 ' Returns:       ---
 ' Description:   Writes duplicated geometric line groups for one page.
 '-------------------------------------------------------------------------------
 Private Sub WriteDuplicateSection( _
     ByRef pdfDoc As tPdfDocument, _
     ByVal pageNo As Long, _
-    ByVal fileNumber As Integer)
+    ByVal fileNumber As Long)
 
     Const METHOD_NAME As String = "WriteDuplicateSection"
     Dim errorManager As New ErrorManager
@@ -3535,7 +3628,7 @@ End Sub
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-06
-' Parameters:    pdfDoc As tPdfDocument, pageNo As Long, targetX As Double, fileNumber As Integer
+' Parameters:    pdfDoc As tPdfDocument, pageNo As Long, targetX As Double, fileNumber As Long
 ' Returns:       ---
 ' Description:   Writes all vertical strokes and text intersections at one target X coordinate.
 '-------------------------------------------------------------------------------
@@ -3543,7 +3636,7 @@ Private Sub WriteTargetSeparatorSection( _
     ByRef pdfDoc As tPdfDocument, _
     ByVal pageNo As Long, _
     ByVal targetX As Double, _
-    ByVal fileNumber As Integer)
+    ByVal fileNumber As Long)
 
     Const METHOD_NAME As String = "WriteTargetSeparatorSection"
     Dim errorManager As New ErrorManager
@@ -3604,14 +3697,14 @@ End Sub
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-06
-' Parameters:    pdfDoc As tPdfDocument, pageNo As Long, fileNumber As Integer
+' Parameters:    pdfDoc As tPdfDocument, pageNo As Long, fileNumber As Long
 ' Returns:       ---
 ' Description:   Writes all estimated intersections between vertical rules and text runs.
 '-------------------------------------------------------------------------------
 Private Sub WriteCrossingSection( _
     ByRef pdfDoc As tPdfDocument, _
     ByVal pageNo As Long, _
-    ByVal fileNumber As Integer)
+    ByVal fileNumber As Long)
 
     Const METHOD_NAME As String = "WriteCrossingSection"
     Dim errorManager As New ErrorManager
@@ -3690,19 +3783,19 @@ Private Sub WriteComparisonReport( _
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
-    Dim intFileNumber As Integer
+    Dim lngFileNumber As Long
     Dim lngCommonPages As Long
     Dim lngPage As Long
 
     On Error GoTo ErrorHandler
 
-    intFileNumber = OpenNew(outputPath)
-    Call EmitLine(intFileNumber, "PDF VECTOR COMPARISON V1")
-    Call EmitLine(intFileNumber, "OLD|" & oldDoc.PdfPath)
-    Call EmitLine(intFileNumber, "NEW|" & newDoc.PdfPath)
-    Call EmitLine(intFileNumber, "OLD_DOCUMENT|version=" & oldDoc.PdfVersion & "|bytes=" & CStr(oldDoc.FileSize) & "|objects=" & CStr(oldDoc.ObjectCount) & "|xref=" & oldDoc.XrefKind & "|pages=" & CStr(oldDoc.PageCount))
-    Call EmitLine(intFileNumber, "NEW_DOCUMENT|version=" & newDoc.PdfVersion & "|bytes=" & CStr(newDoc.FileSize) & "|objects=" & CStr(newDoc.ObjectCount) & "|xref=" & newDoc.XrefKind & "|pages=" & CStr(newDoc.PageCount))
-    Call EmitLine(intFileNumber, "IMPORTANT|Use matching reports with the same transactions for meaningful text and page-level comparison.")
+    lngFileNumber = OpenNew(outputPath)
+    Call EmitLine(lngFileNumber, "PDF VECTOR COMPARISON V2 NORMALIZED TARGET ORDER")
+    Call EmitLine(lngFileNumber, "OLD|" & oldDoc.PdfPath)
+    Call EmitLine(lngFileNumber, "NEW|" & newDoc.PdfPath)
+    Call EmitLine(lngFileNumber, "OLD_DOCUMENT|version=" & oldDoc.PdfVersion & "|bytes=" & CStr(oldDoc.FileSize) & "|objects=" & CStr(oldDoc.ObjectCount) & "|xref=" & oldDoc.XrefKind & "|pages=" & CStr(oldDoc.PageCount))
+    Call EmitLine(lngFileNumber, "NEW_DOCUMENT|version=" & newDoc.PdfVersion & "|bytes=" & CStr(newDoc.FileSize) & "|objects=" & CStr(newDoc.ObjectCount) & "|xref=" & newDoc.XrefKind & "|pages=" & CStr(newDoc.PageCount))
+    Call EmitLine(lngFileNumber, "IMPORTANT|Use matching reports with the same transactions for meaningful text and page-level comparison.")
 
     lngCommonPages = oldDoc.PageCount
     If newDoc.PageCount < lngCommonPages Then
@@ -3710,16 +3803,16 @@ Private Sub WriteComparisonReport( _
     End If
 
     For lngPage = 1 To lngCommonPages
-        Call ComparePage(oldDoc, newDoc, lngPage, intFileNumber)
+        Call ComparePage(oldDoc, newDoc, lngPage, lngFileNumber)
     Next lngPage
 
     If oldDoc.PageCount <> newDoc.PageCount Then
-        Call EmitLine(intFileNumber, "PAGE_COUNT_DIFFERENCE|old=" & CStr(oldDoc.PageCount) & "|new=" & CStr(newDoc.PageCount))
+        Call EmitLine(lngFileNumber, "PAGE_COUNT_DIFFERENCE|old=" & CStr(oldDoc.PageCount) & "|new=" & CStr(newDoc.PageCount))
     End If
 
 ExitSub:
-    If intFileNumber > 0 Then
-        Close #intFileNumber
+    If lngFileNumber > 0 Then
+        Close #lngFileNumber
     End If
     Exit Sub
 
@@ -3742,7 +3835,7 @@ End Sub
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-06
-' Parameters:    oldDoc As tPdfDocument, newDoc As tPdfDocument, pageNo As Long, fileNumber As Integer
+' Parameters:    oldDoc As tPdfDocument, newDoc As tPdfDocument, pageNo As Long, fileNumber As Long
 ' Returns:       ---
 ' Description:   Compares dictionary, line multiplicity, style, and target separators for one page.
 '-------------------------------------------------------------------------------
@@ -3750,7 +3843,7 @@ Private Sub ComparePage( _
     ByRef oldDoc As tPdfDocument, _
     ByRef newDoc As tPdfDocument, _
     ByVal pageNo As Long, _
-    ByVal fileNumber As Integer)
+    ByVal fileNumber As Long)
 
     Const METHOD_NAME As String = "ComparePage"
     Dim errorManager As New ErrorManager
@@ -3918,7 +4011,7 @@ End Function
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-06
-' Parameters:    oldGeometry As Object, newGeometry As Object, oldStyles As Object, newStyles As Object, fileNumber As Integer
+' Parameters:    oldGeometry As Object, newGeometry As Object, oldStyles As Object, newStyles As Object, fileNumber As Long
 ' Returns:       ---
 ' Description:   Writes missing, added, multiplicity, and style differences between line sets.
 '-------------------------------------------------------------------------------
@@ -3927,7 +4020,7 @@ Private Sub WriteGeometryDifferences( _
     ByVal newGeometry As Object, _
     ByVal oldStyles As Object, _
     ByVal newStyles As Object, _
-    ByVal fileNumber As Integer)
+    ByVal fileNumber As Long)
 
     Const METHOD_NAME As String = "WriteGeometryDifferences"
     Dim errorManager As New ErrorManager
@@ -4000,7 +4093,7 @@ End Sub
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-06
-' Parameters:    oldDoc As tPdfDocument, newDoc As tPdfDocument, pageNo As Long, targetX As Double, fileNumber As Integer
+' Parameters:    oldDoc As tPdfDocument, newDoc As tPdfDocument, pageNo As Long, targetX As Double, fileNumber As Long
 ' Returns:       ---
 ' Description:   Compares stroke multiplicity, style, vertical span, and text crossings at one X coordinate.
 '-------------------------------------------------------------------------------
@@ -4009,7 +4102,7 @@ Private Sub WriteTargetComparison( _
     ByRef newDoc As tPdfDocument, _
     ByVal pageNo As Long, _
     ByVal targetX As Double, _
-    ByVal fileNumber As Integer)
+    ByVal fileNumber As Long)
 
     Const METHOD_NAME As String = "WriteTargetComparison"
     Dim errorManager As New ErrorManager
@@ -4088,38 +4181,44 @@ Private Sub TargetLineStats( _
 
     Const METHOD_NAME As String = "TargetLineStats"
     Dim errorManager As New ErrorManager
+    Dim arrSortedKeys As Variant
     Dim errDescription As String
     Dim errNumber As Long
     Dim dictDetails As Object
     Dim lngIndex As Long
+    Dim lngSortedIndex As Long
     Dim strKey As String
-    Dim varKey As Variant
 
     On Error GoTo ErrorHandler
 
     Set dictDetails = CreateObject("Scripting.Dictionary")
+    occurrenceCount = 0
+    uniqueCount = 0
+    crossingCount = 0
+    details = vbNullString
+
     For lngIndex = 0 To pdfDoc.LineCount - 1
         If pdfDoc.Lines(lngIndex).PageNo = pageNo Then
             If IsVerticalAtX(pdfDoc.Lines(lngIndex), targetX) Then
                 occurrenceCount = occurrenceCount + 1
                 strKey = "y=" & NumTxt(MinDouble(pdfDoc.Lines(lngIndex).Y1, pdfDoc.Lines(lngIndex).Y2)) & ".." & NumTxt(MaxDouble(pdfDoc.Lines(lngIndex).Y1, pdfDoc.Lines(lngIndex).Y2)) & ",width=" & NumTxt(pdfDoc.Lines(lngIndex).LineWidth) & ",paint=" & pdfDoc.Lines(lngIndex).PaintOperator & ",source=" & pdfDoc.Lines(lngIndex).SourceOperator & ",color=" & pdfDoc.Lines(lngIndex).StrokeColor
-                If dictDetails.Exists(strKey) Then
-                    dictDetails(strKey) = CLng(dictDetails(strKey)) + 1
-                Else
-                    dictDetails.Add strKey, 1
-                End If
+                Call IncrementDictionaryValue(dictDetails, strKey)
             End If
         End If
     Next lngIndex
 
     uniqueCount = dictDetails.Count
     crossingCount = CountTargetTextCrossings(pdfDoc, pageNo, targetX, 0, False)
-    For Each varKey In dictDetails.Keys
-        If Len(details) > 0 Then
-            details = details & "|"
-        End If
-        details = details & "count=" & CStr(dictDetails(varKey)) & "," & CStr(varKey)
-    Next varKey
+    If dictDetails.Count > 0 Then
+        arrSortedKeys = SortedDictionaryKeys(dictDetails)
+        For lngSortedIndex = LBound(arrSortedKeys) To UBound(arrSortedKeys)
+            strKey = CStr(arrSortedKeys(lngSortedIndex))
+            If Len(details) > 0 Then
+                details = details & "|"
+            End If
+            details = details & "count=" & CStr(dictDetails(strKey)) & "," & strKey
+        Next lngSortedIndex
+    End If
     If Len(details) = 0 Then
         details = "none"
     End If
@@ -4148,7 +4247,7 @@ End Sub
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-06
-' Parameters:    pdfDoc As tPdfDocument, pageNo As Long, targetX As Double, fileNumber As Integer, writeDetails As Boolean
+' Parameters:    pdfDoc As tPdfDocument, pageNo As Long, targetX As Double, fileNumber As Long, writeDetails As Boolean
 ' Returns:       Long
 ' Description:   Counts estimated text bounding boxes intersected by a target vertical rule.
 '-------------------------------------------------------------------------------
@@ -4156,7 +4255,7 @@ Private Function CountTargetTextCrossings( _
     ByRef pdfDoc As tPdfDocument, _
     ByVal pageNo As Long, _
     ByVal targetX As Double, _
-    ByVal fileNumber As Integer, _
+    ByVal fileNumber As Long, _
     ByVal writeDetails As Boolean) As Long
 
     Const METHOD_NAME As String = "CountTargetTextCrossings"
@@ -4382,6 +4481,1788 @@ End Function
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldPdfPath As String, newPdfPath As String, auditOutputPath As String, detailOutputPath As String
+' Returns:       Boolean
+' Description:   Compares a generated PDF with an Oracle reference and writes normalized audit and detailed reports.
+'-------------------------------------------------------------------------------
+Public Function PdfOracleCloneAudit( _
+    ByVal oldPdfPath As String, _
+    ByVal newPdfPath As String, _
+    ByVal auditOutputPath As String, _
+    ByVal detailOutputPath As String) As Boolean
+
+    Const METHOD_NAME As String = "PdfOracleCloneAudit"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim newDoc As tPdfDocument
+    Dim oldDoc As tPdfDocument
+
+    On Error GoTo ErrorHandler
+
+    If Len(Trim$(oldPdfPath)) = 0 Then
+        Err.Raise 1001, METHOD_NAME, "The old PDF path is required."
+    End If
+
+    If Len(Trim$(newPdfPath)) = 0 Then
+        Err.Raise 1001, METHOD_NAME, "The new PDF path is required."
+    End If
+
+    If Len(Trim$(auditOutputPath)) = 0 Then
+        Err.Raise 1020, METHOD_NAME, "The audit output path is required."
+    End If
+
+    If Len(Trim$(detailOutputPath)) = 0 Then
+        Err.Raise 1020, METHOD_NAME, "The detail output path is required."
+    End If
+
+    Call LoadPdfDocument(oldPdfPath, oldDoc)
+    If oldDoc.PageCount = 0 Then
+        Err.Raise 1014, METHOD_NAME, "The old PDF could not be parsed into page content."
+    End If
+
+    Call LoadPdfDocument(newPdfPath, newDoc)
+    If newDoc.PageCount = 0 Then
+        Err.Raise 1014, METHOD_NAME, "The new PDF could not be parsed into page content."
+    End If
+
+    Call WriteOracleCloneAuditReport(oldDoc, newDoc, auditOutputPath)
+    Call WriteComparisonReport(oldDoc, newDoc, detailOutputPath)
+    PdfOracleCloneAudit = True
+
+ExitFunction:
+    Call ResetParserState
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    PdfOracleCloneAudit = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "oldPdfPath;newPdfPath;auditOutputPath;detailOutputPath", _
+        oldPdfPath, _
+        newPdfPath, _
+        auditOutputPath, _
+        detailOutputPath
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldPdfPath As String, newPdfPath As String
+' Returns:       String
+' Description:   Builds the output path for the normalized Oracle clone audit.
+'-------------------------------------------------------------------------------
+Private Function BuildOracleAuditOutputPath( _
+    ByVal oldPdfPath As String, _
+    ByVal newPdfPath As String) As String
+
+    Const METHOD_NAME As String = "BuildOracleAuditOutputPath"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngSlashPosition As Long
+    Dim strFolder As String
+    Dim strNewBase As String
+    Dim strOldBase As String
+
+    On Error GoTo ErrorHandler
+
+    lngSlashPosition = InStrRev(newPdfPath, "\")
+    If lngSlashPosition > 0 Then
+        strFolder = Left$(newPdfPath, lngSlashPosition)
+    End If
+
+    strOldBase = FileBaseName(oldPdfPath)
+    strNewBase = FileBaseName(newPdfPath)
+    BuildOracleAuditOutputPath = strFolder & strOldBase & "_VS_" & strNewBase & "_oracle_clone_audit.txt"
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildOracleAuditOutputPath = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "oldPdfPath;newPdfPath", _
+        oldPdfPath, _
+        newPdfPath
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDoc As tPdfDocument, newDoc As tPdfDocument, outputPath As String
+' Returns:       ---
+' Description:   Writes a normalized parser-sensitive audit focused on meaningful Oracle compatibility differences.
+'-------------------------------------------------------------------------------
+Private Sub WriteOracleCloneAuditReport( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal outputPath As String)
+
+    Const METHOD_NAME As String = "WriteOracleCloneAuditReport"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngCommonPages As Long
+    Dim lngCriticalTotal As Long
+    Dim lngFileNumber As Long
+    Dim lngInfoTotal As Long
+    Dim lngPage As Long
+    Dim lngPageCritical As Long
+    Dim lngPageInfo As Long
+    Dim lngPageStructural As Long
+    Dim lngStructuralTotal As Long
+    Dim strStatus As String
+
+    On Error GoTo ErrorHandler
+
+    lngFileNumber = OpenNew(outputPath)
+    Call EmitLine(lngFileNumber, "ORACLE_CLONE_AUDIT_V3")
+    Call EmitLine(lngFileNumber, "OLD|" & oldDoc.PdfPath)
+    Call EmitLine(lngFileNumber, "NEW|" & newDoc.PdfPath)
+    Call EmitLine(lngFileNumber, "PURPOSE|Normalize ordering and object-number noise, then report parser-sensitive geometry, text, font, filter, and operator differences.")
+    Call EmitLine(lngFileNumber, "IMPORTANT|Use PDFs containing the same transactions and the same logical report content.")
+    Call WriteDocumentAudit(oldDoc, newDoc, lngFileNumber, lngCriticalTotal, lngStructuralTotal, lngInfoTotal)
+
+    lngCommonPages = oldDoc.PageCount
+    If newDoc.PageCount < lngCommonPages Then
+        lngCommonPages = newDoc.PageCount
+    End If
+
+    For lngPage = 1 To lngCommonPages
+        lngPageCritical = 0
+        lngPageStructural = 0
+        lngPageInfo = 0
+        Call WriteOraclePageAudit(oldDoc, newDoc, lngPage, lngFileNumber, lngPageCritical, lngPageStructural, lngPageInfo)
+        lngCriticalTotal = lngCriticalTotal + lngPageCritical
+        lngStructuralTotal = lngStructuralTotal + lngPageStructural
+        lngInfoTotal = lngInfoTotal + lngPageInfo
+    Next lngPage
+
+    If lngCriticalTotal = 0 And lngStructuralTotal = 0 Then
+        strStatus = "PARSER_SENSITIVE_MATCH"
+    ElseIf lngCriticalTotal = 0 Then
+        strStatus = "GEOMETRY_AND_TEXT_MATCH_STRUCTURAL_DIFFERENCES_REMAIN"
+    Else
+        strStatus = "PARSER_SENSITIVE_DIFFERENCES_REMAIN"
+    End If
+
+    Call EmitLine(lngFileNumber, vbNullString)
+    Call EmitLine(lngFileNumber, "AUDIT_SUMMARY|status=" & strStatus & "|critical=" & CStr(lngCriticalTotal) & "|structural=" & CStr(lngStructuralTotal) & "|informational=" & CStr(lngInfoTotal))
+    If lngCriticalTotal = 0 Then
+        Call EmitLine(lngFileNumber, "NEXT_ACTION|Do not change table coordinates or target separators unless the client still reports a parsing error. Review STRUCTURAL entries only when pursuing a closer Oracle stream clone.")
+    Else
+        Call EmitLine(lngFileNumber, "NEXT_ACTION|Resolve CRITICAL entries first. These are geometry, page-box, text-content, or text-position differences that can change table extraction.")
+    End If
+    Call EmitLine(lngFileNumber, "LIMITATION|This audit cannot execute the proprietary client parser. A zero critical count is strong structural evidence, not a guarantee of identical proprietary-parser behavior.")
+
+ExitSub:
+    If lngFileNumber > 0 Then
+        Close #lngFileNumber
+    End If
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "outputPath", _
+        outputPath
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDoc As tPdfDocument, newDoc As tPdfDocument, fileNumber As Long, criticalCount As Long, structuralCount As Long, infoCount As Long
+' Returns:       ---
+' Description:   Writes document-level compatibility checks and classifies meaningful differences.
+'-------------------------------------------------------------------------------
+Private Sub WriteDocumentAudit( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal fileNumber As Long, _
+    ByRef criticalCount As Long, _
+    ByRef structuralCount As Long, _
+    ByRef infoCount As Long)
+
+    Const METHOD_NAME As String = "WriteDocumentAudit"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strMatch As String
+
+    On Error GoTo ErrorHandler
+
+    strMatch = BoolText(oldDoc.PdfVersion = newDoc.PdfVersion)
+    Call EmitLine(fileNumber, "DOCUMENT_VERSION|old=" & oldDoc.PdfVersion & "|new=" & newDoc.PdfVersion & "|match=" & strMatch)
+    If oldDoc.PdfVersion <> newDoc.PdfVersion Then
+        criticalCount = criticalCount + 1
+    End If
+
+    strMatch = BoolText(oldDoc.PageCount = newDoc.PageCount)
+    Call EmitLine(fileNumber, "DOCUMENT_PAGES|old=" & CStr(oldDoc.PageCount) & "|new=" & CStr(newDoc.PageCount) & "|match=" & strMatch)
+    If oldDoc.PageCount <> newDoc.PageCount Then
+        criticalCount = criticalCount + 1
+    End If
+
+    Call EmitLine(fileNumber, "DOCUMENT_XREF|old=" & oldDoc.XrefKind & "|new=" & newDoc.XrefKind & "|match=" & BoolText(oldDoc.XrefKind = newDoc.XrefKind))
+    If oldDoc.XrefKind <> newDoc.XrefKind Then
+        infoCount = infoCount + 1
+    End If
+
+    Call EmitLine(fileNumber, "DOCUMENT_OBJECTS|old=" & CStr(oldDoc.ObjectCount) & "|new=" & CStr(newDoc.ObjectCount) & "|classification=INFORMATIONAL")
+    If oldDoc.ObjectCount <> newDoc.ObjectCount Then
+        infoCount = infoCount + 1
+    End If
+
+    Call EmitLine(fileNumber, "DOCUMENT_BYTES|old=" & CStr(oldDoc.FileSize) & "|new=" & CStr(newDoc.FileSize) & "|classification=INFORMATIONAL")
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDoc As tPdfDocument, newDoc As tPdfDocument, pageNo As Long, fileNumber As Long, criticalCount As Long, structuralCount As Long, infoCount As Long
+' Returns:       ---
+' Description:   Writes normalized page-level geometry, text, font, stream, and target-separator comparisons.
+'-------------------------------------------------------------------------------
+Private Sub WriteOraclePageAudit( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal fileNumber As Long, _
+    ByRef criticalCount As Long, _
+    ByRef structuralCount As Long, _
+    ByRef infoCount As Long)
+
+    Const METHOD_NAME As String = "WriteOraclePageAudit"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim dictNew As Object
+    Dim dictOld As Object
+    Dim lngChanged As Long
+    Dim lngNewOnly As Long
+    Dim lngOldOnly As Long
+    Dim strNewCrop As String
+    Dim strNewRotate As String
+    Dim strNewTextSequence As String
+    Dim strOldCrop As String
+    Dim strOldRotate As String
+    Dim strOldTextSequence As String
+
+    On Error GoTo ErrorHandler
+
+    Call EmitLine(fileNumber, vbNullString)
+    Call EmitLine(fileNumber, "PAGE_AUDIT|" & CStr(pageNo))
+
+    strOldCrop = EffectiveCropBox(oldDoc.Pages(pageNo))
+    strNewCrop = EffectiveCropBox(newDoc.Pages(pageNo))
+    strOldRotate = NormalizeRotateValue(oldDoc.Pages(pageNo).RotateValue)
+    strNewRotate = NormalizeRotateValue(newDoc.Pages(pageNo).RotateValue)
+
+    Call EmitLine(fileNumber, "PAGE_BOX|MediaBoxOld=" & NormalizePdfValue(oldDoc.Pages(pageNo).MediaBox) & "|MediaBoxNew=" & NormalizePdfValue(newDoc.Pages(pageNo).MediaBox) & "|mediaMatch=" & BoolText(NormalizePdfValue(oldDoc.Pages(pageNo).MediaBox) = NormalizePdfValue(newDoc.Pages(pageNo).MediaBox)) & "|CropBoxOld=" & strOldCrop & "|CropBoxNew=" & strNewCrop & "|cropMatch=" & BoolText(strOldCrop = strNewCrop) & "|RotateOld=" & strOldRotate & "|RotateNew=" & strNewRotate & "|rotateMatch=" & BoolText(strOldRotate = strNewRotate))
+    If NormalizePdfValue(oldDoc.Pages(pageNo).MediaBox) <> NormalizePdfValue(newDoc.Pages(pageNo).MediaBox) Then
+        criticalCount = criticalCount + 1
+    End If
+    If strOldCrop <> strNewCrop Then
+        criticalCount = criticalCount + 1
+    End If
+    If strOldRotate <> strNewRotate Then
+        criticalCount = criticalCount + 1
+    End If
+
+    Call EmitLine(fileNumber, "PAGE_FONTS|old=" & oldDoc.Pages(pageNo).ResolvedFonts & "|new=" & newDoc.Pages(pageNo).ResolvedFonts & "|match=" & BoolText(oldDoc.Pages(pageNo).ResolvedFonts = newDoc.Pages(pageNo).ResolvedFonts))
+    If oldDoc.Pages(pageNo).ResolvedFonts <> newDoc.Pages(pageNo).ResolvedFonts Then
+        structuralCount = structuralCount + 1
+    End If
+
+    Call EmitLine(fileNumber, "PAGE_FILTERS|old=" & oldDoc.Pages(pageNo).ContentFilters & "|new=" & newDoc.Pages(pageNo).ContentFilters & "|match=" & BoolText(oldDoc.Pages(pageNo).ContentFilters = newDoc.Pages(pageNo).ContentFilters))
+    If oldDoc.Pages(pageNo).ContentFilters <> newDoc.Pages(pageNo).ContentFilters Then
+        structuralCount = structuralCount + 1
+    End If
+
+    Set dictOld = BuildImageAuditDictionary(oldDoc, pageNo)
+    Set dictNew = BuildImageAuditDictionary(newDoc, pageNo)
+    Call DictionaryDifferenceCounts(dictOld, dictNew, lngOldOnly, lngNewOnly, lngChanged)
+    Call EmitLine(fileNumber, "IMAGE_PLACEMENT_AUDIT|oldCount=" & CStr(DictionaryValueTotal(dictOld)) & "|newCount=" & CStr(DictionaryValueTotal(dictNew)) & "|oldOnly=" & CStr(lngOldOnly) & "|newOnly=" & CStr(lngNewOnly) & "|multiplicity=" & CStr(lngChanged) & "|match=" & BoolText(lngOldOnly = 0 And lngNewOnly = 0 And lngChanged = 0))
+    If lngOldOnly > 0 Or lngNewOnly > 0 Or lngChanged > 0 Then
+        structuralCount = structuralCount + 1
+        Call WriteDictionaryDifferenceSamples("IMAGE", dictOld, dictNew, fileNumber, 12)
+    End If
+    Set dictOld = Nothing
+    Set dictNew = Nothing
+
+    Set dictOld = BuildLineAuditDictionary(oldDoc, pageNo, False)
+    Set dictNew = BuildLineAuditDictionary(newDoc, pageNo, False)
+    Call DictionaryDifferenceCounts(dictOld, dictNew, lngOldOnly, lngNewOnly, lngChanged)
+    Call EmitLine(fileNumber, "GEOMETRY_AUDIT|oldOnly=" & CStr(lngOldOnly) & "|newOnly=" & CStr(lngNewOnly) & "|multiplicity=" & CStr(lngChanged) & "|match=" & BoolText(lngOldOnly = 0 And lngNewOnly = 0 And lngChanged = 0))
+    If lngOldOnly > 0 Or lngNewOnly > 0 Or lngChanged > 0 Then
+        criticalCount = criticalCount + 1
+        Call WriteDictionaryDifferenceSamples("GEOMETRY", dictOld, dictNew, fileNumber, 24)
+    End If
+    Set dictOld = Nothing
+    Set dictNew = Nothing
+
+    Set dictOld = BuildLineAuditDictionary(oldDoc, pageNo, True)
+    Set dictNew = BuildLineAuditDictionary(newDoc, pageNo, True)
+    Call DictionaryDifferenceCounts(dictOld, dictNew, lngOldOnly, lngNewOnly, lngChanged)
+    Call EmitLine(fileNumber, "STYLED_VECTOR_AUDIT|oldOnly=" & CStr(lngOldOnly) & "|newOnly=" & CStr(lngNewOnly) & "|multiplicity=" & CStr(lngChanged) & "|match=" & BoolText(lngOldOnly = 0 And lngNewOnly = 0 And lngChanged = 0))
+    If lngOldOnly > 0 Or lngNewOnly > 0 Or lngChanged > 0 Then
+        structuralCount = structuralCount + 1
+        Call WriteDictionaryDifferenceSamples("STYLED_VECTOR", dictOld, dictNew, fileNumber, 24)
+    End If
+    Set dictOld = Nothing
+    Set dictNew = Nothing
+
+    Set dictOld = BuildTextAuditDictionary(oldDoc, pageNo, False)
+    Set dictNew = BuildTextAuditDictionary(newDoc, pageNo, False)
+    Call DictionaryDifferenceCounts(dictOld, dictNew, lngOldOnly, lngNewOnly, lngChanged)
+    Call EmitLine(fileNumber, "TEXT_CONTENT_AUDIT|oldOnly=" & CStr(lngOldOnly) & "|newOnly=" & CStr(lngNewOnly) & "|multiplicity=" & CStr(lngChanged) & "|match=" & BoolText(lngOldOnly = 0 And lngNewOnly = 0 And lngChanged = 0))
+    If lngOldOnly > 0 Or lngNewOnly > 0 Or lngChanged > 0 Then
+        structuralCount = structuralCount + 1
+        Call WriteDictionaryDifferenceSamples("TEXT_CONTENT", dictOld, dictNew, fileNumber, 20)
+    End If
+    Set dictOld = Nothing
+    Set dictNew = Nothing
+
+    Set dictOld = BuildTextAuditDictionary(oldDoc, pageNo, True)
+    Set dictNew = BuildTextAuditDictionary(newDoc, pageNo, True)
+    Call DictionaryDifferenceCounts(dictOld, dictNew, lngOldOnly, lngNewOnly, lngChanged)
+    Call EmitLine(fileNumber, "TEXT_POSITION_AUDIT|oldOnly=" & CStr(lngOldOnly) & "|newOnly=" & CStr(lngNewOnly) & "|multiplicity=" & CStr(lngChanged) & "|match=" & BoolText(lngOldOnly = 0 And lngNewOnly = 0 And lngChanged = 0))
+    If lngOldOnly > 0 Or lngNewOnly > 0 Or lngChanged > 0 Then
+        structuralCount = structuralCount + 1
+        Call WriteDictionaryDifferenceSamples("TEXT_POSITION", dictOld, dictNew, fileNumber, 20)
+    End If
+    Set dictOld = Nothing
+    Set dictNew = Nothing
+
+    strOldTextSequence = BuildNormalizedTextSequence(oldDoc, pageNo)
+    strNewTextSequence = BuildNormalizedTextSequence(newDoc, pageNo)
+    Call EmitLine(fileNumber, "TEXT_READING_ORDER|match=" & BoolText(strOldTextSequence = strNewTextSequence))
+    If strOldTextSequence <> strNewTextSequence Then
+        criticalCount = criticalCount + 1
+        Call EmitLine(fileNumber, "TEXT_READING_ORDER_OLD|" & Left$(strOldTextSequence, 1500))
+        Call EmitLine(fileNumber, "TEXT_READING_ORDER_NEW|" & Left$(strNewTextSequence, 1500))
+    End If
+
+    Set dictOld = BuildOperatorProfileDictionary(oldDoc.Pages(pageNo).ContentText)
+    Set dictNew = BuildOperatorProfileDictionary(newDoc.Pages(pageNo).ContentText)
+    Call DictionaryDifferenceCounts(dictOld, dictNew, lngOldOnly, lngNewOnly, lngChanged)
+    Call EmitLine(fileNumber, "OPERATOR_PROFILE|oldOnly=" & CStr(lngOldOnly) & "|newOnly=" & CStr(lngNewOnly) & "|countChanged=" & CStr(lngChanged) & "|match=" & BoolText(lngOldOnly = 0 And lngNewOnly = 0 And lngChanged = 0))
+    If lngOldOnly > 0 Or lngNewOnly > 0 Or lngChanged > 0 Then
+        structuralCount = structuralCount + 1
+        Call WriteDictionaryDifferenceSamples("OPERATOR", dictOld, dictNew, fileNumber, 30)
+    End If
+    Set dictOld = Nothing
+    Set dictNew = Nothing
+
+    Call WriteNormalizedTargetAudit(oldDoc, newDoc, pageNo, TARGET_X_FIRST, fileNumber, criticalCount)
+    Call WriteNormalizedTargetAudit(oldDoc, newDoc, pageNo, TARGET_X_SECOND, fileNumber, criticalCount)
+    Call EmitLine(fileNumber, "PAGE_CLASSIFICATION|critical=" & CStr(criticalCount) & "|structural=" & CStr(structuralCount) & "|informational=" & CStr(infoCount))
+
+ExitSub:
+    Set dictOld = Nothing
+    Set dictNew = Nothing
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo", _
+        pageNo
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDoc As tPdfDocument, newDoc As tPdfDocument, pageNo As Long, targetX As Double, fileNumber As Long, criticalCount As Long
+' Returns:       ---
+' Description:   Compares one parser-sensitive separator using sorted styled-line multisets and text-crossing counts.
+'-------------------------------------------------------------------------------
+Private Sub WriteNormalizedTargetAudit( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal targetX As Double, _
+    ByVal fileNumber As Long, _
+    ByRef criticalCount As Long)
+
+    Const METHOD_NAME As String = "WriteNormalizedTargetAudit"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim dictNew As Object
+    Dim dictOld As Object
+    Dim lngChanged As Long
+    Dim lngNewCrossings As Long
+    Dim lngNewOnly As Long
+    Dim lngOldCrossings As Long
+    Dim lngOldOnly As Long
+    Dim strMatch As String
+
+    On Error GoTo ErrorHandler
+
+    Set dictOld = BuildTargetLineAuditDictionary(oldDoc, pageNo, targetX)
+    Set dictNew = BuildTargetLineAuditDictionary(newDoc, pageNo, targetX)
+    Call DictionaryDifferenceCounts(dictOld, dictNew, lngOldOnly, lngNewOnly, lngChanged)
+    lngOldCrossings = CountTargetTextCrossings(oldDoc, pageNo, targetX, 0, False)
+    lngNewCrossings = CountTargetTextCrossings(newDoc, pageNo, targetX, 0, False)
+    strMatch = BoolText(lngOldOnly = 0 And lngNewOnly = 0 And lngChanged = 0 And lngOldCrossings = lngNewCrossings)
+
+    Call EmitLine(fileNumber, "TARGET_AUDIT|x=" & NumTxt(targetX) & "|oldOccurrences=" & CStr(DictionaryValueTotal(dictOld)) & "|newOccurrences=" & CStr(DictionaryValueTotal(dictNew)) & "|oldUnique=" & CStr(dictOld.Count) & "|newUnique=" & CStr(dictNew.Count) & "|oldCrossings=" & CStr(lngOldCrossings) & "|newCrossings=" & CStr(lngNewCrossings) & "|match=" & strMatch)
+    If strMatch = "FALSE" Then
+        criticalCount = criticalCount + 1
+        Call WriteDictionaryDifferenceSamples("TARGET_" & Replace(NumTxt(targetX), ".", "_"), dictOld, dictNew, fileNumber, 20)
+    End If
+
+ExitSub:
+    Set dictOld = Nothing
+    Set dictNew = Nothing
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;targetX", _
+        pageNo, _
+        targetX
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pdfDoc As tPdfDocument, pageNo As Long
+' Returns:       Object
+' Description:   Builds a resource-name-independent multiset of XObject placement matrices for one page.
+'-------------------------------------------------------------------------------
+Private Function BuildImageAuditDictionary( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long) As Object
+
+    Const METHOD_NAME As String = "BuildImageAuditDictionary"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim dictResult As Object
+    Dim lngIndex As Long
+    Dim strKey As String
+
+    On Error GoTo ErrorHandler
+
+    Set dictResult = CreateObject("Scripting.Dictionary")
+    For lngIndex = 0 To pdfDoc.ImageCount - 1
+        If pdfDoc.Images(lngIndex).PageNo = pageNo Then
+            strKey = "matrix=" & NumTxt(pdfDoc.Images(lngIndex).A) & "," & NumTxt(pdfDoc.Images(lngIndex).B) & "," & NumTxt(pdfDoc.Images(lngIndex).C) & "," & NumTxt(pdfDoc.Images(lngIndex).D) & "," & NumTxt(pdfDoc.Images(lngIndex).E) & "," & NumTxt(pdfDoc.Images(lngIndex).F)
+            Call IncrementDictionaryValue(dictResult, strKey)
+        End If
+    Next lngIndex
+
+    Set BuildImageAuditDictionary = dictResult
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    Set BuildImageAuditDictionary = Nothing
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo", _
+        pageNo
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pdfDoc As tPdfDocument, pageNo As Long, includeStyle As Boolean
+' Returns:       Object
+' Description:   Builds a canonical line multiset with optional style and source-operator information.
+'-------------------------------------------------------------------------------
+Private Function BuildLineAuditDictionary( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal includeStyle As Boolean) As Object
+
+    Const METHOD_NAME As String = "BuildLineAuditDictionary"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim dictResult As Object
+    Dim lngIndex As Long
+    Dim strKey As String
+
+    On Error GoTo ErrorHandler
+
+    Set dictResult = CreateObject("Scripting.Dictionary")
+    For lngIndex = 0 To pdfDoc.LineCount - 1
+        If pdfDoc.Lines(lngIndex).PageNo = pageNo Then
+            strKey = CanonicalLineGeometryKey(pdfDoc.Lines(lngIndex))
+            If includeStyle Then
+                strKey = strKey & "|width=" & NumTxt(pdfDoc.Lines(lngIndex).LineWidth) & "|paint=" & pdfDoc.Lines(lngIndex).PaintOperator & "|source=" & pdfDoc.Lines(lngIndex).SourceOperator & "|color=" & pdfDoc.Lines(lngIndex).StrokeColor
+            End If
+            Call IncrementDictionaryValue(dictResult, strKey)
+        End If
+    Next lngIndex
+
+    Set BuildLineAuditDictionary = dictResult
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    Set BuildLineAuditDictionary = Nothing
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;includeStyle", _
+        pageNo, _
+        includeStyle
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pdfDoc As tPdfDocument, pageNo As Long, targetX As Double
+' Returns:       Object
+' Description:   Builds a sorted-order-independent styled multiset for one vertical target separator.
+'-------------------------------------------------------------------------------
+Private Function BuildTargetLineAuditDictionary( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal targetX As Double) As Object
+
+    Const METHOD_NAME As String = "BuildTargetLineAuditDictionary"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim dictResult As Object
+    Dim lngIndex As Long
+    Dim strKey As String
+
+    On Error GoTo ErrorHandler
+
+    Set dictResult = CreateObject("Scripting.Dictionary")
+    For lngIndex = 0 To pdfDoc.LineCount - 1
+        If pdfDoc.Lines(lngIndex).PageNo = pageNo Then
+            If IsVerticalAtX(pdfDoc.Lines(lngIndex), targetX) Then
+                strKey = CanonicalLineGeometryKey(pdfDoc.Lines(lngIndex)) & "|width=" & NumTxt(pdfDoc.Lines(lngIndex).LineWidth) & "|paint=" & pdfDoc.Lines(lngIndex).PaintOperator & "|source=" & pdfDoc.Lines(lngIndex).SourceOperator & "|color=" & pdfDoc.Lines(lngIndex).StrokeColor
+                Call IncrementDictionaryValue(dictResult, strKey)
+            End If
+        End If
+    Next lngIndex
+
+    Set BuildTargetLineAuditDictionary = dictResult
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    Set BuildTargetLineAuditDictionary = Nothing
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;targetX", _
+        pageNo, _
+        targetX
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pdfDoc As tPdfDocument, pageNo As Long, includePosition As Boolean
+' Returns:       Object
+' Description:   Builds a text multiset using either content only or exact anchor, font, size, and content.
+'-------------------------------------------------------------------------------
+Private Function BuildTextAuditDictionary( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal includePosition As Boolean) As Object
+
+    Const METHOD_NAME As String = "BuildTextAuditDictionary"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim dictResult As Object
+    Dim lngIndex As Long
+    Dim strKey As String
+
+    On Error GoTo ErrorHandler
+
+    Set dictResult = CreateObject("Scripting.Dictionary")
+    For lngIndex = 0 To pdfDoc.TextCount - 1
+        If pdfDoc.Texts(lngIndex).PageNo = pageNo Then
+            If includePosition Then
+                strKey = "x=" & NumTxt(pdfDoc.Texts(lngIndex).X) & "|y=" & NumTxt(pdfDoc.Texts(lngIndex).Y) & "|font=" & pdfDoc.Texts(lngIndex).FontName & "|size=" & NumTxt(pdfDoc.Texts(lngIndex).FontSize) & "|text=" & SanitizeReportText(pdfDoc.Texts(lngIndex).TextValue)
+            Else
+                strKey = "text=" & SanitizeReportText(pdfDoc.Texts(lngIndex).TextValue)
+            End If
+            Call IncrementDictionaryValue(dictResult, strKey)
+        End If
+    Next lngIndex
+
+    Set BuildTextAuditDictionary = dictResult
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    Set BuildTextAuditDictionary = Nothing
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;includePosition", _
+        pageNo, _
+        includePosition
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    content As String
+' Returns:       Object
+' Description:   Counts parser-relevant PDF graphics and text operators in a page content stream.
+'-------------------------------------------------------------------------------
+Private Function BuildOperatorProfileDictionary(ByVal content As String) As Object
+    Const METHOD_NAME As String = "BuildOperatorProfileDictionary"
+    Dim errorManager As New ErrorManager
+    Dim arrTokens() As String
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim dictResult As Object
+    Dim lngIndex As Long
+    Dim lngTokenCount As Long
+    Dim strToken As String
+
+    On Error GoTo ErrorHandler
+
+    Set dictResult = CreateObject("Scripting.Dictionary")
+    lngTokenCount = Tokenize(content, arrTokens)
+    For lngIndex = 0 To lngTokenCount - 1
+        strToken = arrTokens(lngIndex)
+        If IsAuditOperator(strToken) Then
+            Call IncrementDictionaryValue(dictResult, strToken)
+        End If
+    Next lngIndex
+
+    Set BuildOperatorProfileDictionary = dictResult
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    Set BuildOperatorProfileDictionary = Nothing
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "contentLength", _
+        Len(content)
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    operatorValue As String
+' Returns:       Boolean
+' Description:   Returns whether a token is relevant to Oracle stream-structure comparison.
+'-------------------------------------------------------------------------------
+Private Function IsAuditOperator(ByVal operatorValue As String) As Boolean
+    Const METHOD_NAME As String = "IsAuditOperator"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    Select Case operatorValue
+        Case "q", "Q", "cm", "w", "G", "RG", "K", "g", "rg", "k", _
+             "m", "l", "h", "re", "S", "s", "B", "B*", "b", "b*", _
+             "f", "f*", "F", "n", "BT", "ET", "Tf", "Tm", "Td", "TD", _
+             "T*", "Tj", "TJ", "'", "Do"
+            IsAuditOperator = True
+    End Select
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    IsAuditOperator = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "operatorValue", _
+        operatorValue
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pdfDoc As tPdfDocument, pageNo As Long
+' Returns:       String
+' Description:   Builds a reading-order text signature while normalizing adjacent text-run segmentation.
+'-------------------------------------------------------------------------------
+Private Function BuildNormalizedTextSequence( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long) As String
+
+    Const METHOD_NAME As String = "BuildNormalizedTextSequence"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim arrIndices() As Long
+    Dim blnFirst As Boolean
+    Dim dblBaseline As Double
+    Dim lngCount As Long
+    Dim lngIndex As Long
+    Dim lngInner As Long
+    Dim lngSwap As Long
+    Dim strResult As String
+
+    On Error GoTo ErrorHandler
+
+    If pdfDoc.Pages(pageNo).TextCount = 0 Then
+        BuildNormalizedTextSequence = "(none)"
+        GoTo ExitFunction
+    End If
+
+    ReDim arrIndices(0 To pdfDoc.Pages(pageNo).TextCount - 1)
+    For lngIndex = 0 To pdfDoc.TextCount - 1
+        If pdfDoc.Texts(lngIndex).PageNo = pageNo Then
+            arrIndices(lngCount) = lngIndex
+            lngCount = lngCount + 1
+        End If
+    Next lngIndex
+
+    If lngCount = 0 Then
+        BuildNormalizedTextSequence = "(none)"
+        GoTo ExitFunction
+    End If
+    ReDim Preserve arrIndices(0 To lngCount - 1)
+
+    For lngIndex = 0 To lngCount - 2
+        For lngInner = lngIndex + 1 To lngCount - 1
+            If TextIndexComesBefore(pdfDoc, arrIndices(lngInner), arrIndices(lngIndex)) Then
+                lngSwap = arrIndices(lngIndex)
+                arrIndices(lngIndex) = arrIndices(lngInner)
+                arrIndices(lngInner) = lngSwap
+            End If
+        Next lngInner
+    Next lngIndex
+
+    blnFirst = True
+    For lngIndex = 0 To lngCount - 1
+        If blnFirst Then
+            dblBaseline = pdfDoc.Texts(arrIndices(lngIndex)).Y
+            strResult = "y=" & NumTxt(dblBaseline) & ":"
+            blnFirst = False
+        ElseIf Abs(pdfDoc.Texts(arrIndices(lngIndex)).Y - dblBaseline) > 0.15 Then
+            dblBaseline = pdfDoc.Texts(arrIndices(lngIndex)).Y
+            strResult = strResult & "^y=" & NumTxt(dblBaseline) & ":"
+        End If
+        strResult = strResult & SanitizeReportText(pdfDoc.Texts(arrIndices(lngIndex)).TextValue)
+    Next lngIndex
+
+    BuildNormalizedTextSequence = strResult
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildNormalizedTextSequence = "(error)"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo", _
+        pageNo
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pdfDoc As tPdfDocument, firstIndex As Long, secondIndex As Long
+' Returns:       Boolean
+' Description:   Returns whether the first text run sorts before the second in visual reading order.
+'-------------------------------------------------------------------------------
+Private Function TextIndexComesBefore( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal firstIndex As Long, _
+    ByVal secondIndex As Long) As Boolean
+
+    Const METHOD_NAME As String = "TextIndexComesBefore"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If pdfDoc.Texts(firstIndex).Y > pdfDoc.Texts(secondIndex).Y + 0.01 Then
+        TextIndexComesBefore = True
+    ElseIf Abs(pdfDoc.Texts(firstIndex).Y - pdfDoc.Texts(secondIndex).Y) <= 0.01 Then
+        TextIndexComesBefore = pdfDoc.Texts(firstIndex).X < pdfDoc.Texts(secondIndex).X
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    TextIndexComesBefore = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "firstIndex;secondIndex", _
+        firstIndex, _
+        secondIndex
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldValues As Object, newValues As Object, oldOnly As Long, newOnly As Long, multiplicityChanged As Long
+' Returns:       ---
+' Description:   Counts canonical multiset differences without depending on dictionary insertion order.
+'-------------------------------------------------------------------------------
+Private Sub DictionaryDifferenceCounts( _
+    ByVal oldValues As Object, _
+    ByVal newValues As Object, _
+    ByRef oldOnly As Long, _
+    ByRef newOnly As Long, _
+    ByRef multiplicityChanged As Long)
+
+    Const METHOD_NAME As String = "DictionaryDifferenceCounts"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim varKey As Variant
+
+    On Error GoTo ErrorHandler
+
+    oldOnly = 0
+    newOnly = 0
+    multiplicityChanged = 0
+
+    For Each varKey In oldValues.Keys
+        If Not newValues.Exists(varKey) Then
+            oldOnly = oldOnly + 1
+        ElseIf CLng(oldValues(varKey)) <> CLng(newValues(varKey)) Then
+            multiplicityChanged = multiplicityChanged + 1
+        End If
+    Next varKey
+
+    For Each varKey In newValues.Keys
+        If Not oldValues.Exists(varKey) Then
+            newOnly = newOnly + 1
+        End If
+    Next varKey
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    prefix As String, oldValues As Object, newValues As Object, fileNumber As Long, maxLines As Long
+' Returns:       ---
+' Description:   Writes deterministic sorted samples of canonical dictionary differences.
+'-------------------------------------------------------------------------------
+Private Sub WriteDictionaryDifferenceSamples( _
+    ByVal prefix As String, _
+    ByVal oldValues As Object, _
+    ByVal newValues As Object, _
+    ByVal fileNumber As Long, _
+    ByVal maxLines As Long)
+
+    Const METHOD_NAME As String = "WriteDictionaryDifferenceSamples"
+    Dim errorManager As New ErrorManager
+    Dim arrKeys As Variant
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim lngWritten As Long
+    Dim strKey As String
+
+    On Error GoTo ErrorHandler
+
+    arrKeys = SortedDictionaryKeys(oldValues)
+    If oldValues.Count > 0 Then
+        For lngIndex = LBound(arrKeys) To UBound(arrKeys)
+            strKey = CStr(arrKeys(lngIndex))
+            If Not newValues.Exists(strKey) Then
+                Call EmitLine(fileNumber, prefix & "_ONLY_OLD|count=" & CStr(oldValues(strKey)) & "|" & strKey)
+                lngWritten = lngWritten + 1
+            ElseIf CLng(oldValues(strKey)) <> CLng(newValues(strKey)) Then
+                Call EmitLine(fileNumber, prefix & "_COUNT_CHANGED|old=" & CStr(oldValues(strKey)) & "|new=" & CStr(newValues(strKey)) & "|" & strKey)
+                lngWritten = lngWritten + 1
+            End If
+            If lngWritten >= maxLines Then
+                GoTo ExitSub
+            End If
+        Next lngIndex
+    End If
+
+    arrKeys = SortedDictionaryKeys(newValues)
+    If newValues.Count > 0 Then
+        For lngIndex = LBound(arrKeys) To UBound(arrKeys)
+            strKey = CStr(arrKeys(lngIndex))
+            If Not oldValues.Exists(strKey) Then
+                Call EmitLine(fileNumber, prefix & "_ONLY_NEW|count=" & CStr(newValues(strKey)) & "|" & strKey)
+                lngWritten = lngWritten + 1
+            End If
+            If lngWritten >= maxLines Then
+                GoTo ExitSub
+            End If
+        Next lngIndex
+    End If
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "prefix;maxLines", _
+        prefix, _
+        maxLines
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    dictValues As Object
+' Returns:       Variant
+' Description:   Returns dictionary keys sorted alphabetically for deterministic comparison output.
+'-------------------------------------------------------------------------------
+Private Function SortedDictionaryKeys(ByVal dictValues As Object) As Variant
+    Const METHOD_NAME As String = "SortedDictionaryKeys"
+    Dim errorManager As New ErrorManager
+    Dim arrKeys() As String
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim lngInner As Long
+    Dim strSwap As String
+    Dim varKey As Variant
+
+    On Error GoTo ErrorHandler
+
+    If dictValues.Count = 0 Then
+        SortedDictionaryKeys = Array()
+        GoTo ExitFunction
+    End If
+
+    ReDim arrKeys(0 To dictValues.Count - 1)
+    For Each varKey In dictValues.Keys
+        arrKeys(lngIndex) = CStr(varKey)
+        lngIndex = lngIndex + 1
+    Next varKey
+
+    For lngIndex = LBound(arrKeys) To UBound(arrKeys) - 1
+        For lngInner = lngIndex + 1 To UBound(arrKeys)
+            If StrComp(arrKeys(lngInner), arrKeys(lngIndex), vbBinaryCompare) < 0 Then
+                strSwap = arrKeys(lngIndex)
+                arrKeys(lngIndex) = arrKeys(lngInner)
+                arrKeys(lngInner) = strSwap
+            End If
+        Next lngInner
+    Next lngIndex
+
+    SortedDictionaryKeys = arrKeys
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    SortedDictionaryKeys = Array()
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    dictValues As Object, keyValue As String
+' Returns:       ---
+' Description:   Increments a Long count stored in a late-bound dictionary.
+'-------------------------------------------------------------------------------
+Private Sub IncrementDictionaryValue( _
+    ByVal dictValues As Object, _
+    ByVal keyValue As String)
+
+    Const METHOD_NAME As String = "IncrementDictionaryValue"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If dictValues.Exists(keyValue) Then
+        dictValues(keyValue) = CLng(dictValues(keyValue)) + 1
+    Else
+        dictValues.Add keyValue, 1
+    End If
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "keyValue", _
+        keyValue
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    dictValues As Object
+' Returns:       Long
+' Description:   Returns the sum of numeric multiplicity values in a dictionary.
+'-------------------------------------------------------------------------------
+Private Function DictionaryValueTotal(ByVal dictValues As Object) As Long
+    Const METHOD_NAME As String = "DictionaryValueTotal"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim varKey As Variant
+
+    On Error GoTo ErrorHandler
+
+    For Each varKey In dictValues.Keys
+        DictionaryValueTotal = DictionaryValueTotal + CLng(dictValues(varKey))
+    Next varKey
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    DictionaryValueTotal = 0
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    lineInfo As tPdfLine
+' Returns:       String
+' Description:   Returns a canonical geometry key for vertical, horizontal, or diagonal line segments.
+'-------------------------------------------------------------------------------
+Private Function CanonicalLineGeometryKey(ByRef lineInfo As tPdfLine) As String
+    Const METHOD_NAME As String = "CanonicalLineGeometryKey"
+    Dim errorManager As New ErrorManager
+    Dim dblAx As Double
+    Dim dblAy As Double
+    Dim dblBx As Double
+    Dim dblBy As Double
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If Abs(lineInfo.X1 - lineInfo.X2) <= COORD_TOLERANCE Then
+        CanonicalLineGeometryKey = "V|x=" & NumTxt((lineInfo.X1 + lineInfo.X2) / 2) & "|y=" & NumTxt(MinDouble(lineInfo.Y1, lineInfo.Y2)) & ".." & NumTxt(MaxDouble(lineInfo.Y1, lineInfo.Y2))
+    ElseIf Abs(lineInfo.Y1 - lineInfo.Y2) <= COORD_TOLERANCE Then
+        CanonicalLineGeometryKey = "H|y=" & NumTxt((lineInfo.Y1 + lineInfo.Y2) / 2) & "|x=" & NumTxt(MinDouble(lineInfo.X1, lineInfo.X2)) & ".." & NumTxt(MaxDouble(lineInfo.X1, lineInfo.X2))
+    Else
+        dblAx = lineInfo.X1
+        dblAy = lineInfo.Y1
+        dblBx = lineInfo.X2
+        dblBy = lineInfo.Y2
+        If dblAx > dblBx Or (Abs(dblAx - dblBx) <= COORD_TOLERANCE And dblAy > dblBy) Then
+            dblAx = lineInfo.X2
+            dblAy = lineInfo.Y2
+            dblBx = lineInfo.X1
+            dblBy = lineInfo.Y1
+        End If
+        CanonicalLineGeometryKey = "D|a=" & NumTxt(dblAx) & "," & NumTxt(dblAy) & "|b=" & NumTxt(dblBx) & "," & NumTxt(dblBy)
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    CanonicalLineGeometryKey = "ERROR"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pageInfo As tPdfPage
+' Returns:       String
+' Description:   Returns the effective CropBox, applying the PDF default to MediaBox when CropBox is absent.
+'-------------------------------------------------------------------------------
+Private Function EffectiveCropBox(ByRef pageInfo As tPdfPage) As String
+    Const METHOD_NAME As String = "EffectiveCropBox"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If pageInfo.CropBox = "(absent)" Or Len(Trim$(pageInfo.CropBox)) = 0 Then
+        EffectiveCropBox = NormalizePdfValue(pageInfo.MediaBox)
+    Else
+        EffectiveCropBox = NormalizePdfValue(pageInfo.CropBox)
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    EffectiveCropBox = "(error)"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    rotateValue As String
+' Returns:       String
+' Description:   Normalizes an absent PDF Rotate entry to its effective zero-degree value.
+'-------------------------------------------------------------------------------
+Private Function NormalizeRotateValue(ByVal rotateValue As String) As String
+    Const METHOD_NAME As String = "NormalizeRotateValue"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strValue As String
+
+    On Error GoTo ErrorHandler
+
+    strValue = Trim$(rotateValue)
+    If Len(strValue) = 0 Or strValue = "(absent)" Then
+        NormalizeRotateValue = "0"
+    Else
+        NormalizeRotateValue = strValue
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    NormalizeRotateValue = rotateValue
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    valueText As String
+' Returns:       String
+' Description:   Removes formatting whitespace from compact PDF dictionary values before semantic comparison.
+'-------------------------------------------------------------------------------
+Private Function NormalizePdfValue(ByVal valueText As String) As String
+    Const METHOD_NAME As String = "NormalizePdfValue"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strValue As String
+
+    On Error GoTo ErrorHandler
+
+    strValue = Replace(valueText, vbCr, vbNullString)
+    strValue = Replace(strValue, vbLf, vbNullString)
+    strValue = Replace(strValue, vbTab, " ")
+    Do While InStr(1, strValue, "  ", vbBinaryCompare) > 0
+        strValue = Replace(strValue, "  ", " ")
+    Loop
+    NormalizePdfValue = Trim$(strValue)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    NormalizePdfValue = valueText
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    booleanValue As Boolean
+' Returns:       String
+' Description:   Returns TRUE or FALSE for stable audit output.
+'-------------------------------------------------------------------------------
+Private Function BoolText(ByVal booleanValue As Boolean) As String
+    Const METHOD_NAME As String = "BoolText"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If booleanValue Then
+        BoolText = "TRUE"
+    Else
+        BoolText = "FALSE"
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BoolText = "FALSE"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pageDictionary As String
+' Returns:       String
+' Description:   Resolves page font resource names to BaseFont, subtype, and encoding without object-number noise.
+'-------------------------------------------------------------------------------
+Private Function ResolvePageFontSignature(ByVal pageDictionary As String) As String
+    Const METHOD_NAME As String = "ResolvePageFontSignature"
+    Dim errorManager As New ErrorManager
+    Dim arrReferences() As String
+    Dim arrTokens() As String
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim dictFonts As Object
+    Dim lngFontObject As Long
+    Dim lngIndex As Long
+    Dim lngObjectIndex As Long
+    Dim strBaseFont As String
+    Dim strDescriptor As String
+    Dim strEncoding As String
+    Dim strFontDictionary As String
+    Dim strFontObjectDictionary As String
+    Dim strFontRefs As String
+    Dim strResourceName As String
+    Dim strSubtype As String
+    Dim strWidths As String
+    Dim strWorking As String
+
+    On Error GoTo ErrorHandler
+
+    Set dictFonts = CreateObject("Scripting.Dictionary")
+    strFontDictionary = DictValue(pageDictionary, "/Font")
+    If strFontDictionary = "(absent)" Then
+        ResolvePageFontSignature = "(none)"
+        GoTo ExitFunction
+    End If
+
+    If InStr(1, strFontDictionary, " R", vbBinaryCompare) = 0 Then
+        strFontRefs = RefList(pageDictionary, "/Font")
+        If Len(strFontRefs) > 0 Then
+            arrReferences = Split(strFontRefs, ",")
+            lngObjectIndex = IndexOfObject(CLng(arrReferences(0)))
+            If lngObjectIndex >= 0 Then
+                strFontDictionary = ObjectDict(m_objPos(lngObjectIndex))
+            End If
+        End If
+    End If
+
+    strWorking = Replace(strFontDictionary, "<<", " ")
+    strWorking = Replace(strWorking, ">>", " ")
+    strWorking = Replace(strWorking, vbCr, " ")
+    strWorking = Replace(strWorking, vbLf, " ")
+    Do While InStr(1, strWorking, "  ", vbBinaryCompare) > 0
+        strWorking = Replace(strWorking, "  ", " ")
+    Loop
+    arrTokens = Split(Trim$(strWorking), " ")
+
+    For lngIndex = LBound(arrTokens) To UBound(arrTokens) - 3
+        If Left$(arrTokens(lngIndex), 1) = "/" Then
+            If IsNumeric(arrTokens(lngIndex + 1)) And arrTokens(lngIndex + 3) = "R" Then
+                strResourceName = arrTokens(lngIndex)
+                If Left$(strResourceName, 2) = "/F" Then
+                    lngFontObject = CLng(arrTokens(lngIndex + 1))
+                    lngObjectIndex = IndexOfObject(lngFontObject)
+                    If lngObjectIndex >= 0 Then
+                        strFontObjectDictionary = ObjectDict(m_objPos(lngObjectIndex))
+                        strBaseFont = DictValue(strFontObjectDictionary, "/BaseFont")
+                        strSubtype = DictValue(strFontObjectDictionary, "/Subtype")
+                        strEncoding = DictValue(strFontObjectDictionary, "/Encoding")
+                        strDescriptor = FontDescriptorSignature(strFontObjectDictionary)
+                        If InStr(1, strFontObjectDictionary, "/Widths", vbBinaryCompare) > 0 Then
+                            strWidths = "present"
+                        Else
+                            strWidths = "absent"
+                        End If
+                        dictFonts(strResourceName) = strResourceName & "=" & strBaseFont & ",subtype=" & strSubtype & ",encoding=" & strEncoding & ",widths=" & strWidths & ",descriptor=" & strDescriptor
+                    End If
+                End If
+            End If
+        End If
+    Next lngIndex
+
+    ResolvePageFontSignature = DictionaryEntrySignature(dictFonts)
+    If Len(ResolvePageFontSignature) = 0 Then
+        ResolvePageFontSignature = "(unresolved)"
+    End If
+
+ExitFunction:
+    Set dictFonts = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ResolvePageFontSignature = "(error)"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    fontObjectDictionary As String
+' Returns:       String
+' Description:   Resolves parser-relevant FontDescriptor metrics while ignoring indirect object numbers.
+'-------------------------------------------------------------------------------
+Private Function FontDescriptorSignature(ByVal fontObjectDictionary As String) As String
+    Const METHOD_NAME As String = "FontDescriptorSignature"
+    Dim errorManager As New ErrorManager
+    Dim arrReferences() As String
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngObjectIndex As Long
+    Dim strDescriptorDictionary As String
+    Dim strReferences As String
+
+    On Error GoTo ErrorHandler
+
+    strReferences = RefList(fontObjectDictionary, "/FontDescriptor")
+    If Len(strReferences) = 0 Then
+        FontDescriptorSignature = "absent"
+        GoTo ExitFunction
+    End If
+
+    arrReferences = Split(strReferences, ",")
+    lngObjectIndex = IndexOfObject(CLng(arrReferences(0)))
+    If lngObjectIndex < 0 Then
+        FontDescriptorSignature = "unresolved"
+        GoTo ExitFunction
+    End If
+
+    strDescriptorDictionary = ObjectDict(m_objPos(lngObjectIndex))
+    FontDescriptorSignature = _
+        "bbox=" & DictValue(strDescriptorDictionary, "/FontBBox") & _
+        ",flags=" & DictValue(strDescriptorDictionary, "/Flags") & _
+        ",ascent=" & DictValue(strDescriptorDictionary, "/Ascent") & _
+        ",descent=" & DictValue(strDescriptorDictionary, "/Descent") & _
+        ",capHeight=" & DictValue(strDescriptorDictionary, "/CapHeight") & _
+        ",stemV=" & DictValue(strDescriptorDictionary, "/StemV")
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    FontDescriptorSignature = "error"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pageDictionary As String
+' Returns:       String
+' Description:   Returns the page content-stream filter sequence without indirect-object-number noise.
+'-------------------------------------------------------------------------------
+Private Function PageContentFilterSignature(ByVal pageDictionary As String) As String
+    Const METHOD_NAME As String = "PageContentFilterSignature"
+    Dim errorManager As New ErrorManager
+    Dim arrReferences() As String
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim dictFilters As Object
+    Dim lngIndex As Long
+    Dim lngObjectIndex As Long
+    Dim strDictionary As String
+    Dim strFilter As String
+    Dim strReferenceList As String
+
+    On Error GoTo ErrorHandler
+
+    Set dictFilters = CreateObject("Scripting.Dictionary")
+    strReferenceList = RefList(pageDictionary, "/Contents")
+    If Len(strReferenceList) = 0 Then
+        PageContentFilterSignature = "(direct-or-none)"
+        GoTo ExitFunction
+    End If
+
+    arrReferences = Split(strReferenceList, ",")
+    For lngIndex = LBound(arrReferences) To UBound(arrReferences)
+        lngObjectIndex = IndexOfObject(CLng(arrReferences(lngIndex)))
+        If lngObjectIndex >= 0 Then
+            strDictionary = ObjectDict(m_objPos(lngObjectIndex))
+            strFilter = DictValue(strDictionary, "/Filter")
+            If strFilter = "(absent)" Then
+                strFilter = "none"
+            End If
+            Call IncrementDictionaryValue(dictFilters, NormalizePdfValue(strFilter))
+        End If
+    Next lngIndex
+
+    PageContentFilterSignature = DictionaryCountSignature(dictFilters)
+
+ExitFunction:
+    Set dictFilters = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    PageContentFilterSignature = "(error)"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    dictValues As Object
+' Returns:       String
+' Description:   Returns a deterministic key=value signature for dictionary string values.
+'-------------------------------------------------------------------------------
+Private Function DictionaryEntrySignature(ByVal dictValues As Object) As String
+    Const METHOD_NAME As String = "DictionaryEntrySignature"
+    Dim errorManager As New ErrorManager
+    Dim arrKeys As Variant
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim strKey As String
+    Dim strResult As String
+
+    On Error GoTo ErrorHandler
+
+    If dictValues.Count = 0 Then
+        GoTo ExitFunction
+    End If
+    arrKeys = SortedDictionaryKeys(dictValues)
+    For lngIndex = LBound(arrKeys) To UBound(arrKeys)
+        strKey = CStr(arrKeys(lngIndex))
+        If Len(strResult) > 0 Then
+            strResult = strResult & ";"
+        End If
+        strResult = strResult & CStr(dictValues(strKey))
+    Next lngIndex
+    DictionaryEntrySignature = strResult
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    DictionaryEntrySignature = "(error)"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    dictValues As Object
+' Returns:       String
+' Description:   Returns a deterministic key=count signature for a counted dictionary.
+'-------------------------------------------------------------------------------
+Private Function DictionaryCountSignature(ByVal dictValues As Object) As String
+    Const METHOD_NAME As String = "DictionaryCountSignature"
+    Dim errorManager As New ErrorManager
+    Dim arrKeys As Variant
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim strKey As String
+    Dim strResult As String
+
+    On Error GoTo ErrorHandler
+
+    If dictValues.Count = 0 Then
+        DictionaryCountSignature = "(none)"
+        GoTo ExitFunction
+    End If
+    arrKeys = SortedDictionaryKeys(dictValues)
+    For lngIndex = LBound(arrKeys) To UBound(arrKeys)
+        strKey = CStr(arrKeys(lngIndex))
+        If Len(strResult) > 0 Then
+            strResult = strResult & ";"
+        End If
+        strResult = strResult & strKey & "=" & CStr(dictValues(strKey))
+    Next lngIndex
+    DictionaryCountSignature = strResult
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    DictionaryCountSignature = "(error)"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
 ' Creation date: 2026-08-06
 ' Parameters:    lineInfo As tPdfLine
 ' Returns:       String
@@ -4514,21 +6395,21 @@ End Function
 ' Returns:       Integer
 ' Description:   Opens a new binary text report file and returns its file number.
 '-------------------------------------------------------------------------------
-Private Function OpenNew(ByVal filePath As String) As Integer
+Private Function OpenNew(ByVal filePath As String) As Long
     Const METHOD_NAME As String = "OpenNew"
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
-    Dim intFileNumber As Integer
+    Dim lngFileNumber As Long
 
     On Error GoTo ErrorHandler
 
     If Len(Dir$(filePath)) > 0 Then
         Kill filePath
     End If
-    intFileNumber = FreeFile
-    Open filePath For Binary Access Write As #intFileNumber
-    OpenNew = intFileNumber
+    lngFileNumber = FreeFile
+    Open filePath For Binary Access Write As #lngFileNumber
+    OpenNew = lngFileNumber
 
 ExitFunction:
     Exit Function
@@ -4553,12 +6434,12 @@ End Function
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-06
-' Parameters:    fileNumber As Integer, textLine As String
+' Parameters:    fileNumber As Long, textLine As String
 ' Returns:       ---
 ' Description:   Writes one CRLF-terminated line to a binary text report.
 '-------------------------------------------------------------------------------
 Private Sub EmitLine( _
-    ByVal fileNumber As Integer, _
+    ByVal fileNumber As Long, _
     ByVal textLine As String)
 
     Const METHOD_NAME As String = "EmitLine"
