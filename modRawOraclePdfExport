@@ -25,10 +25,11 @@ Private Const MIN_FONT_SIZE As Double = 5.5
 Private Const TEXT_LEFT_PADDING As Double = 4.52
 Private Const TEXT_RIGHT_PADDING As Double = 4.48
 Private Const ORACLE_NUMERIC_LEADING_SPACES As Long = 3
+Private Const ORACLE_DEVISENKURS_RIGHT_PADDING As Double = 3.52
 Private Const HEADER_GRAY_LEVEL As Double = 0.72
 Private Const SEPARATOR_GRAY_LEVEL As Double = 0.86
 Private Const FOOTER_X As Double = 40.52
-Private Const FOOTER_BASELINE_GAP As Double = 26.2
+Private Const FOOTER_BASELINE_GAP As Double = 26.24
 Private Const FOOTER_FONT_SIZE As Double = 8#
 Private Const FOOTER_TEXT As String = "Diese Abrechnung wurde maschinell erstellt und ist ohne eigenhaendige Unterschrift gueltig"
 Private Const PAGE_NUMBER_X As Double = 1287#
@@ -39,6 +40,8 @@ Private Const LOGO_Y As Double = 589.52
 Private Const LOGO_WIDTH As Double = 85.52
 Private Const LOGO_HEIGHT As Double = 17.96
 Private Const ORACLE_RULE_RIGHT_X As Double = 1323#
+Private Const ORACLE_HEADER_MICRO_RULE_X As Double = 180#
+Private Const ORACLE_HEADER_MICRO_RULE_HEIGHT As Double = 0.08
 Private Const ORACLE_HEADER_SPECIAL_X As Double = 1188#
 Private Const ORACLE_HEADER_SPECIAL_WIDTH As Double = 130.52
 Private Const ORACLE_DETAIL_HEIGHT As Double = 9#
@@ -590,11 +593,13 @@ Private Function BuildSinglePageContent( _
 
     Const METHOD_NAME As String = "BuildSinglePageContent"
     Dim arrBottomColumns As Variant
+    Dim arrBottomDataTextX As Variant
     Dim arrBottomHeaderLabels As Variant
     Dim arrBottomHeaderTextX As Variant
     Dim arrBottomWidths As Variant
     Dim arrBottomX As Variant
     Dim arrTopColumns As Variant
+    Dim arrTopDataTextX As Variant
     Dim arrTopHeaderLabels As Variant
     Dim arrTopHeaderTextX As Variant
     Dim arrTopWidths As Variant
@@ -641,6 +646,8 @@ Private Function BuildSinglePageContent( _
     arrBottomWidths = GetBottomGridWidths()
     arrTopColumns = GetTopSourceColumns()
     arrBottomColumns = GetBottomSourceColumns()
+    arrTopDataTextX = GetTopDataTextX()
+    arrBottomDataTextX = GetBottomDataTextX()
     arrTopHeaderTextX = GetTopHeaderTextX()
     arrBottomHeaderTextX = GetBottomHeaderTextX()
     arrTopHeaderLabels = GetTopHeaderLabels()
@@ -656,7 +663,7 @@ Private Function BuildSinglePageContent( _
         dblTableTopY = CONTINUATION_PAGE_TABLE_TOP_Y
     End If
 
-    strContent = "0 g" & vbCrLf & "0 G" & vbCrLf & "0 w" & vbCrLf
+    strContent = "0 g" & vbCrLf & "0 w" & vbCrLf
 
     If blnFirstPage And blnHasLogo Then
         strContent = strContent & _
@@ -732,7 +739,8 @@ Private Function BuildSinglePageContent( _
             arrTopWidths, _
             dblTopRowY, _
             dblTopBaseline, _
-            False)
+            False, _
+            arrTopDataTextX)
 
         strContent = strContent & BuildGridRowContent( _
             wksSource, _
@@ -742,7 +750,8 @@ Private Function BuildSinglePageContent( _
             arrBottomWidths, _
             dblBottomRowY, _
             dblBottomBaseline, _
-            False)
+            False, _
+            arrBottomDataTextX)
     Next lngTradeIndex
 
     dblTableBottomY = dblSeparatorY
@@ -918,6 +927,7 @@ Private Function BuildCellContent( _
     Const METHOD_NAME As String = "BuildCellContent"
     Const FONT_SIZE_TOLERANCE As Double = 0.01
     Const ORACLE_EIGHT_PT_BASELINE_OFFSET As Double = 0.76
+    Dim dblEffectiveRightPadding As Double
     Dim dblFontSize As Double
     Dim dblTextWidth As Double
     Dim dblTextX As Double
@@ -958,6 +968,18 @@ Private Function BuildCellContent( _
     End If
 
     dblTextY = dblBaselineY
+    dblEffectiveRightPadding = TEXT_RIGHT_PADDING
+
+    If Not blnHeader Then
+        If rngSource.Column = 21 Then
+            ' OLD Oracle audit: Devisenkurs is rendered as 8 pt Times-Roman and
+            ' uses a 3.52 pt right inset. With the preserved three leading
+            ' spaces this reproduces X=1309.52 for the value 1 without
+            ' hardcoding the value itself.
+            dblFontSize = LONG_TEXT_FONT_SIZE
+            dblEffectiveRightPadding = ORACLE_DEVISENKURS_RIGHT_PADDING
+        End If
+    End If
 
     If blnHeader And dblFixedTextX >= 0# Then
         dblTextX = dblFixedTextX
@@ -973,14 +995,21 @@ Private Function BuildCellContent( _
             strFont, _
             dblFontSize)
 
-        Select Case lngAlignment
-            Case xlCenter
-                dblTextX = dblX + ((dblWidth - dblTextWidth) / 2#)
-            Case xlRight
-                dblTextX = dblX + dblWidth - TEXT_RIGHT_PADDING - dblTextWidth
-            Case Else
-                dblTextX = dblX + TEXT_LEFT_PADDING
-        End Select
+        If dblFixedTextX >= 0# Then
+            ' FIX19: parser-audited Oracle data anchor. Only fields with an
+            ' explicit old-PDF coordinate use this path; all other data remains
+            ' content-dependent and keeps the normal alignment calculation.
+            dblTextX = dblFixedTextX
+        Else
+            Select Case lngAlignment
+                Case xlCenter
+                    dblTextX = dblX + ((dblWidth - dblTextWidth) / 2#)
+                Case xlRight
+                    dblTextX = dblX + dblWidth - dblEffectiveRightPadding - dblTextWidth
+                Case Else
+                    dblTextX = dblX + TEXT_LEFT_PADDING
+            End Select
+        End If
 
         If dblTextX < dblX + 0.5 Then
             dblTextX = dblX + 0.5
@@ -1127,6 +1156,9 @@ Private Function BuildOracleTransactionStructure( _
     arrBottomDetailX = GetOracleBottomDetailX()
     arrBottomDetailWidths = GetOracleBottomDetailWidths()
 
+    ' FIX19: retain the OLD Oracle B* transaction rectangle spanning from
+    ' the separator bottom to the top of the two-row trade block. The audit
+    ' reports the matching vertical B* spans 476.96..517.48 and 436.48..477.
     strContent = BuildFilledStrokedRectangleCommand( _
         TABLE_LEFT_X, _
         dblSeparatorBottomY, _
@@ -1206,7 +1238,7 @@ Private Function BuildFilledStrokedRectangleCommand( _
     On Error GoTo ErrorHandler
 
     BuildFilledStrokedRectangleCommand = _
-        "q " & PdfNumber(dblGray) & " g 0 G " & _
+        "q " & PdfNumber(dblGray) & " g " & _
         PdfNumber(dblX) & " " & PdfNumber(dblY) & " " & _
         PdfNumber(dblWidth) & " " & PdfNumber(dblHeight) & _
         " re B* Q" & vbCrLf
@@ -1393,6 +1425,15 @@ Private Function BuildHeaderGridStrokeContent( _
         dblHeaderBottomY, _
         dblHeaderTopY)
 
+    ' FIX19: Oracle Clone Audit reports one OLD-only micro vertical rule at
+    ' X=180, Y=553.40..553.48 on page 1. Express it relative to tableTopY so
+    ' continuation pages keep the same 0.08 pt Oracle header artifact.
+    strContent = strContent & BuildLineCommand( _
+        ORACLE_HEADER_MICRO_RULE_X, _
+        dblTableTopY - ORACLE_HEADER_MICRO_RULE_HEIGHT, _
+        ORACLE_HEADER_MICRO_RULE_X, _
+        dblTableTopY)
+
     BuildHeaderGridStrokeContent = strContent
 
 ExitFunction:
@@ -1443,33 +1484,16 @@ Private Function BuildTransactionGridStrokeContent( _
 
     On Error GoTo ErrorHandler
 
-    If blnDrawTopBoundary Then
-        strContent = strContent & BuildLineCommand( _
-            TABLE_LEFT_X, _
-            dblTopRowTopY, _
-            ORACLE_RULE_RIGHT_X, _
-            dblTopRowTopY)
-    End If
-
-    strContent = strContent & BuildLineCommand( _
+    ' FIX19: B*/re S rectangle edges already provide the trade top, lower-row
+    ' bottom and separator-bottom horizontals. Drawing those again as m/l/S
+    ' created exactly the four GEOMETRY_ONLY_NEW lines reported by the latest
+    ' two-trade audit (Y=481.48, 476.96, 477 and 441). Only the internal
+    ' top-row/bottom-row boundary is an independent horizontal m/l/S rule.
+    strContent = BuildLineCommand( _
         TABLE_LEFT_X, _
         dblTopRowBottomY, _
         ORACLE_RULE_RIGHT_X, _
         dblTopRowBottomY)
-
-    strContent = strContent & BuildLineCommand( _
-        TABLE_LEFT_X, _
-        dblBottomRowBottomY, _
-        ORACLE_RULE_RIGHT_X, _
-        dblBottomRowBottomY)
-
-    If blnDrawSeparatorBottom Then
-        strContent = strContent & BuildLineCommand( _
-            TABLE_LEFT_X, _
-            dblSeparatorBottomY, _
-            ORACLE_RULE_RIGHT_X, _
-            dblSeparatorBottomY)
-    End If
 
     strContent = strContent & BuildInteriorVerticalLines( _
         arrTopX, _
@@ -2508,6 +2532,102 @@ ErrorHandler:
     errNumber = VBA.Err.Number
     errDescription = VBA.Err.Description
     GetBottomGridWidths = Array()
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    ---
+' Returns:       Variant
+' Description:   Returns parser-audited fixed X anchors for selected upper-row data fields. A value below zero keeps normal content-dependent alignment.
+'-------------------------------------------------------------------------------
+Private Function GetTopDataTextX() As Variant
+    Const METHOD_NAME As String = "GetTopDataTextX"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    ' Indexes follow GetTopSourceColumns():
+    ' 0 Depotnr., 1 Fonds, 2 Geschaeftsart, 3 Schlusstag, 4 Valutatag,
+    ' 5 WKN, 6 ISIN, 7 Wertpapierbezeichnung, 8 Nominale/Stuecke,
+    ' 9 Whg, 10 Kurs, 11 Stueckzinsen.
+    '
+    ' Only coordinates directly supported by the OLD-vs-NEW forensic audit are
+    ' fixed here. Other fields stay at -1 and continue to use normal alignment,
+    ' so different input values are not hardcoded.
+    GetTopDataTextX = Array( _
+        -1#, _
+        -1#, _
+        -1#, _
+        442.52, _
+        514.52, _
+        -1#, _
+        -1#, _
+        -1#, _
+        -1#, _
+        1031.24, _
+        -1#, _
+        -1#)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetTopDataTextX = Array()
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    ---
+' Returns:       Variant
+' Description:   Returns parser-audited fixed X anchors for selected lower-row data fields. A value below zero keeps normal content-dependent alignment.
+'-------------------------------------------------------------------------------
+Private Function GetBottomDataTextX() As Variant
+    Const METHOD_NAME As String = "GetBottomDataTextX"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    ' Indexes follow GetBottomSourceColumns(). The Whg field immediately before
+    ' Devisenkurs is anchored to the OLD Oracle coordinate. All other fields
+    ' remain content-dependent to support different transaction inputs.
+    GetBottomDataTextX = Array( _
+        -1#, _
+        -1#, _
+        -1#, _
+        -1#, _
+        -1#, _
+        -1#, _
+        -1#, _
+        -1#, _
+        -1#, _
+        -1#, _
+        -1#, _
+        1184.24, _
+        -1#)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetBottomDataTextX = Array()
 
     errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
     errorManager.save
@@ -3754,5 +3874,4 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
-
 
