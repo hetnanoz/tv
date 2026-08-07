@@ -36,6 +36,11 @@ Private Const LOGO_X As Double = 40.52
 Private Const LOGO_Y As Double = 589.52
 Private Const LOGO_WIDTH As Double = 85.52
 Private Const LOGO_HEIGHT As Double = 17.96
+Private Const ORACLE_RULE_RIGHT_X As Double = 1323#
+Private Const ORACLE_HEADER_SPECIAL_X As Double = 1188#
+Private Const ORACLE_HEADER_SPECIAL_WIDTH As Double = 130.52
+Private Const ORACLE_DETAIL_HEIGHT As Double = 9#
+Private Const ORACLE_WHITE_LEVEL As Double = 1#
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -583,10 +588,12 @@ Private Function BuildSinglePageContent( _
 
     Const METHOD_NAME As String = "BuildSinglePageContent"
     Dim arrBottomColumns As Variant
+    Dim arrBottomHeaderLabels As Variant
     Dim arrBottomHeaderTextX As Variant
     Dim arrBottomWidths As Variant
     Dim arrBottomX As Variant
     Dim arrTopColumns As Variant
+    Dim arrTopHeaderLabels As Variant
     Dim arrTopHeaderTextX As Variant
     Dim arrTopWidths As Variant
     Dim arrTopX As Variant
@@ -598,7 +605,6 @@ Private Function BuildSinglePageContent( _
     Dim dblBottomRowY As Double
     Dim dblHeaderBottomY As Double
     Dim dblHeaderTopY As Double
-    Dim dblSeparatorHeight As Double
     Dim dblSeparatorY As Double
     Dim dblTableBottomY As Double
     Dim dblTableTopY As Double
@@ -635,6 +641,8 @@ Private Function BuildSinglePageContent( _
     arrBottomColumns = GetBottomSourceColumns()
     arrTopHeaderTextX = GetTopHeaderTextX()
     arrBottomHeaderTextX = GetBottomHeaderTextX()
+    arrTopHeaderLabels = GetTopHeaderLabels()
+    arrBottomHeaderLabels = GetBottomHeaderLabels()
 
     If blnFirstPage Then
         dblHeaderTopY = FIRST_PAGE_HEADER_TOP_Y
@@ -646,7 +654,7 @@ Private Function BuildSinglePageContent( _
         dblTableTopY = CONTINUATION_PAGE_TABLE_TOP_Y
     End If
 
-    strContent = "0 G" & vbCrLf & "0 g" & vbCrLf & "0 w" & vbCrLf
+    strContent = "0 g" & vbCrLf & "0 w" & vbCrLf
 
     If blnFirstPage And blnHasLogo Then
         strContent = strContent & _
@@ -657,6 +665,14 @@ Private Function BuildSinglePageContent( _
             "Q" & vbCrLf
     End If
 
+    strContent = strContent & BuildOracleHeaderStructure( _
+        arrTopX, _
+        arrBottomX, _
+        dblHeaderBottomY, _
+        dblHeaderTopY, _
+        dblTableTopY, _
+        IIf(blnFirstPage, 540#, 594#))
+
     strContent = strContent & BuildGridRowContent( _
         wksSource, _
         5, _
@@ -666,7 +682,8 @@ Private Function BuildSinglePageContent( _
         dblHeaderTopY, _
         IIf(blnFirstPage, 540.76, 594.76), _
         True, _
-        arrTopHeaderTextX)
+        arrTopHeaderTextX, _
+        arrTopHeaderLabels)
 
     strContent = strContent & BuildGridRowContent( _
         wksSource, _
@@ -677,14 +694,8 @@ Private Function BuildSinglePageContent( _
         dblHeaderBottomY, _
         IIf(blnFirstPage, 522.76, 576.76), _
         True, _
-        arrBottomHeaderTextX)
-
-    strContent = strContent & BuildHeaderGridStrokeContent( _
-        arrTopX, _
-        arrBottomX, _
-        dblHeaderBottomY, _
-        dblHeaderTopY, _
-        dblTableTopY)
+        arrBottomHeaderTextX, _
+        arrBottomHeaderLabels)
 
     lngSlot = 0
 
@@ -696,11 +707,20 @@ Private Function BuildSinglePageContent( _
         dblTopRowY = GetTransactionTopRowBottomY(blnFirstPage, lngSlot)
         dblBottomRowY = GetTransactionBottomRowBottomY(blnFirstPage, lngSlot)
         dblSeparatorY = GetTransactionSeparatorBottomY(blnFirstPage, lngSlot)
-        dblSeparatorHeight = dblBottomRowY - dblSeparatorY
+        blnDrawTradeTop = (lngSlot > 1)
+        blnDrawSeparatorBottom = (lngTradeIndex < lngLastTrade)
 
-        If dblSeparatorHeight <= 0# Then
-            Err.Raise 1024, METHOD_NAME, "The Oracle separator height is not positive."
-        End If
+        strContent = strContent & BuildOracleTransactionStructure( _
+            arrTopX, _
+            arrBottomX, _
+            dblTopBaseline, _
+            dblBottomBaseline, _
+            dblTopRowTopY, _
+            dblTopRowY, _
+            dblBottomRowY, _
+            dblSeparatorY, _
+            blnDrawTradeTop, _
+            blnDrawSeparatorBottom)
 
         strContent = strContent & BuildGridRowContent( _
             wksSource, _
@@ -721,47 +741,28 @@ Private Function BuildSinglePageContent( _
             dblBottomRowY, _
             dblBottomBaseline, _
             False)
-
-        strContent = strContent & _
-            "q " & PdfNumber(SEPARATOR_GRAY_LEVEL) & " g " & _
-            PdfNumber(TABLE_LEFT_X) & " " & PdfNumber(dblSeparatorY) & " " & _
-            PdfNumber(TABLE_WIDTH) & " " & PdfNumber(dblSeparatorHeight) & " re f Q" & vbCrLf
-
-        blnDrawTradeTop = (lngSlot > 1)
-        blnDrawSeparatorBottom = (lngTradeIndex < lngLastTrade)
-
-        strContent = strContent & BuildTransactionGridStrokeContent( _
-            arrTopX, _
-            arrBottomX, _
-            dblTopRowTopY, _
-            dblTopRowY, _
-            dblBottomRowY, _
-            dblSeparatorY, _
-            blnDrawTradeTop, _
-            blnDrawSeparatorBottom)
     Next lngTradeIndex
 
     dblTableBottomY = dblSeparatorY
 
-    strContent = strContent & _
-        PdfNumber(TABLE_LEFT_X) & " " & PdfNumber(dblTableBottomY) & " " & _
-        PdfNumber(TABLE_WIDTH) & " " & PdfNumber(dblTableTopY - dblTableBottomY) & " re S" & vbCrLf
+    strContent = strContent & BuildStrokedRectangleCommand( _
+        TABLE_LEFT_X, _
+        dblTableBottomY, _
+        TABLE_WIDTH, _
+        dblTableTopY - dblTableBottomY)
 
     If blnLastPage Then
         strContent = strContent & BuildAbsoluteTextCommand( _
-            "/F2", _
+            "/F1", _
             FOOTER_FONT_SIZE, _
             FOOTER_X, _
             dblTableBottomY - FOOTER_BASELINE_GAP, _
             FOOTER_TEXT)
     End If
 
-    strContent = strContent & BuildAbsoluteTextCommand( _
-        "/F0", _
-        PAGE_NUMBER_FONT_SIZE, _
-        PAGE_NUMBER_X, _
-        PAGE_NUMBER_Y, _
-        CStr(lngPage) & " / " & CStr(lngPageCount))
+    strContent = strContent & BuildPageNumberCommand( _
+        lngPage, _
+        lngPageCount)
 
     BuildSinglePageContent = strContent
 
@@ -790,10 +791,10 @@ End Function
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
-' Creation date: 2026-08-05
-' Parameters:    wksSource As Excel.Worksheet, lngSourceRow As Long, arrSourceColumns As Variant, arrX As Variant, arrWidths As Variant, dblRowY As Double, dblBaselineY As Double, blnHeader As Boolean, varFixedTextX As Variant
+' Creation date: 2026-08-07
+' Parameters:    wksSource As Excel.Worksheet, lngSourceRow As Long, arrSourceColumns As Variant, arrX As Variant, arrWidths As Variant, dblRowY As Double, dblBaselineY As Double, blnHeader As Boolean, varFixedTextX As Variant, varFixedTextValues As Variant
 ' Returns:       String
-' Description:   Builds cell backgrounds and text for one 12-column or 13-column row.
+' Description:   Builds text for one fixed Oracle upper or lower report row.
 '-------------------------------------------------------------------------------
 Private Function BuildGridRowContent( _
     ByVal wksSource As Excel.Worksheet, _
@@ -804,7 +805,8 @@ Private Function BuildGridRowContent( _
     ByVal dblRowY As Double, _
     ByVal dblBaselineY As Double, _
     ByVal blnHeader As Boolean, _
-    Optional ByVal varFixedTextX As Variant) As String
+    Optional ByVal varFixedTextX As Variant, _
+    Optional ByVal varFixedTextValues As Variant) As String
 
     Const METHOD_NAME As String = "BuildGridRowContent"
     Dim errorManager As New ErrorManager
@@ -814,6 +816,7 @@ Private Function BuildGridRowContent( _
     Dim lngIndex As Long
     Dim rngSource As Excel.Range
     Dim strContent As String
+    Dim strOverrideText As String
 
     On Error GoTo ErrorHandler
 
@@ -832,12 +835,26 @@ Private Function BuildGridRowContent( _
         End If
     End If
 
+    If Not IsMissing(varFixedTextValues) Then
+        If Not IsArray(varFixedTextValues) Then
+            Err.Raise 1024, METHOD_NAME, "The fixed text value configuration is not an array."
+        End If
+        If UBound(varFixedTextValues) <> UBound(arrX) Then
+            Err.Raise 1024, METHOD_NAME, "The fixed text value array does not match the row geometry."
+        End If
+    End If
+
     For lngIndex = LBound(arrX) To UBound(arrX)
         Set rngSource = wksSource.Cells(lngSourceRow, CLng(arrSourceColumns(lngIndex)))
 
         dblFixedTextX = -1#
         If Not IsMissing(varFixedTextX) Then
             dblFixedTextX = CDbl(varFixedTextX(lngIndex))
+        End If
+
+        strOverrideText = vbNullString
+        If Not IsMissing(varFixedTextValues) Then
+            strOverrideText = CStr(varFixedTextValues(lngIndex))
         End If
 
         strContent = strContent & BuildCellContent( _
@@ -848,7 +865,8 @@ Private Function BuildGridRowContent( _
             DATA_ROW_HEIGHT, _
             dblBaselineY, _
             blnHeader, _
-            dblFixedTextX)
+            dblFixedTextX, _
+            strOverrideText)
     Next lngIndex
 
     BuildGridRowContent = strContent
@@ -879,10 +897,10 @@ End Function
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
-' Creation date: 2026-08-05
-' Parameters:    rngSource As Excel.Range, dblX As Double, dblY As Double, dblWidth As Double, dblHeight As Double, dblBaselineY As Double, blnHeader As Boolean, dblFixedTextX As Double
+' Creation date: 2026-08-07
+' Parameters:    rngSource As Excel.Range, dblX As Double, dblY As Double, dblWidth As Double, dblHeight As Double, dblBaselineY As Double, blnHeader As Boolean, dblFixedTextX As Double, strOverrideText As String
 ' Returns:       String
-' Description:   Builds a cell background and worksheet text without duplicating shared borders.
+' Description:   Builds one Oracle-compatible text run from a worksheet cell or fixed header label.
 '-------------------------------------------------------------------------------
 Private Function BuildCellContent( _
     ByVal rngSource As Excel.Range, _
@@ -892,7 +910,8 @@ Private Function BuildCellContent( _
     ByVal dblHeight As Double, _
     ByVal dblBaselineY As Double, _
     ByVal blnHeader As Boolean, _
-    Optional ByVal dblFixedTextX As Double = -1#) As String
+    Optional ByVal dblFixedTextX As Double = -1#, _
+    Optional ByVal strOverrideText As String = vbNullString) As String
 
     Const METHOD_NAME As String = "BuildCellContent"
     Dim dblFontSize As Double
@@ -902,31 +921,30 @@ Private Function BuildCellContent( _
     Dim errDescription As String
     Dim errNumber As Long
     Dim lngAlignment As Long
-    Dim strContent As String
     Dim strFont As String
     Dim strText As String
 
     On Error GoTo ErrorHandler
 
     BuildCellContent = vbNullString
-    strText = GetWorksheetDisplayText(rngSource)
+
+    If blnHeader And Len(strOverrideText) > 0 Then
+        strText = strOverrideText
+    Else
+        strText = GetWorksheetDisplayText(rngSource)
+    End If
 
     If blnHeader Then
-        strContent = strContent & _
-            "q " & PdfNumber(HEADER_GRAY_LEVEL) & " g " & _
-            PdfNumber(dblX) & " " & PdfNumber(dblY) & " " & _
-            PdfNumber(dblWidth) & " " & PdfNumber(dblHeight) & " re f Q" & vbCrLf
         strFont = "/F0"
         dblFontSize = HEADER_FONT_SIZE
         lngAlignment = xlCenter
     Else
-        strFont = "/F1"
+        strFont = "/F2"
         dblFontSize = GetDataFontSize(strText)
         lngAlignment = ResolveCellAlignment(rngSource, strText)
     End If
 
     If Len(strText) = 0 Then
-        BuildCellContent = strContent
         GoTo ExitFunction
     End If
 
@@ -950,14 +968,12 @@ Private Function BuildCellContent( _
         End If
     End If
 
-    strContent = strContent & BuildAbsoluteTextCommand( _
+    BuildCellContent = BuildAbsoluteTextCommand( _
         strFont, _
         dblFontSize, _
         dblTextX, _
         dblBaselineY, _
         strText)
-
-    BuildCellContent = strContent
 
 ExitFunction:
     Exit Function
@@ -986,10 +1002,324 @@ End Function
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
-' Creation date: 2026-08-06
+' Creation date: 2026-08-07
+' Parameters:    arrTopX As Variant, arrBottomX As Variant, dblHeaderBottomY As Double, dblHeaderTopY As Double, dblTableTopY As Double, dblSpecialY As Double
+' Returns:       String
+' Description:   Builds the Oracle Reports header rectangle and single-stroke vector structure.
+'-------------------------------------------------------------------------------
+Private Function BuildOracleHeaderStructure( _
+    ByVal arrTopX As Variant, _
+    ByVal arrBottomX As Variant, _
+    ByVal dblHeaderBottomY As Double, _
+    ByVal dblHeaderTopY As Double, _
+    ByVal dblTableTopY As Double, _
+    ByVal dblSpecialY As Double) As String
+
+    Const METHOD_NAME As String = "BuildOracleHeaderStructure"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strContent As String
+
+    On Error GoTo ErrorHandler
+
+    strContent = BuildFilledStrokedRectangleCommand( _
+        TABLE_LEFT_X, _
+        dblHeaderBottomY, _
+        TABLE_WIDTH, _
+        dblTableTopY - dblHeaderBottomY, _
+        HEADER_GRAY_LEVEL)
+
+    strContent = strContent & BuildNoPaintRectangleCommand( _
+        ORACLE_HEADER_SPECIAL_X, _
+        dblSpecialY, _
+        ORACLE_HEADER_SPECIAL_WIDTH, _
+        ORACLE_DETAIL_HEIGHT)
+
+    strContent = strContent & BuildHeaderGridStrokeContent( _
+        arrTopX, _
+        arrBottomX, _
+        dblHeaderBottomY, _
+        dblHeaderTopY, _
+        dblTableTopY)
+
+    BuildOracleHeaderStructure = strContent
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildOracleHeaderStructure = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "headerBottomY;headerTopY;tableTopY;specialY", _
+        dblHeaderBottomY, _
+        dblHeaderTopY, _
+        dblTableTopY, _
+        dblSpecialY
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    arrTopX As Variant, arrBottomX As Variant, dblTopBaseline As Double, dblBottomBaseline As Double, dblTopRowTopY As Double, dblTopRowBottomY As Double, dblBottomRowBottomY As Double, dblSeparatorBottomY As Double, blnDrawTopBoundary As Boolean, blnDrawSeparatorBottom As Boolean
+' Returns:       String
+' Description:   Builds one Oracle Reports transaction block with the original rectangle roles and single-stroke grid.
+'-------------------------------------------------------------------------------
+Private Function BuildOracleTransactionStructure( _
+    ByVal arrTopX As Variant, _
+    ByVal arrBottomX As Variant, _
+    ByVal dblTopBaseline As Double, _
+    ByVal dblBottomBaseline As Double, _
+    ByVal dblTopRowTopY As Double, _
+    ByVal dblTopRowBottomY As Double, _
+    ByVal dblBottomRowBottomY As Double, _
+    ByVal dblSeparatorBottomY As Double, _
+    ByVal blnDrawTopBoundary As Boolean, _
+    ByVal blnDrawSeparatorBottom As Boolean) As String
+
+    Const METHOD_NAME As String = "BuildOracleTransactionStructure"
+    Dim arrBottomDetailWidths As Variant
+    Dim arrBottomDetailX As Variant
+    Dim arrTopDetailWidths As Variant
+    Dim arrTopDetailX As Variant
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim strContent As String
+
+    On Error GoTo ErrorHandler
+
+    arrTopDetailX = GetOracleTopDetailX()
+    arrTopDetailWidths = GetOracleTopDetailWidths()
+    arrBottomDetailX = GetOracleBottomDetailX()
+    arrBottomDetailWidths = GetOracleBottomDetailWidths()
+
+    strContent = BuildFilledStrokedRectangleCommand( _
+        TABLE_LEFT_X, _
+        dblSeparatorBottomY, _
+        TABLE_WIDTH, _
+        dblTopRowTopY - dblSeparatorBottomY, _
+        ORACLE_WHITE_LEVEL)
+
+    For lngIndex = LBound(arrTopDetailX) To UBound(arrTopDetailX)
+        strContent = strContent & BuildStrokedRectangleCommand( _
+            CDbl(arrTopDetailX(lngIndex)), _
+            dblTopBaseline, _
+            CDbl(arrTopDetailWidths(lngIndex)), _
+            ORACLE_DETAIL_HEIGHT)
+    Next lngIndex
+
+    For lngIndex = LBound(arrBottomDetailX) To UBound(arrBottomDetailX)
+        strContent = strContent & BuildNoPaintRectangleCommand( _
+            CDbl(arrBottomDetailX(lngIndex)), _
+            dblBottomBaseline, _
+            CDbl(arrBottomDetailWidths(lngIndex)), _
+            ORACLE_DETAIL_HEIGHT)
+    Next lngIndex
+
+    strContent = strContent & BuildStrokedRectangleCommand( _
+        TABLE_LEFT_X, _
+        dblSeparatorBottomY, _
+        TABLE_WIDTH, _
+        dblBottomRowBottomY - dblSeparatorBottomY)
+
+    strContent = strContent & BuildTransactionGridStrokeContent( _
+        arrTopX, _
+        arrBottomX, _
+        dblTopRowTopY, _
+        dblTopRowBottomY, _
+        dblBottomRowBottomY, _
+        dblSeparatorBottomY, _
+        blnDrawTopBoundary, _
+        blnDrawSeparatorBottom)
+
+    BuildOracleTransactionStructure = strContent
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildOracleTransactionStructure = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "topBaseline;bottomBaseline;topRowTopY;separatorBottomY", _
+        dblTopBaseline, _
+        dblBottomBaseline, _
+        dblTopRowTopY, _
+        dblSeparatorBottomY
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    dblX As Double, dblY As Double, dblWidth As Double, dblHeight As Double, dblGray As Double
+' Returns:       String
+' Description:   Builds a filled and stroked Oracle Reports rectangle using the even-odd B* operator.
+'-------------------------------------------------------------------------------
+Private Function BuildFilledStrokedRectangleCommand( _
+    ByVal dblX As Double, _
+    ByVal dblY As Double, _
+    ByVal dblWidth As Double, _
+    ByVal dblHeight As Double, _
+    ByVal dblGray As Double) As String
+
+    Const METHOD_NAME As String = "BuildFilledStrokedRectangleCommand"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    BuildFilledStrokedRectangleCommand = _
+        PdfNumber(dblGray) & " g " & _
+        PdfNumber(dblX) & " " & PdfNumber(dblY) & " " & _
+        PdfNumber(dblWidth) & " " & PdfNumber(dblHeight) & " re B*" & vbCrLf
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildFilledStrokedRectangleCommand = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "x;y;width;height;gray", _
+        dblX, _
+        dblY, _
+        dblWidth, _
+        dblHeight, _
+        dblGray
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    dblX As Double, dblY As Double, dblWidth As Double, dblHeight As Double
+' Returns:       String
+' Description:   Builds one stroked Oracle Reports rectangle without filling it.
+'-------------------------------------------------------------------------------
+Private Function BuildStrokedRectangleCommand( _
+    ByVal dblX As Double, _
+    ByVal dblY As Double, _
+    ByVal dblWidth As Double, _
+    ByVal dblHeight As Double) As String
+
+    Const METHOD_NAME As String = "BuildStrokedRectangleCommand"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    BuildStrokedRectangleCommand = _
+        PdfNumber(dblX) & " " & PdfNumber(dblY) & " " & _
+        PdfNumber(dblWidth) & " " & PdfNumber(dblHeight) & " re S" & vbCrLf
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildStrokedRectangleCommand = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "x;y;width;height", _
+        dblX, _
+        dblY, _
+        dblWidth, _
+        dblHeight
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    dblX As Double, dblY As Double, dblWidth As Double, dblHeight As Double
+' Returns:       String
+' Description:   Builds one Oracle Reports rectangle path terminated without painting.
+'-------------------------------------------------------------------------------
+Private Function BuildNoPaintRectangleCommand( _
+    ByVal dblX As Double, _
+    ByVal dblY As Double, _
+    ByVal dblWidth As Double, _
+    ByVal dblHeight As Double) As String
+
+    Const METHOD_NAME As String = "BuildNoPaintRectangleCommand"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    BuildNoPaintRectangleCommand = _
+        "q 1 g 0 G " & _
+        PdfNumber(dblX) & " " & PdfNumber(dblY) & " " & _
+        PdfNumber(dblWidth) & " " & PdfNumber(dblHeight) & " re n Q" & vbCrLf
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildNoPaintRectangleCommand = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "x;y;width;height", _
+        dblX, _
+        dblY, _
+        dblWidth, _
+        dblHeight
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
 ' Parameters:    arrTopX As Variant, arrBottomX As Variant, dblHeaderBottomY As Double, dblHeaderTopY As Double, dblTableTopY As Double
 ' Returns:       String
-' Description:   Draws the two-row header grid once using Oracle-style m/l strokes.
+' Description:   Draws the Oracle header rules once using m, l, and S.
 '-------------------------------------------------------------------------------
 Private Function BuildHeaderGridStrokeContent( _
     ByVal arrTopX As Variant, _
@@ -1009,14 +1339,8 @@ Private Function BuildHeaderGridStrokeContent( _
     strContent = BuildLineCommand( _
         TABLE_LEFT_X, _
         dblHeaderTopY, _
-        TABLE_RIGHT_X, _
+        ORACLE_RULE_RIGHT_X, _
         dblHeaderTopY)
-
-    strContent = strContent & BuildLineCommand( _
-        TABLE_LEFT_X, _
-        dblHeaderBottomY, _
-        TABLE_RIGHT_X, _
-        dblHeaderBottomY)
 
     strContent = strContent & BuildInteriorVerticalLines( _
         arrTopX, _
@@ -1054,10 +1378,10 @@ End Function
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
-' Creation date: 2026-08-06
+' Creation date: 2026-08-07
 ' Parameters:    arrTopX As Variant, arrBottomX As Variant, dblTopRowTopY As Double, dblTopRowBottomY As Double, dblBottomRowBottomY As Double, dblSeparatorBottomY As Double, blnDrawTopBoundary As Boolean, blnDrawSeparatorBottom As Boolean
 ' Returns:       String
-' Description:   Draws one two-row transaction grid with every shared border stroked once.
+' Description:   Draws the Oracle transaction rules with each logical separator represented once.
 '-------------------------------------------------------------------------------
 Private Function BuildTransactionGridStrokeContent( _
     ByVal arrTopX As Variant, _
@@ -1081,27 +1405,27 @@ Private Function BuildTransactionGridStrokeContent( _
         strContent = strContent & BuildLineCommand( _
             TABLE_LEFT_X, _
             dblTopRowTopY, _
-            TABLE_RIGHT_X, _
+            ORACLE_RULE_RIGHT_X, _
             dblTopRowTopY)
     End If
 
     strContent = strContent & BuildLineCommand( _
         TABLE_LEFT_X, _
         dblTopRowBottomY, _
-        TABLE_RIGHT_X, _
+        ORACLE_RULE_RIGHT_X, _
         dblTopRowBottomY)
 
     strContent = strContent & BuildLineCommand( _
         TABLE_LEFT_X, _
         dblBottomRowBottomY, _
-        TABLE_RIGHT_X, _
+        ORACLE_RULE_RIGHT_X, _
         dblBottomRowBottomY)
 
     If blnDrawSeparatorBottom Then
         strContent = strContent & BuildLineCommand( _
             TABLE_LEFT_X, _
             dblSeparatorBottomY, _
-            TABLE_RIGHT_X, _
+            ORACLE_RULE_RIGHT_X, _
             dblSeparatorBottomY)
     End If
 
@@ -1565,7 +1889,7 @@ End Function
 ' Creation date: 2026-08-05
 ' Parameters:    strFont As String, dblFontSize As Double, dblX As Double, dblY As Double, strText As String
 ' Returns:       String
-' Description:   Builds one simple BT-Td-Tj-ET text command.
+' Description:   Builds one simple BT-TD-Tj-ET text command.
 '-------------------------------------------------------------------------------
 Private Function BuildAbsoluteTextCommand( _
     ByVal strFont As String, _
@@ -1583,7 +1907,7 @@ Private Function BuildAbsoluteTextCommand( _
 
     BuildAbsoluteTextCommand = _
         "BT " & strFont & " " & PdfNumber(dblFontSize) & " Tf " & _
-        PdfNumber(dblX) & " " & PdfNumber(dblY) & " Td (" & _
+        PdfNumber(dblX) & " " & PdfNumber(dblY) & " TD (" & _
         EncodePdfText(strText) & ") Tj ET" & vbCrLf
 
 ExitFunction:
@@ -1595,6 +1919,51 @@ ErrorHandler:
     BuildAbsoluteTextCommand = vbNullString
 
     errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    lngPage As Long, lngPageCount As Long
+' Returns:       String
+' Description:   Builds the Oracle Reports page number as three text-show operations in one text object.
+'-------------------------------------------------------------------------------
+Private Function BuildPageNumberCommand( _
+    ByVal lngPage As Long, _
+    ByVal lngPageCount As Long) As String
+
+    Const METHOD_NAME As String = "BuildPageNumberCommand"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    BuildPageNumberCommand = _
+        "BT /F0 " & PdfNumber(PAGE_NUMBER_FONT_SIZE) & " Tf " & _
+        PdfNumber(PAGE_NUMBER_X) & " " & PdfNumber(PAGE_NUMBER_Y) & " TD (" & _
+        EncodePdfText(CStr(lngPage)) & ") Tj ( / ) Tj (" & _
+        EncodePdfText(CStr(lngPageCount)) & ") Tj ET" & vbCrLf
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildPageNumberCommand = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "page;pageCount", _
+        lngPage, _
+        lngPageCount
+
     errorManager.save
     Resume ExitFunction
 End Function
@@ -2093,6 +2462,211 @@ End Function
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    ---
+' Returns:       Variant
+' Description:   Returns the exact Oracle Reports labels for the 12 upper header fields.
+'-------------------------------------------------------------------------------
+Private Function GetTopHeaderLabels() As Variant
+    Const METHOD_NAME As String = "GetTopHeaderLabels"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    GetTopHeaderLabels = Array( _
+        "Depotnr.", _
+        "Fondsbezeichnung", _
+        "Geschaeftsart", _
+        "Schlusstag", _
+        "Valutatag", _
+        "WKN", _
+        "ISIN", _
+        "Wertpapierbezeichnung", _
+        "Nominale /Stuecke", _
+        "Whg", _
+        "Kurs", _
+        "Stueckzinsen")
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetTopHeaderLabels = Array()
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    ---
+' Returns:       Variant
+' Description:   Returns the exact Oracle Reports labels for the 13 lower header fields.
+'-------------------------------------------------------------------------------
+Private Function GetBottomHeaderLabels() As Variant
+    Const METHOD_NAME As String = "GetBottomHeaderLabels"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    GetBottomHeaderLabels = Array( _
+        "Transaktionsnr.", _
+        "Maklergebuehren", _
+        "Whg", _
+        "Steuern", _
+        "Whg", _
+        "Abwicklungsprovision", _
+        "Whg", _
+        "Spesen", _
+        "Whg", _
+        "ausm. Betrag in Whg", _
+        "ausm. Betrag in Abrech. Whg", _
+        "Whg", _
+        "Devisenkurs")
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetBottomHeaderLabels = Array()
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    ---
+' Returns:       Variant
+' Description:   Returns the X positions of the two painted upper detail rectangles used by Oracle Reports.
+'-------------------------------------------------------------------------------
+Private Function GetOracleTopDetailX() As Variant
+    Const METHOD_NAME As String = "GetOracleTopDetailX"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    GetOracleTopDetailX = Array(891#, 1057.52)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetOracleTopDetailX = Array()
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    ---
+' Returns:       Variant
+' Description:   Returns the widths of the two painted upper detail rectangles used by Oracle Reports.
+'-------------------------------------------------------------------------------
+Private Function GetOracleTopDetailWidths() As Variant
+    Const METHOD_NAME As String = "GetOracleTopDetailWidths"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    GetOracleTopDetailWidths = Array(130.52, 117#)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetOracleTopDetailWidths = Array()
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    ---
+' Returns:       Variant
+' Description:   Returns the X positions of the nine unpainted lower detail rectangles used by Oracle Reports.
+'-------------------------------------------------------------------------------
+Private Function GetOracleBottomDetailX() As Variant
+    Const METHOD_NAME As String = "GetOracleBottomDetailX"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    GetOracleBottomDetailX = Array(130.52, 288#, 328.52, 504#, 702#, 891#, 1053#, 1179#, 1206#)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetOracleBottomDetailX = Array()
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    ---
+' Returns:       Variant
+' Description:   Returns the widths of the nine unpainted lower detail rectangles used by Oracle Reports.
+'-------------------------------------------------------------------------------
+Private Function GetOracleBottomDetailWidths() As Variant
+    Const METHOD_NAME As String = "GetOracleBottomDetailWidths"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    GetOracleBottomDetailWidths = Array(148.52, 36#, 135#, 130.52, 144#, 157.52, 121.52, 27#, 112.52)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetOracleBottomDetailWidths = Array()
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
 ' Creation date: 2026-08-05
 ' Parameters:    ---
 ' Returns:       Variant
@@ -2528,10 +3102,265 @@ End Function
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
-' Creation date: 2026-08-05
+' Creation date: 2026-08-07
+' Parameters:    ---
+' Returns:       String
+' Description:   Returns the WinAnsi width array used by the Oracle Arial-Bold Type1 resource.
+'-------------------------------------------------------------------------------
+Private Function GetArialBoldWidthsArray() As String
+    Const METHOD_NAME As String = "GetArialBoldWidthsArray"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strWidths As String
+
+    On Error GoTo ErrorHandler
+
+    strWidths = "[278 333 474 556 556 889 722 238 333 333 389 584 278 333 278 278 556 556 556 556 556 556 556 556 556 556 333 333 "
+    strWidths = strWidths & "584 584 584 611 975 722 722 722 722 667 611 778 722 278 556 722 611 833 722 778 667 778 722 667 611 722 667 944 "
+    strWidths = strWidths & "667 667 611 333 278 333 584 556 333 556 611 556 611 556 333 611 611 278 278 556 278 889 611 611 611 611 389 556 "
+    strWidths = strWidths & "333 611 556 778 556 556 500 389 280 389 584 750 556 278 278 556 500 1000 556 556 333 1000 667 333 1000 278 611 278 "
+    strWidths = strWidths & "278 278 278 500 500 350 556 1000 333 1000 556 333 944 278 500 667 278 333 556 556 556 556 280 556 333 737 370 556 "
+    strWidths = strWidths & "584 333 737 552 400 549 333 333 333 576 556 333 333 333 365 556 834 834 834 611 722 722 722 722 722 722 1000 722 "
+    strWidths = strWidths & "667 667 667 667 278 278 278 278 722 722 778 778 778 778 778 584 778 722 722 722 722 667 667 611 556 556 556 556 "
+    strWidths = strWidths & "556 556 889 556 556 556 556 556 278 278 278 278 611 611 611 611 611 611 611 549 611 611 611 611 611 556 611 556]"
+
+    GetArialBoldWidthsArray = strWidths
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetArialBoldWidthsArray = "[]"
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    strContent As String
+' Returns:       String
+' Description:   Encodes one page stream using the Oracle filter chain ASCII85Decode then FlateDecode.
+'-------------------------------------------------------------------------------
+Private Function BuildFlateAscii85Stream(ByVal strContent As String) As String
+    Const METHOD_NAME As String = "BuildFlateAscii85Stream"
+    Dim arrCompressed() As Byte
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    arrCompressed = BuildZlibStoredBytes(strContent)
+    BuildFlateAscii85Stream = Ascii85EncodeBytes(arrCompressed)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildFlateAscii85Stream = vbNullString
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    strContent As String
+' Returns:       Byte()
+' Description:   Builds a valid zlib stream containing uncompressed DEFLATE stored blocks.
+'-------------------------------------------------------------------------------
+Private Function BuildZlibStoredBytes(ByVal strContent As String) As Byte()
+    Const METHOD_NAME As String = "BuildZlibStoredBytes"
+    Dim arrData() As Byte
+    Dim arrOutput() As Byte
+    Dim blnFinal As Boolean
+    Dim dblAdler As Double
+    Dim dblRemainder As Double
+    Dim dblS1 As Double
+    Dim dblS2 As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngBlockLength As Long
+    Dim lngDataLength As Long
+    Dim lngDataPosition As Long
+    Dim lngIndex As Long
+    Dim lngNLen As Long
+    Dim lngOutputLength As Long
+    Dim lngOutputPosition As Long
+
+    On Error GoTo ErrorHandler
+
+    arrData = StrConv(strContent, vbFromUnicode)
+    lngDataLength = UBound(arrData) - LBound(arrData) + 1
+    lngOutputLength = 2 + lngDataLength + (((lngDataLength + 65534) \ 65535) * 5) + 4
+    ReDim arrOutput(0 To lngOutputLength - 1)
+
+    arrOutput(0) = &H78
+    arrOutput(1) = &H1
+    lngOutputPosition = 2
+    lngDataPosition = 0
+    dblS1 = 1#
+    dblS2 = 0#
+
+    Do While lngDataPosition < lngDataLength
+        lngBlockLength = lngDataLength - lngDataPosition
+        If lngBlockLength > 65535 Then
+            lngBlockLength = 65535
+        End If
+
+        blnFinal = (lngDataPosition + lngBlockLength >= lngDataLength)
+        If blnFinal Then
+            arrOutput(lngOutputPosition) = 1
+        Else
+            arrOutput(lngOutputPosition) = 0
+        End If
+        lngOutputPosition = lngOutputPosition + 1
+
+        lngNLen = 65535 - lngBlockLength
+        arrOutput(lngOutputPosition) = CByte(lngBlockLength And &HFF&)
+        arrOutput(lngOutputPosition + 1) = CByte((lngBlockLength \ 256) And &HFF&)
+        arrOutput(lngOutputPosition + 2) = CByte(lngNLen And &HFF&)
+        arrOutput(lngOutputPosition + 3) = CByte((lngNLen \ 256) And &HFF&)
+        lngOutputPosition = lngOutputPosition + 4
+
+        For lngIndex = 0 To lngBlockLength - 1
+            arrOutput(lngOutputPosition) = arrData(lngDataPosition + lngIndex)
+            dblS1 = dblS1 + CDbl(arrData(lngDataPosition + lngIndex))
+            If dblS1 >= 65521# Then
+                dblS1 = dblS1 - 65521#
+            End If
+            dblS2 = dblS2 + dblS1
+            dblS2 = dblS2 - (Fix(dblS2 / 65521#) * 65521#)
+            lngOutputPosition = lngOutputPosition + 1
+        Next lngIndex
+
+        lngDataPosition = lngDataPosition + lngBlockLength
+    Loop
+
+    dblAdler = (dblS2 * 65536#) + dblS1
+    arrOutput(lngOutputPosition) = CByte(Fix(dblAdler / 16777216#))
+    dblRemainder = dblAdler - (CDbl(arrOutput(lngOutputPosition)) * 16777216#)
+    arrOutput(lngOutputPosition + 1) = CByte(Fix(dblRemainder / 65536#))
+    dblRemainder = dblRemainder - (CDbl(arrOutput(lngOutputPosition + 1)) * 65536#)
+    arrOutput(lngOutputPosition + 2) = CByte(Fix(dblRemainder / 256#))
+    arrOutput(lngOutputPosition + 3) = CByte(dblRemainder - (CDbl(arrOutput(lngOutputPosition + 2)) * 256#))
+
+    BuildZlibStoredBytes = arrOutput
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ReDim arrOutput(0 To 0)
+    BuildZlibStoredBytes = arrOutput
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "contentLength", _
+        Len(strContent)
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    arrBytes() As Byte
+' Returns:       String
+' Description:   Encodes binary bytes using PDF ASCII85 syntax including the end marker.
+'-------------------------------------------------------------------------------
+Private Function Ascii85EncodeBytes(ByRef arrBytes() As Byte) As String
+    Const METHOD_NAME As String = "Ascii85EncodeBytes"
+    Dim arrDigits(0 To 4) As Long
+    Dim dblDivisor As Double
+    Dim dblValue As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngAvailable As Long
+    Dim lngByteCount As Long
+    Dim lngDigit As Long
+    Dim lngIndex As Long
+    Dim lngInner As Long
+    Dim lngLastIndex As Long
+    Dim strEncoded As String
+    Dim strGroup As String
+
+    On Error GoTo ErrorHandler
+
+    lngLastIndex = UBound(arrBytes)
+    lngIndex = LBound(arrBytes)
+
+    Do While lngIndex <= lngLastIndex
+        lngAvailable = lngLastIndex - lngIndex + 1
+        If lngAvailable > 4 Then
+            lngByteCount = 4
+        Else
+            lngByteCount = lngAvailable
+        End If
+
+        dblValue = 0#
+        For lngInner = 0 To 3
+            dblValue = dblValue * 256#
+            If lngInner < lngByteCount Then
+                dblValue = dblValue + CDbl(arrBytes(lngIndex + lngInner))
+            End If
+        Next lngInner
+
+        If lngByteCount = 4 And dblValue = 0# Then
+            strEncoded = strEncoded & "z"
+        Else
+            strGroup = vbNullString
+            For lngDigit = 4 To 0 Step -1
+                dblDivisor = 85# ^ lngDigit
+                arrDigits(4 - lngDigit) = CLng(Fix(dblValue / dblDivisor))
+                dblValue = dblValue - (CDbl(arrDigits(4 - lngDigit)) * dblDivisor)
+                strGroup = strGroup & Chr$(arrDigits(4 - lngDigit) + 33)
+            Next lngDigit
+            strEncoded = strEncoded & Left$(strGroup, lngByteCount + 1)
+        End If
+
+        lngIndex = lngIndex + lngByteCount
+    Loop
+
+    Ascii85EncodeBytes = strEncoded & "~>"
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    Ascii85EncodeBytes = vbNullString
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
 ' Parameters:    colPageContents As Collection, strLogoHex As String, lngLogoWidth As Long, lngLogoHeight As Long, lngLogoComponents As Long, strDocument As String
 ' Returns:       Boolean
-' Description:   Builds all PDF objects, the classic XREF table, trailer, and EOF marker.
+' Description:   Builds Oracle-style PDF objects, filtered page streams, the classic XREF table, trailer, and EOF marker.
 '-------------------------------------------------------------------------------
 Private Function BuildPdfDocument( _
     ByVal colPageContents As Collection, _
@@ -2556,6 +3385,7 @@ Private Function BuildPdfDocument( _
     Dim lngPageObject As Long
     Dim lngStartXref As Long
     Dim strColorSpace As String
+    Dim strEncodedContent As String
     Dim strKids As String
     Dim strPageResources As String
 
@@ -2572,17 +3402,25 @@ Private Function BuildPdfDocument( _
         Err.Raise 1001, METHOD_NAME, "At least one PDF page is required."
     End If
 
-    lngImageObject = 6
-    lngFirstPageObject = 7
-    lngObjectCount = 6 + (colPageContents.Count * 2)
+    lngImageObject = 8
+    lngFirstPageObject = 9
+    lngObjectCount = 8 + (colPageContents.Count * 2)
 
     ReDim arrObjects(1 To lngObjectCount)
     ReDim arrOffsets(1 To lngObjectCount)
 
     arrObjects(1) = "<< /Type /Catalog /Pages 2 0 R >>"
     arrObjects(3) = "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold /Encoding /WinAnsiEncoding >>"
-    arrObjects(4) = "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman /Encoding /WinAnsiEncoding >>"
-    arrObjects(5) = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"
+    arrObjects(4) = _
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Arial-Bold " & _
+        "/FirstChar 32 /LastChar 255 /Widths 6 0 R /FontDescriptor 7 0 R " & _
+        "/Encoding /WinAnsiEncoding >>"
+    arrObjects(5) = "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman /Encoding /WinAnsiEncoding >>"
+    arrObjects(6) = GetArialBoldWidthsArray()
+    arrObjects(7) = _
+        "<< /Type /FontDescriptor /FontName /Arial-Bold /Flags 32 " & _
+        "/FontBBox [-664 -324 2000 1039] /ItalicAngle 0 /Ascent 1031 " & _
+        "/Descent -281 /CapHeight 750 /StemV 0 /MissingWidth 0 >>"
 
     Select Case lngLogoComponents
         Case 1
@@ -2620,14 +3458,20 @@ Private Function BuildPdfDocument( _
 
         arrObjects(lngPageObject) = _
             "<< /Type /Page /Parent 2 0 R " & _
-            "/MediaBox [0 0 1368 684] /CropBox [0 0 1368 684] /Rotate 0 " & _
+            "/MediaBox [0 0 1368 684] /CropBox [0 0 1368 684] " & _
             "/Resources " & strPageResources & _
             " /Contents " & CStr(lngContentObject) & " 0 R >>"
 
+        strEncodedContent = BuildFlateAscii85Stream(CStr(colPageContents(lngPage)))
+        If Len(strEncodedContent) = 0 Then
+            Err.Raise 1024, METHOD_NAME, "A PDF page stream could not be encoded with ASCII85 and Flate."
+        End If
+
         arrObjects(lngContentObject) = _
-            "<< /Length " & CStr(Len(CStr(colPageContents(lngPage)))) & " >>" & vbCrLf & _
+            "<< /Length " & CStr(Len(strEncodedContent)) & _
+            " /Filter [/ASCII85Decode /FlateDecode] >>" & vbCrLf & _
             "stream" & vbCrLf & _
-            CStr(colPageContents(lngPage)) & _
+            strEncodedContent & vbCrLf & _
             "endstream"
     Next lngPage
 
