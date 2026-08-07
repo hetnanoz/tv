@@ -15,7 +15,8 @@ Private Const FIRST_PAGE_HEADER_BOTTOM_Y As Double = 517.48
 Private Const CONTINUATION_PAGE_HEADER_TOP_Y As Double = 589.48
 Private Const CONTINUATION_PAGE_HEADER_BOTTOM_Y As Double = 571.48
 Private Const DATA_ROW_HEIGHT As Double = 18#
-Private Const MAX_TRANSACTIONS_PER_PAGE As Long = 11
+Private Const FIRST_PAGE_MAX_TRANSACTIONS As Long = 11
+Private Const CONTINUATION_PAGE_MAX_TRANSACTIONS As Long = 12
 Private Const FIRST_DATA_ROW As Long = 7
 Private Const LAST_REPORT_COLUMN As Long = 22
 Private Const HEADER_FONT_SIZE As Double = 8#
@@ -24,8 +25,8 @@ Private Const LONG_TEXT_FONT_SIZE As Double = 8#
 Private Const MIN_FONT_SIZE As Double = 5.5
 Private Const TEXT_LEFT_PADDING As Double = 4.52
 Private Const TEXT_RIGHT_PADDING As Double = 4.48
-Private Const ORACLE_NUMERIC_LEADING_SPACES As Long = 2
-Private Const ORACLE_DEVISENKURS_RIGHT_PADDING As Double = 5.52
+Private Const ORACLE_NUMERIC_LEADING_SPACES As Long = 3
+Private Const ORACLE_DEVISENKURS_RIGHT_PADDING As Double = 3.52
 Private Const HEADER_GRAY_LEVEL As Double = 0.72
 Private Const SEPARATOR_GRAY_LEVEL As Double = 0.86
 Private Const FOOTER_X As Double = 40.52
@@ -503,6 +504,149 @@ End Function
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    lngTradeCount As Long
+' Returns:       Long
+' Description:   Oracle pagination: first page max 11, continuation pages max 12.
+'-------------------------------------------------------------------------------
+Private Function GetOraclePageCount(ByVal lngTradeCount As Long) As Long
+
+    Const METHOD_NAME As String = "GetOraclePageCount"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngRemainingTrades As Long
+
+    On Error GoTo ErrorHandler
+
+    If lngTradeCount <= 0 Then
+        GetOraclePageCount = 0
+        GoTo ExitFunction
+    End If
+
+    If lngTradeCount <= FIRST_PAGE_MAX_TRANSACTIONS Then
+        GetOraclePageCount = 1
+        GoTo ExitFunction
+    End If
+
+    lngRemainingTrades = lngTradeCount - FIRST_PAGE_MAX_TRANSACTIONS
+
+    GetOraclePageCount = 1 + _
+        ((lngRemainingTrades + CONTINUATION_PAGE_MAX_TRANSACTIONS - 1) \ _
+        CONTINUATION_PAGE_MAX_TRANSACTIONS)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetOraclePageCount = 0
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "tradeCount", _
+        lngTradeCount
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    lngTradeCount As Long, lngPage As Long, lngFirstTrade As Long, lngLastTrade As Long
+' Returns:       ---
+' Description:   Resolves the 1-based transaction range for one Oracle PDF page.
+'-------------------------------------------------------------------------------
+Private Sub GetOraclePageTradeBounds( _
+    ByVal lngTradeCount As Long, _
+    ByVal lngPage As Long, _
+    ByRef lngFirstTrade As Long, _
+    ByRef lngLastTrade As Long)
+
+    Const METHOD_NAME As String = "GetOraclePageTradeBounds"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    lngFirstTrade = 0
+    lngLastTrade = 0
+
+    If lngTradeCount <= 0 Then
+        Err.Raise 1001, METHOD_NAME, "At least one transaction is required."
+    End If
+
+    If lngPage <= 0 Then
+        Err.Raise 1001, METHOD_NAME, "The page number must be greater than zero."
+    End If
+
+    If lngPage = 1 Then
+        lngFirstTrade = 1
+        lngLastTrade = FIRST_PAGE_MAX_TRANSACTIONS
+    Else
+        lngFirstTrade = FIRST_PAGE_MAX_TRANSACTIONS + 1 + _
+            ((lngPage - 2) * CONTINUATION_PAGE_MAX_TRANSACTIONS)
+
+        lngLastTrade = lngFirstTrade + _
+            CONTINUATION_PAGE_MAX_TRANSACTIONS - 1
+    End If
+
+    If lngFirstTrade > lngTradeCount Then
+        Err.Raise 1001, METHOD_NAME, _
+            "The requested page starts beyond the available transactions."
+    End If
+
+    If lngLastTrade > lngTradeCount Then
+        lngLastTrade = lngTradeCount
+    End If
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    lngFirstTrade = 0
+    lngLastTrade = 0
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "tradeCount;page", _
+        lngTradeCount, _
+        lngPage
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    blnFirstPage As Boolean
+' Returns:       Long
+' Description:   Returns the valid transaction-slot count for this page type.
+'-------------------------------------------------------------------------------
+Private Function GetOracleMaxTransactionsForPage( _
+    ByVal blnFirstPage As Boolean) As Long
+
+    If blnFirstPage Then
+        GetOracleMaxTransactionsForPage = FIRST_PAGE_MAX_TRANSACTIONS
+    Else
+        GetOracleMaxTransactionsForPage = CONTINUATION_PAGE_MAX_TRANSACTIONS
+    End If
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
 ' Creation date: 2026-08-05
 ' Parameters:    wksSource As Excel.Worksheet, arrTopRows() As Long, arrBottomRows() As Long, lngTradeCount As Long, blnHasLogo As Boolean, colPageContents As Collection
 ' Returns:       Boolean
@@ -533,7 +677,7 @@ Private Function BuildAllPageContents( _
         Err.Raise 1001, METHOD_NAME, "At least one transaction is required."
     End If
 
-    lngPageCount = (lngTradeCount + MAX_TRANSACTIONS_PER_PAGE - 1) \ MAX_TRANSACTIONS_PER_PAGE
+    lngPageCount = GetOraclePageCount(lngTradeCount)
 
     For lngPage = 1 To lngPageCount
         strPageContent = BuildSinglePageContent( _
@@ -633,12 +777,12 @@ Private Function BuildSinglePageContent( _
 
     blnFirstPage = (lngPage = 1)
     blnLastPage = (lngPage = lngPageCount)
-    lngFirstTrade = ((lngPage - 1) * MAX_TRANSACTIONS_PER_PAGE) + 1
-    lngLastTrade = lngFirstTrade + MAX_TRANSACTIONS_PER_PAGE - 1
 
-    If lngLastTrade > lngTradeCount Then
-        lngLastTrade = lngTradeCount
-    End If
+    Call GetOraclePageTradeBounds( _
+        lngTradeCount, _
+        lngPage, _
+        lngFirstTrade, _
+        lngLastTrade)
 
     arrTopX = GetTopGridX()
     arrTopWidths = GetTopGridWidths()
@@ -764,7 +908,7 @@ Private Function BuildSinglePageContent( _
 
     If blnLastPage Then
         strContent = strContent & BuildAbsoluteTextCommand( _
-            "/F2", _
+            "/F1", _
             FOOTER_FONT_SIZE, _
             FOOTER_X, _
             dblTableBottomY - FOOTER_BASELINE_GAP, _
@@ -954,7 +1098,7 @@ Private Function BuildCellContent( _
         dblFontSize = HEADER_FONT_SIZE
         lngAlignment = xlCenter
     Else
-        strFont = "/F1"
+        strFont = "/F2"
         dblFontSize = GetDataFontSize(strText)
         lngAlignment = ResolveCellAlignment(rngSource, strText)
         strText = ApplyOracleNumericFieldPadding( _
@@ -973,9 +1117,8 @@ Private Function BuildCellContent( _
     If Not blnHeader Then
         If rngSource.Column = 21 Then
             ' OLD Oracle audit: Devisenkurs is rendered as 8 pt Times-Roman.
-            ' FIX20 uses two Oracle leading spaces. The 5.52 pt right inset
-            ' compensates for the removed 8 pt space and preserves the already
-            ' audited X anchor without hardcoding the displayed value.
+            ' Matched-input audit confirms the OLD Oracle stream uses three
+            ' leading spaces and the original 3.52 pt right inset.
             dblFontSize = LONG_TEXT_FONT_SIZE
             dblEffectiveRightPadding = ORACLE_DEVISENKURS_RIGHT_PADDING
         End If
@@ -2213,14 +2356,14 @@ Private Function GetTransactionTopBaseline( _
 
     On Error GoTo ErrorHandler
 
-    If lngSlot < 1 Or lngSlot > MAX_TRANSACTIONS_PER_PAGE Then
-        Err.Raise 1001, METHOD_NAME, "The transaction slot must be between 1 and 11."
+    If lngSlot < 1 Or lngSlot > GetOracleMaxTransactionsForPage(blnFirstPage) Then
+        Err.Raise 1001, METHOD_NAME, "The transaction slot is outside the valid Oracle page capacity."
     End If
 
     If blnFirstPage Then
         arrValues = Array(504#, 463.48, 423#, 382.48, 342#, 301.48, 261#, 220.48, 180#, 139.48, 99#)
     Else
-        arrValues = Array(558#, 517.48, 477#, 436.48, 396#, 355.48, 315#, 274.48, 234#, 193.48, 153#)
+        arrValues = Array(558#, 517.48, 477#, 436.48, 396#, 355.48, 315#, 274.48, 234#, 193.48, 153#, 112.48)
     End If
 
     GetTransactionTopBaseline = CDbl(arrValues(lngSlot - 1))
@@ -2265,14 +2408,14 @@ Private Function GetTransactionTopRowTopY( _
 
     On Error GoTo ErrorHandler
 
-    If lngSlot < 1 Or lngSlot > MAX_TRANSACTIONS_PER_PAGE Then
-        Err.Raise 1001, METHOD_NAME, "The transaction slot must be between 1 and 11."
+    If lngSlot < 1 Or lngSlot > GetOracleMaxTransactionsForPage(blnFirstPage) Then
+        Err.Raise 1001, METHOD_NAME, "The transaction slot is outside the valid Oracle page capacity."
     End If
 
     If blnFirstPage Then
         arrValues = Array(517.48, 477#, 436.48, 396#, 355.48, 315#, 274.48, 234#, 193.48, 153#, 112.48)
     Else
-        arrValues = Array(571.48, 531#, 490.48, 450#, 409.48, 369#, 328.48, 288#, 247.48, 207#, 166.48)
+        arrValues = Array(571.48, 531#, 490.48, 450#, 409.48, 369#, 328.48, 288#, 247.48, 207#, 166.48, 126#)
     End If
 
     GetTransactionTopRowTopY = CDbl(arrValues(lngSlot - 1))
@@ -2309,14 +2452,14 @@ Private Function GetTransactionTopRowBottomY( _
 
     On Error GoTo ErrorHandler
 
-    If lngSlot < 1 Or lngSlot > MAX_TRANSACTIONS_PER_PAGE Then
-        Err.Raise 1001, METHOD_NAME, "The transaction slot must be between 1 and 11."
+    If lngSlot < 1 Or lngSlot > GetOracleMaxTransactionsForPage(blnFirstPage) Then
+        Err.Raise 1001, METHOD_NAME, "The transaction slot is outside the valid Oracle page capacity."
     End If
 
     If blnFirstPage Then
         arrValues = Array(499.48, 459#, 418.48, 378#, 337.48, 297#, 256.48, 216#, 175.48, 135#, 94.48)
     Else
-        arrValues = Array(553.48, 513#, 472.48, 432#, 391.48, 351#, 310.48, 270#, 229.48, 189#, 148.48)
+        arrValues = Array(553.48, 513#, 472.48, 432#, 391.48, 351#, 310.48, 270#, 229.48, 189#, 148.48, 108#)
     End If
 
     GetTransactionTopRowBottomY = CDbl(arrValues(lngSlot - 1))
@@ -2353,14 +2496,14 @@ Private Function GetTransactionBottomRowBottomY( _
 
     On Error GoTo ErrorHandler
 
-    If lngSlot < 1 Or lngSlot > MAX_TRANSACTIONS_PER_PAGE Then
-        Err.Raise 1001, METHOD_NAME, "The transaction slot must be between 1 and 11."
+    If lngSlot < 1 Or lngSlot > GetOracleMaxTransactionsForPage(blnFirstPage) Then
+        Err.Raise 1001, METHOD_NAME, "The transaction slot is outside the valid Oracle page capacity."
     End If
 
     If blnFirstPage Then
         arrValues = Array(481.48, 441#, 400.48, 360#, 319.47, 279#, 238.48, 198#, 157.47, 117#, 76.48)
     Else
-        arrValues = Array(535.48, 495#, 454.48, 414#, 373.47, 333#, 292.48, 252#, 211.47, 171#, 130.48)
+        arrValues = Array(535.48, 495#, 454.48, 414#, 373.47, 333#, 292.48, 252#, 211.47, 171#, 130.48, 90#)
     End If
 
     GetTransactionBottomRowBottomY = CDbl(arrValues(lngSlot - 1))
@@ -2397,14 +2540,14 @@ Private Function GetTransactionSeparatorBottomY( _
 
     On Error GoTo ErrorHandler
 
-    If lngSlot < 1 Or lngSlot > MAX_TRANSACTIONS_PER_PAGE Then
-        Err.Raise 1001, METHOD_NAME, "The transaction slot must be between 1 and 11."
+    If lngSlot < 1 Or lngSlot > GetOracleMaxTransactionsForPage(blnFirstPage) Then
+        Err.Raise 1001, METHOD_NAME, "The transaction slot is outside the valid Oracle page capacity."
     End If
 
     If blnFirstPage Then
         arrValues = Array(476.96, 436.48, 395.96, 355.48, 314.95, 274.48, 233.96, 193.48, 152.96, 112.48, 71.96)
     Else
-        arrValues = Array(530.96, 490.48, 449.96, 409.48, 368.95, 328.48, 287.96, 247.48, 206.96, 166.48, 125.96)
+        arrValues = Array(530.96, 490.48, 449.96, 409.48, 368.95, 328.48, 287.96, 247.48, 206.96, 166.48, 125.96, 85.48)
     End If
 
     GetTransactionSeparatorBottomY = CDbl(arrValues(lngSlot - 1))
@@ -3675,8 +3818,8 @@ Private Function BuildPdfDocument( _
     arrObjects(1) = "<< /Type /Catalog /Pages 2 0 R >>"
     arrObjects(3) = "<< /Type /Font /Subtype /Type1 /BaseFont /#54#69#6D#65#73#2D#42#6F#6C#64 /Encoding /WinAnsiEncoding >>"
     arrObjects(4) = _
-        "<< /Type /Font /Subtype /Type1 " & _
-        "/BaseFont /#54#69#6D#65#73#2D#52#6F#6D#61#6E " & _
+        "<< /Type /Font /Subtype /Type1 /BaseFont /#41#72#69#61#6C#2D#42#6F#6C#64 " & _
+        "/FirstChar 32 /LastChar 255 /Widths 6 0 R /FontDescriptor 7 0 R " & _
         "/Encoding /WinAnsiEncoding >>"
     arrObjects(5) = "<< /Type /Font /Subtype /Type1 /BaseFont /#54#69#6D#65#73#2D#52#6F#6D#61#6E /Encoding /WinAnsiEncoding >>"
     arrObjects(6) = GetArialBoldWidthsArray()
@@ -3713,11 +3856,7 @@ Private Function BuildPdfDocument( _
         End If
         strKids = strKids & CStr(lngPageObject) & " 0 R"
 
-        strPageResources = "<< /Font << /F0 3 0 R /F1 4 0 R"
-        If lngPage = colPageContents.Count Then
-            strPageResources = strPageResources & " /F2 5 0 R"
-        End If
-        strPageResources = strPageResources & " >>"
+        strPageResources = "<< /Font << /F0 3 0 R /F1 4 0 R /F2 5 0 R >>"
 
         If lngPage = 1 Then
             strPageResources = strPageResources & _
