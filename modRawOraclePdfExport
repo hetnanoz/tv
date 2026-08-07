@@ -2582,7 +2582,7 @@ Private Function BuildPdfDocument( _
     arrObjects(1) = "<< /Type /Catalog /Pages 2 0 R >>"
     arrObjects(3) = "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold /Encoding /WinAnsiEncoding >>"
     arrObjects(4) = "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman /Encoding /WinAnsiEncoding >>"
-    arrObjects(5) = "<< /Type /Font /Subtype /Type1 /BaseFont /Arial-Bold /Encoding /WinAnsiEncoding >>"
+    arrObjects(5) = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"
 
     Select Case lngLogoComponents
         Case 1
