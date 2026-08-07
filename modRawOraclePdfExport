@@ -26,7 +26,8 @@ Private Const MIN_FONT_SIZE As Double = 5.5
 Private Const TEXT_LEFT_PADDING As Double = 4.52
 Private Const TEXT_RIGHT_PADDING As Double = 4.48
 Private Const ORACLE_NUMERIC_LEADING_SPACES As Long = 3
-Private Const ORACLE_DEVISENKURS_RIGHT_PADDING As Double = 3.52
+Private Const ORACLE_DEVISENKURS_RIGHT_PADDING As Double = 5.52
+Private Const ORACLE_SPESEN_RIGHT_PADDING As Double = 8.98
 Private Const HEADER_GRAY_LEVEL As Double = 0.72
 Private Const SEPARATOR_GRAY_LEVEL As Double = 0.86
 Private Const FOOTER_X As Double = 40.52
@@ -1124,7 +1125,10 @@ Private Function BuildCellContent( _
             blnTopTransactionRow, _
             lngFieldIndex)
 
-        strFont = "/F2"
+        strFont = ResolveOracleDataFontResource( _
+            blnTopTransactionRow, _
+            lngFieldIndex)
+
         dblFontSize = ResolveOracleDataFontSize( _
             strText, _
             blnTopTransactionRow, _
@@ -1158,11 +1162,9 @@ Private Function BuildCellContent( _
     dblEffectiveRightPadding = TEXT_RIGHT_PADDING
 
     If Not blnHeader Then
-        If rngSource.Column = 21 Then
-            ' Devisenkurs keeps the independently audited 8 pt Oracle anchor.
-            dblFontSize = LONG_TEXT_FONT_SIZE
-            dblEffectiveRightPadding = ORACLE_DEVISENKURS_RIGHT_PADDING
-        End If
+        dblEffectiveRightPadding = ResolveOracleRightPadding( _
+            blnTopTransactionRow, _
+            lngFieldIndex)
     End If
 
     If blnHeader And dblFixedTextX >= 0# Then
@@ -1950,7 +1952,9 @@ Private Function ApplyOracleNumericFieldPadding( _
         GoTo ExitFunction
     End If
 
-    lngLeadingSpaces = ORACLE_NUMERIC_LEADING_SPACES
+    lngLeadingSpaces = ResolveOracleNumericLeadingSpaces( _
+        blnTopTransactionRow, _
+        lngFieldIndex)
 
     ApplyOracleNumericFieldPadding = _
         Space$(lngLeadingSpaces) & strCoreText & strTrailingText
@@ -2248,6 +2252,166 @@ End Function
 ' Returns:       Double
 ' Description:   Resolves Oracle data font size, including the Wertpapierbezeichnung 8 pt role.
 '-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    blnTopTransactionRow As Boolean, lngFieldIndex As Long
+' Returns:       String
+' Description:   Resolves the OLD Oracle font resource for parser-sensitive data fields.
+'-------------------------------------------------------------------------------
+Private Function ResolveOracleDataFontResource( _
+    ByVal blnTopTransactionRow As Boolean, _
+    ByVal lngFieldIndex As Long) As String
+
+    Const METHOD_NAME As String = "ResolveOracleDataFontResource"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    ResolveOracleDataFontResource = "/F2"
+
+    If blnTopTransactionRow Then
+        If lngFieldIndex = TOP_FIELD_WHG_INDEX Then
+            ResolveOracleDataFontResource = "/F1"
+        End If
+    Else
+        If IsOracleCurrencyField(False, lngFieldIndex) Or _
+           lngFieldIndex = BOTTOM_FIELD_SPESEN_INDEX Or _
+           lngFieldIndex = BOTTOM_FIELD_DEVISENKURS_INDEX Then
+
+            ResolveOracleDataFontResource = "/F1"
+        End If
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ResolveOracleDataFontResource = "/F2"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "topTransactionRow;fieldIndex", _
+        blnTopTransactionRow, _
+        lngFieldIndex
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    blnTopTransactionRow As Boolean, lngFieldIndex As Long
+' Returns:       Long
+' Description:   Resolves OLD Oracle leading-space counts for right-aligned numeric fields.
+'-------------------------------------------------------------------------------
+Private Function ResolveOracleNumericLeadingSpaces( _
+    ByVal blnTopTransactionRow As Boolean, _
+    ByVal lngFieldIndex As Long) As Long
+
+    Const METHOD_NAME As String = "ResolveOracleNumericLeadingSpaces"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    ResolveOracleNumericLeadingSpaces = ORACLE_NUMERIC_LEADING_SPACES
+
+    If blnTopTransactionRow Then
+        If lngFieldIndex = TOP_FIELD_NOMINALE_INDEX Then
+            ResolveOracleNumericLeadingSpaces = 4
+        End If
+    Else
+        Select Case lngFieldIndex
+            Case BOTTOM_FIELD_SPESEN_INDEX
+                ResolveOracleNumericLeadingSpaces = 5
+            Case BOTTOM_FIELD_ABRECH_AMOUNT_INDEX
+                ResolveOracleNumericLeadingSpaces = 2
+            Case BOTTOM_FIELD_DEVISENKURS_INDEX
+                ResolveOracleNumericLeadingSpaces = 2
+        End Select
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ResolveOracleNumericLeadingSpaces = ORACLE_NUMERIC_LEADING_SPACES
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "topTransactionRow;fieldIndex", _
+        blnTopTransactionRow, _
+        lngFieldIndex
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    blnTopTransactionRow As Boolean, lngFieldIndex As Long
+' Returns:       Double
+' Description:   Resolves OLD Oracle right padding for parser-sensitive numeric fields.
+'-------------------------------------------------------------------------------
+Private Function ResolveOracleRightPadding( _
+    ByVal blnTopTransactionRow As Boolean, _
+    ByVal lngFieldIndex As Long) As Double
+
+    Const METHOD_NAME As String = "ResolveOracleRightPadding"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    ResolveOracleRightPadding = TEXT_RIGHT_PADDING
+
+    If Not blnTopTransactionRow Then
+        Select Case lngFieldIndex
+            Case BOTTOM_FIELD_SPESEN_INDEX
+                ResolveOracleRightPadding = ORACLE_SPESEN_RIGHT_PADDING
+            Case BOTTOM_FIELD_DEVISENKURS_INDEX
+                ResolveOracleRightPadding = ORACLE_DEVISENKURS_RIGHT_PADDING
+        End Select
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ResolveOracleRightPadding = TEXT_RIGHT_PADDING
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "topTransactionRow;fieldIndex", _
+        blnTopTransactionRow, _
+        lngFieldIndex
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
 Private Function ResolveOracleDataFontSize( _
     ByVal strText As String, _
     ByVal blnTopTransactionRow As Boolean, _
@@ -2262,9 +2426,20 @@ Private Function ResolveOracleDataFontSize( _
 
     ResolveOracleDataFontSize = GetDataFontSize(strText)
 
-    If blnTopTransactionRow And _
-       lngFieldIndex = TOP_FIELD_SECURITY_DESCRIPTION_INDEX Then
-        ResolveOracleDataFontSize = LONG_TEXT_FONT_SIZE
+    If blnTopTransactionRow Then
+        If lngFieldIndex = TOP_FIELD_SECURITY_DESCRIPTION_INDEX Or _
+           lngFieldIndex = TOP_FIELD_WHG_INDEX Then
+
+            ResolveOracleDataFontSize = LONG_TEXT_FONT_SIZE
+        End If
+    Else
+        If IsOracleCurrencyField(False, lngFieldIndex) Or _
+           lngFieldIndex = BOTTOM_FIELD_SPESEN_INDEX Then
+
+            ResolveOracleDataFontSize = DATA_FONT_SIZE
+        ElseIf lngFieldIndex = BOTTOM_FIELD_DEVISENKURS_INDEX Then
+            ResolveOracleDataFontSize = LONG_TEXT_FONT_SIZE
+        End If
     End If
 
 ExitFunction:
