@@ -7364,7 +7364,7 @@ Private Sub WriteBreaksExecutiveSummary( _
     '-----------------------------------------------------------------------
     lngFileOut = OpenNew(outputPath)
 
-    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V9_STRUCTURAL_FIELDS")
+    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V10_PADDING_MATRIX")
     Call EmitLine(lngFileOut, "OLD|" & oldDoc.PdfPath)
     Call EmitLine(lngFileOut, "NEW|" & newDoc.PdfPath)
     Call EmitLine(lngFileOut, _
@@ -7403,6 +7403,15 @@ Private Sub WriteBreaksExecutiveSummary( _
     Call EmitLine(lngFileOut, "FONT_RESOURCE_FORENSICS")
     Call EmitLine(lngFileOut, "============================================================")
     Call BreaksWriteFontResourceForensics( _
+        oldDoc, _
+        newDoc, _
+        lngFileOut)
+
+    Call EmitLine(lngFileOut, vbNullString)
+    Call EmitLine(lngFileOut, "============================================================")
+    Call EmitLine(lngFileOut, "PADDING_AND_WHG_DECISION_MATRIX")
+    Call EmitLine(lngFileOut, "============================================================")
+    Call BreaksWritePaddingAndWhgDecisionMatrix( _
         oldDoc, _
         newDoc, _
         lngFileOut)
@@ -8658,6 +8667,315 @@ End Function
 ' Returns:       ---
 ' Description:   Groups matched text by the physical Oracle table cell, avoiding value-based role guesses.
 '-------------------------------------------------------------------------------
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDoc As tPdfDocument, newDoc As tPdfDocument, fileNumber As Long
+' Returns:       ---
+' Description:   Emits a compact field-level matrix for the remaining numeric
+'                whitespace and Whg alignment differences. It deliberately
+'                omits individual transaction samples so one screenshot is useful.
+'-------------------------------------------------------------------------------
+Private Sub BreaksWritePaddingAndWhgDecisionMatrix( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal fileNumber As Long)
+
+    Const METHOD_NAME As String = "BreaksWritePaddingAndWhgDecisionMatrix"
+    Dim blnNewUsed() As Boolean
+    Dim dictNumeric As Object
+    Dim dictWhg As Object
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim lngNewIndex As Long
+    Dim lngPage As Long
+    Dim lngPages As Long
+    Dim strKey As String
+    Dim strRole As String
+
+    On Error GoTo ErrorHandler
+
+    Set dictNumeric = CreateObject("Scripting.Dictionary")
+    Set dictWhg = CreateObject("Scripting.Dictionary")
+
+    lngPages = oldDoc.PageCount
+    If newDoc.PageCount < lngPages Then
+        lngPages = newDoc.PageCount
+    End If
+
+    For lngPage = 1 To lngPages
+        If newDoc.TextCount > 0 Then
+            ReDim blnNewUsed(0 To newDoc.TextCount - 1)
+        Else
+            ReDim blnNewUsed(0 To 0)
+        End If
+
+        For lngIndex = 0 To oldDoc.TextCount - 1
+            If oldDoc.Texts(lngIndex).PageNo = lngPage Then
+                strRole = BreaksInferStructuralFieldRole( _
+                    lngPage, _
+                    oldDoc.Texts(lngIndex).X, _
+                    oldDoc.Texts(lngIndex).Y)
+
+                If BreaksIsPaddingMatrixRole(strRole) Or _
+                   BreaksIsWhgMatrixRole(strRole) Then
+
+                    lngNewIndex = FindBreaksExactTextMatch( _
+                        oldDoc, _
+                        newDoc, _
+                        lngIndex, _
+                        lngPage, _
+                        blnNewUsed)
+
+                    If lngNewIndex < 0 Then
+                        lngNewIndex = FindBreaksGeometryTextMatch( _
+                            oldDoc, _
+                            newDoc, _
+                            lngIndex, _
+                            lngPage, _
+                            blnNewUsed)
+                    End If
+
+                    If lngNewIndex >= 0 Then
+                        blnNewUsed(lngNewIndex) = True
+
+                        If BreaksIsPaddingMatrixRole(strRole) Then
+                            strKey = _
+                                "role=" & strRole & _
+                                "|intDigits=" & BreaksIntegerDigitBucket( _
+                                    oldDoc.Texts(lngIndex).TextValue) & _
+                                "|lead=" & CStr(BreaksLeadingSpaceCount( _
+                                    oldDoc.Texts(lngIndex).TextValue)) & ">" & _
+                                    CStr(BreaksLeadingSpaceCount( _
+                                    newDoc.Texts(lngNewIndex).TextValue)) & _
+                                "|font=" & oldDoc.Texts(lngIndex).FontName & "@" & _
+                                    NumTxt(oldDoc.Texts(lngIndex).FontSize) & ">" & _
+                                    newDoc.Texts(lngNewIndex).FontName & "@" & _
+                                    NumTxt(newDoc.Texts(lngNewIndex).FontSize) & _
+                                "|dX=" & NumTxt(newDoc.Texts(lngNewIndex).X - _
+                                    oldDoc.Texts(lngIndex).X) & _
+                                "|dY=" & NumTxt(newDoc.Texts(lngNewIndex).Y - _
+                                    oldDoc.Texts(lngIndex).Y)
+
+                            Call IncrementDictionaryValue(dictNumeric, strKey)
+                        End If
+
+                        If BreaksIsWhgMatrixRole(strRole) Then
+                            strKey = _
+                                "role=" & strRole & _
+                                "|value=" & BreaksShortText(Trim$( _
+                                    oldDoc.Texts(lngIndex).TextValue)) & _
+                                "|font=" & oldDoc.Texts(lngIndex).FontName & "@" & _
+                                    NumTxt(oldDoc.Texts(lngIndex).FontSize) & ">" & _
+                                    newDoc.Texts(lngNewIndex).FontName & "@" & _
+                                    NumTxt(newDoc.Texts(lngNewIndex).FontSize) & _
+                                "|dX=" & NumTxt(newDoc.Texts(lngNewIndex).X - _
+                                    oldDoc.Texts(lngIndex).X) & _
+                                "|dY=" & NumTxt(newDoc.Texts(lngNewIndex).Y - _
+                                    oldDoc.Texts(lngIndex).Y)
+
+                            Call IncrementDictionaryValue(dictWhg, strKey)
+                        End If
+                    End If
+                End If
+            End If
+        Next lngIndex
+    Next lngPage
+
+    Call EmitLine(fileNumber, "NUMERIC_PADDING")
+    Call BreaksSummaryWriteDictionary( _
+        dictNumeric, _
+        fileNumber, _
+        35, _
+        "PAD")
+
+    Call EmitLine(fileNumber, "WHG_POSITION_FONT")
+    Call BreaksSummaryWriteDictionary( _
+        dictWhg, _
+        fileNumber, _
+        25, _
+        "WHG_CELL")
+
+ExitSub:
+    Set dictNumeric = Nothing
+    Set dictWhg = Nothing
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    role As String
+' Returns:       Boolean
+' Description:   Identifies numeric data roles whose Oracle leading-space mask
+'                still needs to be cloned.
+'-------------------------------------------------------------------------------
+Private Function BreaksIsPaddingMatrixRole(ByVal role As String) As Boolean
+
+    Const METHOD_NAME As String = "BreaksIsPaddingMatrixRole"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    BreaksIsPaddingMatrixRole = False
+
+    Select Case role
+        Case "TOP_NOMINALE_STUECKE", _
+             "TOP_KURS", _
+             "TOP_STUECKZINSEN", _
+             "BOTTOM_MAKLERGEBUEHREN", _
+             "BOTTOM_STEUERN", _
+             "BOTTOM_ABWICKLUNGSPROVISION", _
+             "BOTTOM_SPESEN", _
+             "BOTTOM_AUSM_BETRAG_WHG", _
+             "BOTTOM_AUSM_BETRAG_ABRECH_WHG", _
+             "BOTTOM_DEVISENKURS"
+
+            BreaksIsPaddingMatrixRole = True
+    End Select
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksIsPaddingMatrixRole = False
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription, "role", role
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    role As String
+' Returns:       Boolean
+' Description:   Identifies all transaction currency (Whg) data cells.
+'-------------------------------------------------------------------------------
+Private Function BreaksIsWhgMatrixRole(ByVal role As String) As Boolean
+
+    Const METHOD_NAME As String = "BreaksIsWhgMatrixRole"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    BreaksIsWhgMatrixRole = False
+
+    Select Case role
+        Case "TOP_WHG_NOMINALE", _
+             "BOTTOM_WHG_MAKLER", _
+             "BOTTOM_WHG_STEUERN", _
+             "BOTTOM_WHG_ABWICKLUNG", _
+             "BOTTOM_WHG_SPESEN", _
+             "BOTTOM_WHG_ABRECH"
+
+            BreaksIsWhgMatrixRole = True
+    End Select
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksIsWhgMatrixRole = False
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription, "role", role
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    textValue As String
+' Returns:       String
+' Description:   Buckets a numeric display by integer-digit count while ignoring
+'                grouping spaces and the decimal part.
+'-------------------------------------------------------------------------------
+Private Function BreaksIntegerDigitBucket(ByVal textValue As String) As String
+
+    Const METHOD_NAME As String = "BreaksIntegerDigitBucket"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngComma As Long
+    Dim lngDigits As Long
+    Dim lngDot As Long
+    Dim lngIndex As Long
+    Dim lngStop As Long
+    Dim strChar As String
+    Dim strCore As String
+
+    On Error GoTo ErrorHandler
+
+    strCore = Trim$(textValue)
+    lngDot = InStrRev(strCore, ".")
+    lngComma = InStrRev(strCore, ",")
+
+    If lngDot > lngComma Then
+        lngStop = lngDot - 1
+    ElseIf lngComma > 0 Then
+        lngStop = lngComma - 1
+    Else
+        lngStop = Len(strCore)
+    End If
+
+    For lngIndex = 1 To lngStop
+        strChar = Mid$(strCore, lngIndex, 1)
+        If strChar >= "0" And strChar <= "9" Then
+            lngDigits = lngDigits + 1
+        End If
+    Next lngIndex
+
+    Select Case lngDigits
+        Case 0
+            BreaksIntegerDigitBucket = "NA"
+        Case 1 To 3
+            BreaksIntegerDigitBucket = "1-3"
+        Case 4 To 6
+            BreaksIntegerDigitBucket = "4-6"
+        Case 7 To 9
+            BreaksIntegerDigitBucket = "7-9"
+        Case Else
+            BreaksIntegerDigitBucket = "10+"
+    End Select
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksIntegerDigitBucket = "ERR"
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription, "textValue", textValue
+    errorManager.save
+    Resume ExitFunction
+End Function
+
 Private Sub BreaksWriteStructuralFieldForensics( _
     ByRef oldDoc As tPdfDocument, _
     ByRef newDoc As tPdfDocument, _
