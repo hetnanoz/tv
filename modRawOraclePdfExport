@@ -25,8 +25,8 @@ Private Const LONG_TEXT_FONT_SIZE As Double = 8#
 Private Const MIN_FONT_SIZE As Double = 5.5
 Private Const TEXT_LEFT_PADDING As Double = 4.52
 Private Const TEXT_RIGHT_PADDING As Double = 4.48
-Private Const ORACLE_NUMERIC_LEADING_SPACES As Long = 2
-Private Const ORACLE_DEVISENKURS_RIGHT_PADDING As Double = 5.52
+Private Const ORACLE_NUMERIC_LEADING_SPACES As Long = 3
+Private Const ORACLE_DEVISENKURS_RIGHT_PADDING As Double = 3.52
 Private Const HEADER_GRAY_LEVEL As Double = 0.72
 Private Const SEPARATOR_GRAY_LEVEL As Double = 0.86
 Private Const FOOTER_X As Double = 40.52
@@ -47,6 +47,12 @@ Private Const ORACLE_HEADER_SPECIAL_X As Double = 1188#
 Private Const ORACLE_HEADER_SPECIAL_WIDTH As Double = 130.52
 Private Const ORACLE_DETAIL_HEIGHT As Double = 9#
 Private Const ORACLE_WHITE_LEVEL As Double = 1#
+Private Const ORACLE_KAUF_TEXT_X As Double = 362.24
+Private Const ORACLE_VERKAUF_TEXT_X As Double = 357#
+Private Const TOP_FIELD_GESCHAEFTSART_INDEX As Long = 2
+Private Const TOP_FIELD_SECURITY_DESCRIPTION_INDEX As Long = 7
+Private Const BOTTOM_FIELD_SPESEN_INDEX As Long = 7
+Private Const BOTTOM_FIELD_ABRECH_AMOUNT_INDEX As Long = 10
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -884,7 +890,8 @@ Private Function BuildSinglePageContent( _
             dblTopRowY, _
             dblTopBaseline, _
             False, _
-            arrTopDataTextX)
+            varFixedTextX:=arrTopDataTextX, _
+            blnTopTransactionRow:=True)
 
         strContent = strContent & BuildGridRowContent( _
             wksSource, _
@@ -947,7 +954,7 @@ End Function
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-07
-' Parameters:    wksSource As Excel.Worksheet, lngSourceRow As Long, arrSourceColumns As Variant, arrX As Variant, arrWidths As Variant, dblRowY As Double, dblBaselineY As Double, blnHeader As Boolean, varFixedTextX As Variant, varFixedTextValues As Variant
+' Parameters:    wksSource As Excel.Worksheet, lngSourceRow As Long, arrSourceColumns As Variant, arrX As Variant, arrWidths As Variant, dblRowY As Double, dblBaselineY As Double, blnHeader As Boolean, varFixedTextX As Variant, varFixedTextValues As Variant, blnTopTransactionRow As Boolean
 ' Returns:       String
 ' Description:   Builds text for one fixed Oracle upper or lower report row.
 '-------------------------------------------------------------------------------
@@ -961,7 +968,8 @@ Private Function BuildGridRowContent( _
     ByVal dblBaselineY As Double, _
     ByVal blnHeader As Boolean, _
     Optional ByVal varFixedTextX As Variant, _
-    Optional ByVal varFixedTextValues As Variant) As String
+    Optional ByVal varFixedTextValues As Variant, _
+    Optional ByVal blnTopTransactionRow As Boolean = False) As String
 
     Const METHOD_NAME As String = "BuildGridRowContent"
     Dim errorManager As New ErrorManager
@@ -1021,7 +1029,9 @@ Private Function BuildGridRowContent( _
             dblBaselineY, _
             blnHeader, _
             dblFixedTextX, _
-            strOverrideText)
+            strOverrideText, _
+            blnTopTransactionRow, _
+            lngIndex)
     Next lngIndex
 
     BuildGridRowContent = strContent
@@ -1053,7 +1063,7 @@ End Function
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-07
-' Parameters:    rngSource As Excel.Range, dblX As Double, dblY As Double, dblWidth As Double, dblHeight As Double, dblBaselineY As Double, blnHeader As Boolean, dblFixedTextX As Double, strOverrideText As String
+' Parameters:    rngSource As Excel.Range, dblX As Double, dblY As Double, dblWidth As Double, dblHeight As Double, dblBaselineY As Double, blnHeader As Boolean, dblFixedTextX As Double, strOverrideText As String, blnTopTransactionRow As Boolean, lngFieldIndex As Long
 ' Returns:       String
 ' Description:   Builds one Oracle-compatible text run from a worksheet cell or fixed header label.
 '-------------------------------------------------------------------------------
@@ -1066,7 +1076,9 @@ Private Function BuildCellContent( _
     ByVal dblBaselineY As Double, _
     ByVal blnHeader As Boolean, _
     Optional ByVal dblFixedTextX As Double = -1#, _
-    Optional ByVal strOverrideText As String = vbNullString) As String
+    Optional ByVal strOverrideText As String = vbNullString, _
+    Optional ByVal blnTopTransactionRow As Boolean = False, _
+    Optional ByVal lngFieldIndex As Long = -1) As String
 
     Const METHOD_NAME As String = "BuildCellContent"
     Const FONT_SIZE_TOLERANCE As Double = 0.01
@@ -1098,8 +1110,24 @@ Private Function BuildCellContent( _
         dblFontSize = HEADER_FONT_SIZE
         lngAlignment = xlCenter
     Else
+        strText = NormalizeOracleFieldDisplayText( _
+            rngSource, _
+            strText, _
+            blnTopTransactionRow, _
+            lngFieldIndex)
+
         strFont = "/F2"
-        dblFontSize = GetDataFontSize(strText)
+        dblFontSize = ResolveOracleDataFontSize( _
+            strText, _
+            blnTopTransactionRow, _
+            lngFieldIndex)
+
+        dblFixedTextX = ResolveOracleFixedDataTextX( _
+            strText, _
+            blnTopTransactionRow, _
+            lngFieldIndex, _
+            dblFixedTextX)
+
         lngAlignment = ResolveCellAlignment(rngSource, strText)
         strText = ApplyOracleNumericFieldPadding( _
             rngSource, _
@@ -1116,10 +1144,7 @@ Private Function BuildCellContent( _
 
     If Not blnHeader Then
         If rngSource.Column = 21 Then
-            ' Matched-input FIX21 audit proves ordinary Oracle numeric
-            ' values use two leading spaces. Devisenkurs is 8 pt Times-Roman;
-            ' the 5.52 pt inset preserves its already-audited X anchor after
-            ' removing one 8 pt leading space.
+            ' Devisenkurs keeps the independently audited 8 pt Oracle anchor.
             dblFontSize = LONG_TEXT_FONT_SIZE
             dblEffectiveRightPadding = ORACLE_DEVISENKURS_RIGHT_PADDING
         End If
@@ -1300,15 +1325,11 @@ Private Function BuildOracleTransactionStructure( _
     arrBottomDetailX = GetOracleBottomDetailX()
     arrBottomDetailWidths = GetOracleBottomDetailWidths()
 
-    ' FIX19: retain the OLD Oracle B* transaction rectangle spanning from
-    ' the separator bottom to the top of the two-row trade block. The audit
-    ' reports the matching vertical B* spans 476.96..517.48 and 436.48..477.
-    strContent = BuildFilledStrokedRectangleCommand( _
+    strContent = BuildStrokedRectangleCommand( _
         TABLE_LEFT_X, _
         dblSeparatorBottomY, _
         TABLE_WIDTH, _
-        dblTopRowTopY - dblSeparatorBottomY, _
-        ORACLE_WHITE_LEVEL)
+        dblTopRowTopY - dblSeparatorBottomY)
 
     For lngIndex = LBound(arrBottomDetailX) To UBound(arrBottomDetailX)
         strContent = strContent & BuildNoPaintRectangleCommand( _
@@ -1983,6 +2004,211 @@ ErrorHandler:
     ResolveCellAlignment = xlLeft
 
     errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    rngSource As Excel.Range, strText As String, blnTopTransactionRow As Boolean, lngFieldIndex As Long
+' Returns:       String
+' Description:   Applies Oracle-only display normalization to selected numeric report fields.
+'-------------------------------------------------------------------------------
+Private Function NormalizeOracleFieldDisplayText( _
+    ByVal rngSource As Excel.Range, _
+    ByVal strText As String, _
+    ByVal blnTopTransactionRow As Boolean, _
+    ByVal lngFieldIndex As Long) As String
+
+    Const METHOD_NAME As String = "NormalizeOracleFieldDisplayText"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngCommaPosition As Long
+    Dim lngDecimalPosition As Long
+    Dim lngDotPosition As Long
+    Dim rngValue As Excel.Range
+    Dim strResult As String
+
+    On Error GoTo ErrorHandler
+
+    NormalizeOracleFieldDisplayText = strText
+
+    If blnTopTransactionRow Then
+        GoTo ExitFunction
+    End If
+
+    If lngFieldIndex <> BOTTOM_FIELD_SPESEN_INDEX And _
+       lngFieldIndex <> BOTTOM_FIELD_ABRECH_AMOUNT_INDEX Then
+        GoTo ExitFunction
+    End If
+
+    Set rngValue = rngSource
+
+    If rngSource.MergeCells Then
+        Set rngValue = rngSource.MergeArea.Cells(1, 1)
+    End If
+
+    If IsError(rngValue.Value) Or IsEmpty(rngValue.Value) Then
+        GoTo ExitFunction
+    End If
+
+    If IsDate(rngValue.Value) Or Not IsNumeric(rngValue.Value) Then
+        GoTo ExitFunction
+    End If
+
+    strResult = LTrim$(strText)
+    lngDotPosition = InStrRev(strResult, ".")
+    lngCommaPosition = InStrRev(strResult, ",")
+
+    If lngDotPosition > lngCommaPosition Then
+        lngDecimalPosition = lngDotPosition
+    Else
+        lngDecimalPosition = lngCommaPosition
+    End If
+
+    If lngDecimalPosition <= 0 Then
+        GoTo ExitFunction
+    End If
+
+    Do While Len(strResult) > lngDecimalPosition And Right$(strResult, 1) = "0"
+        strResult = Left$(strResult, Len(strResult) - 1)
+    Loop
+
+    If Len(strResult) = lngDecimalPosition Then
+        strResult = Left$(strResult, lngDecimalPosition - 1)
+    End If
+
+    NormalizeOracleFieldDisplayText = strResult
+
+ExitFunction:
+    Set rngValue = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    NormalizeOracleFieldDisplayText = strText
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "topTransactionRow;fieldIndex;text", _
+        blnTopTransactionRow, _
+        lngFieldIndex, _
+        strText
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    strText As String, blnTopTransactionRow As Boolean, lngFieldIndex As Long
+' Returns:       Double
+' Description:   Resolves Oracle data font size, including the Wertpapierbezeichnung 8 pt role.
+'-------------------------------------------------------------------------------
+Private Function ResolveOracleDataFontSize( _
+    ByVal strText As String, _
+    ByVal blnTopTransactionRow As Boolean, _
+    ByVal lngFieldIndex As Long) As Double
+
+    Const METHOD_NAME As String = "ResolveOracleDataFontSize"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    ResolveOracleDataFontSize = GetDataFontSize(strText)
+
+    If blnTopTransactionRow And _
+       lngFieldIndex = TOP_FIELD_SECURITY_DESCRIPTION_INDEX Then
+        ResolveOracleDataFontSize = LONG_TEXT_FONT_SIZE
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ResolveOracleDataFontSize = DATA_FONT_SIZE
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "text;topTransactionRow;fieldIndex", _
+        strText, _
+        blnTopTransactionRow, _
+        lngFieldIndex
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    strText As String, blnTopTransactionRow As Boolean, lngFieldIndex As Long, dblConfiguredTextX As Double
+' Returns:       Double
+' Description:   Resolves parser-audited Oracle X anchors for transaction type text.
+'-------------------------------------------------------------------------------
+Private Function ResolveOracleFixedDataTextX( _
+    ByVal strText As String, _
+    ByVal blnTopTransactionRow As Boolean, _
+    ByVal lngFieldIndex As Long, _
+    ByVal dblConfiguredTextX As Double) As Double
+
+    Const METHOD_NAME As String = "ResolveOracleFixedDataTextX"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strNormalizedText As String
+
+    On Error GoTo ErrorHandler
+
+    ResolveOracleFixedDataTextX = dblConfiguredTextX
+
+    If Not blnTopTransactionRow Or _
+       lngFieldIndex <> TOP_FIELD_GESCHAEFTSART_INDEX Then
+        GoTo ExitFunction
+    End If
+
+    strNormalizedText = UCase$(Trim$(strText))
+
+    Select Case strNormalizedText
+        Case "KAUF"
+            ResolveOracleFixedDataTextX = ORACLE_KAUF_TEXT_X
+        Case "VERKAUF"
+            ResolveOracleFixedDataTextX = ORACLE_VERKAUF_TEXT_X
+    End Select
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ResolveOracleFixedDataTextX = dblConfiguredTextX
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "text;topTransactionRow;fieldIndex;configuredTextX", _
+        strText, _
+        blnTopTransactionRow, _
+        lngFieldIndex, _
+        dblConfiguredTextX
+
     errorManager.save
     Resume ExitFunction
 End Function
