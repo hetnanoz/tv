@@ -54,11 +54,17 @@ Private Const TOP_FIELD_GESCHAEFTSART_INDEX As Long = 2
 Private Const TOP_FIELD_SECURITY_DESCRIPTION_INDEX As Long = 7
 Private Const TOP_FIELD_NOMINALE_INDEX As Long = 8
 Private Const TOP_FIELD_WHG_INDEX As Long = 9
+Private Const TOP_FIELD_KURS_INDEX As Long = 10
+Private Const TOP_FIELD_STUECKZINSEN_INDEX As Long = 11
+Private Const BOTTOM_FIELD_MAKLERGEBUEHREN_INDEX As Long = 1
 Private Const BOTTOM_FIELD_WHG_MAKLER_INDEX As Long = 2
+Private Const BOTTOM_FIELD_STEUERN_INDEX As Long = 3
 Private Const BOTTOM_FIELD_WHG_STEUERN_INDEX As Long = 4
+Private Const BOTTOM_FIELD_ABWICKLUNG_INDEX As Long = 5
 Private Const BOTTOM_FIELD_WHG_ABWICKLUNG_INDEX As Long = 6
 Private Const BOTTOM_FIELD_SPESEN_INDEX As Long = 7
 Private Const BOTTOM_FIELD_WHG_SPESEN_INDEX As Long = 8
+Private Const BOTTOM_FIELD_AMOUNT_WHG_INDEX As Long = 9
 Private Const BOTTOM_FIELD_ABRECH_AMOUNT_INDEX As Long = 10
 Private Const BOTTOM_FIELD_WHG_ABRECH_INDEX As Long = 11
 Private Const BOTTOM_FIELD_DEVISENKURS_INDEX As Long = 12
@@ -1197,6 +1203,19 @@ Private Function BuildCellContent( _
             End Select
         End If
 
+        If Not blnHeader And _
+           dblFixedTextX < 0# And _
+           IsOracleCurrencyField( _
+               blnTopTransactionRow, _
+               lngFieldIndex) Then
+
+            dblTextX = dblTextX + _
+                ResolveOracleCurrencyTextXCorrection( _
+                    blnTopTransactionRow, _
+                    lngFieldIndex, _
+                    strText)
+        End If
+
         If dblTextX < dblX + 0.5 Then
             dblTextX = dblX + 0.5
         End If
@@ -1954,7 +1973,8 @@ Private Function ApplyOracleNumericFieldPadding( _
 
     lngLeadingSpaces = ResolveOracleNumericLeadingSpaces( _
         blnTopTransactionRow, _
-        lngFieldIndex)
+        lngFieldIndex, _
+        strCoreText)
 
     ApplyOracleNumericFieldPadding = _
         Space$(lngLeadingSpaces) & strCoreText & strTrailingText
@@ -2090,6 +2110,137 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    blnTopTransactionRow As Boolean, lngFieldIndex As Long, strCurrency As String
+' Returns:       Double
+' Description:   Applies the small repeatable Oracle Reports currency-anchor
+'                residuals measured by V12 after font family/size were matched.
+'-------------------------------------------------------------------------------
+Private Function ResolveOracleCurrencyTextXCorrection( _
+    ByVal blnTopTransactionRow As Boolean, _
+    ByVal lngFieldIndex As Long, _
+    ByVal strCurrency As String) As Double
+
+    Const METHOD_NAME As String = "ResolveOracleCurrencyTextXCorrection"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strCode As String
+
+    On Error GoTo ErrorHandler
+
+    ResolveOracleCurrencyTextXCorrection = 0#
+    strCode = UCase$(Trim$(strCurrency))
+
+    If blnTopTransactionRow Then
+        If lngFieldIndex = TOP_FIELD_WHG_INDEX Then
+            ResolveOracleCurrencyTextXCorrection = _
+                OracleEightPointWhgCorrection(strCode)
+        End If
+    Else
+        Select Case lngFieldIndex
+            Case BOTTOM_FIELD_WHG_MAKLER_INDEX
+                Select Case strCode
+                    Case "EUR"
+                        ResolveOracleCurrencyTextXCorrection = -0.02
+                    Case "GBP", "CHF"
+                        ResolveOracleCurrencyTextXCorrection = -0.27
+                    Case "SEK"
+                        ResolveOracleCurrencyTextXCorrection = 0.24
+                    Case "DKK", "NOK"
+                        ResolveOracleCurrencyTextXCorrection = -0.39
+                End Select
+
+            Case BOTTOM_FIELD_WHG_SPESEN_INDEX
+                Select Case strCode
+                    Case "GBP"
+                        ResolveOracleCurrencyTextXCorrection = -0.25
+                    Case "EUR"
+                        ResolveOracleCurrencyTextXCorrection = 0#
+                End Select
+
+            Case BOTTOM_FIELD_WHG_ABRECH_INDEX
+                ResolveOracleCurrencyTextXCorrection = _
+                    OracleEightPointWhgCorrection(strCode)
+        End Select
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ResolveOracleCurrencyTextXCorrection = 0#
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "topTransactionRow;fieldIndex;currency", _
+        blnTopTransactionRow, _
+        lngFieldIndex, _
+        strCurrency
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    strCurrency As String
+' Returns:       Double
+' Description:   Returns the shared correction for the two 27 pt / 8 pt Whg
+'                cells: TOP Whg Nominale and BOTTOM Whg Abrech.
+'-------------------------------------------------------------------------------
+Private Function OracleEightPointWhgCorrection( _
+    ByVal strCurrency As String) As Double
+
+    Const METHOD_NAME As String = "OracleEightPointWhgCorrection"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    OracleEightPointWhgCorrection = 0#
+
+    Select Case UCase$(Trim$(strCurrency))
+        Case "EUR"
+            OracleEightPointWhgCorrection = -0.26
+        Case "GBP", "CHF"
+            OracleEightPointWhgCorrection = -0.08
+        Case "SEK"
+            OracleEightPointWhgCorrection = 0.06
+        Case "DKK", "NOK"
+            OracleEightPointWhgCorrection = -0.32
+    End Select
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    OracleEightPointWhgCorrection = 0#
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "currency", _
+        strCurrency
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -2306,27 +2457,63 @@ End Function
 '-------------------------------------------------------------------------------
 Private Function ResolveOracleNumericLeadingSpaces( _
     ByVal blnTopTransactionRow As Boolean, _
-    ByVal lngFieldIndex As Long) As Long
+    ByVal lngFieldIndex As Long, _
+    ByVal strNumericText As String) As Long
 
     Const METHOD_NAME As String = "ResolveOracleNumericLeadingSpaces"
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
+    Dim lngIntegerDigits As Long
 
     On Error GoTo ErrorHandler
 
     ResolveOracleNumericLeadingSpaces = ORACLE_NUMERIC_LEADING_SPACES
+    lngIntegerDigits = CountOracleIntegerDigits(strNumericText)
+
+    If lngIntegerDigits <= 0 Then
+        GoTo ExitFunction
+    End If
 
     If blnTopTransactionRow Then
-        If lngFieldIndex = TOP_FIELD_NOMINALE_INDEX Then
-            ResolveOracleNumericLeadingSpaces = 3
-        End If
+        Select Case lngFieldIndex
+            Case TOP_FIELD_NOMINALE_INDEX
+                ' V12: 1-3 digits -> 4 spaces; 4-6 -> 3.
+                ResolveOracleNumericLeadingSpaces = _
+                    ResolveOraclePictureLeadingSpaces( _
+                        lngIntegerDigits, _
+                        4, _
+                        1)
+
+            Case TOP_FIELD_KURS_INDEX, _
+                 TOP_FIELD_STUECKZINSEN_INDEX
+                ' V12: Kurs 1-3 digits -> 3 spaces; 4-6 -> 2.
+                ResolveOracleNumericLeadingSpaces = _
+                    ResolveOraclePictureLeadingSpaces( _
+                        lngIntegerDigits, _
+                        3, _
+                        0)
+        End Select
     Else
         Select Case lngFieldIndex
-            Case BOTTOM_FIELD_SPESEN_INDEX
-                ResolveOracleNumericLeadingSpaces = 5
-            Case BOTTOM_FIELD_ABRECH_AMOUNT_INDEX
-                ResolveOracleNumericLeadingSpaces = 2
+            Case BOTTOM_FIELD_MAKLERGEBUEHREN_INDEX, _
+                 BOTTOM_FIELD_STEUERN_INDEX, _
+                 BOTTOM_FIELD_ABWICKLUNG_INDEX, _
+                 BOTTOM_FIELD_SPESEN_INDEX, _
+                 BOTTOM_FIELD_AMOUNT_WHG_INDEX, _
+                 BOTTOM_FIELD_ABRECH_AMOUNT_INDEX
+
+                ' V12 proved one common Oracle number picture:
+                ' 1-3 integer digits -> 5 spaces
+                ' 4-6                -> 4
+                ' 7-9                -> 3
+                ' 10-12              -> 2
+                ResolveOracleNumericLeadingSpaces = _
+                    ResolveOraclePictureLeadingSpaces( _
+                        lngIntegerDigits, _
+                        5, _
+                        1)
+
             Case BOTTOM_FIELD_DEVISENKURS_INDEX
                 ResolveOracleNumericLeadingSpaces = 2
         End Select
@@ -2345,13 +2532,148 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "topTransactionRow;fieldIndex", _
+        "topTransactionRow;fieldIndex;numericText", _
         blnTopTransactionRow, _
-        lngFieldIndex
+        lngFieldIndex, _
+        strNumericText
 
     errorManager.save
     Resume ExitFunction
 End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    lngIntegerDigits As Long, lngFirstGroupSpaces As Long, lngMinimumSpaces As Long
+' Returns:       Long
+' Description:   Reproduces the Oracle Reports number-picture leading blanks:
+'                one blank is removed for every additional three integer digits.
+'-------------------------------------------------------------------------------
+Private Function ResolveOraclePictureLeadingSpaces( _
+    ByVal lngIntegerDigits As Long, _
+    ByVal lngFirstGroupSpaces As Long, _
+    ByVal lngMinimumSpaces As Long) As Long
+
+    Const METHOD_NAME As String = "ResolveOraclePictureLeadingSpaces"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngDigitGroup As Long
+    Dim lngResult As Long
+
+    On Error GoTo ErrorHandler
+
+    If lngIntegerDigits <= 0 Then
+        ResolveOraclePictureLeadingSpaces = lngFirstGroupSpaces
+        GoTo ExitFunction
+    End If
+
+    lngDigitGroup = (lngIntegerDigits - 1) \ 3
+    lngResult = lngFirstGroupSpaces - lngDigitGroup
+
+    If lngResult < lngMinimumSpaces Then
+        lngResult = lngMinimumSpaces
+    End If
+
+    ResolveOraclePictureLeadingSpaces = lngResult
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ResolveOraclePictureLeadingSpaces = lngFirstGroupSpaces
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "integerDigits;firstGroupSpaces;minimumSpaces", _
+        lngIntegerDigits, _
+        lngFirstGroupSpaces, _
+        lngMinimumSpaces
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    strNumericText As String
+' Returns:       Long
+' Description:   Counts integer digits in the final PDF display text while
+'                ignoring signs and grouping spaces.
+'-------------------------------------------------------------------------------
+Private Function CountOracleIntegerDigits( _
+    ByVal strNumericText As String) As Long
+
+    Const METHOD_NAME As String = "CountOracleIntegerDigits"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngComma As Long
+    Dim lngDecimalPosition As Long
+    Dim lngDot As Long
+    Dim lngIndex As Long
+    Dim lngStop As Long
+    Dim strChar As String
+    Dim strText As String
+
+    On Error GoTo ErrorHandler
+
+    strText = Trim$(strNumericText)
+
+    If Len(strText) = 0 Then
+        GoTo ExitFunction
+    End If
+
+    lngDot = InStrRev(strText, ".")
+    lngComma = InStrRev(strText, ",")
+
+    If lngDot > lngComma Then
+        lngDecimalPosition = lngDot
+    Else
+        lngDecimalPosition = lngComma
+    End If
+
+    If lngDecimalPosition > 0 Then
+        lngStop = lngDecimalPosition - 1
+    Else
+        lngStop = Len(strText)
+    End If
+
+    For lngIndex = 1 To lngStop
+        strChar = Mid$(strText, lngIndex, 1)
+
+        If strChar >= "0" And strChar <= "9" Then
+            CountOracleIntegerDigits = _
+                CountOracleIntegerDigits + 1
+        End If
+    Next lngIndex
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    CountOracleIntegerDigits = 0
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "numericText", _
+        strNumericText
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
