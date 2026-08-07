@@ -14,11 +14,7 @@ Private Const FIRST_PAGE_HEADER_TOP_Y As Double = 535.48
 Private Const FIRST_PAGE_HEADER_BOTTOM_Y As Double = 517.48
 Private Const CONTINUATION_PAGE_HEADER_TOP_Y As Double = 589.48
 Private Const CONTINUATION_PAGE_HEADER_BOTTOM_Y As Double = 571.48
-Private Const FIRST_PAGE_FIRST_TOP_BASELINE_Y As Double = 504#
-Private Const CONTINUATION_PAGE_FIRST_TOP_BASELINE_Y As Double = 558#
 Private Const DATA_ROW_HEIGHT As Double = 18#
-Private Const SEPARATOR_HEIGHT As Double = 4.52
-Private Const DATA_BASELINE_OFFSET As Double = 4.52
 Private Const MAX_TRANSACTIONS_PER_PAGE As Long = 11
 Private Const FIRST_DATA_ROW As Long = 7
 Private Const LAST_REPORT_COLUMN As Long = 22
@@ -594,16 +590,20 @@ Private Function BuildSinglePageContent( _
     Dim arrTopHeaderTextX As Variant
     Dim arrTopWidths As Variant
     Dim arrTopX As Variant
+    Dim blnDrawSeparatorBottom As Boolean
+    Dim blnDrawTradeTop As Boolean
     Dim blnFirstPage As Boolean
     Dim blnLastPage As Boolean
     Dim dblBottomBaseline As Double
     Dim dblBottomRowY As Double
     Dim dblHeaderBottomY As Double
     Dim dblHeaderTopY As Double
+    Dim dblSeparatorHeight As Double
     Dim dblSeparatorY As Double
     Dim dblTableBottomY As Double
     Dim dblTableTopY As Double
     Dim dblTopBaseline As Double
+    Dim dblTopRowTopY As Double
     Dim dblTopRowY As Double
     Dim errorManager As New ErrorManager
     Dim errDescription As String
@@ -679,15 +679,28 @@ Private Function BuildSinglePageContent( _
         True, _
         arrBottomHeaderTextX)
 
+    strContent = strContent & BuildHeaderGridStrokeContent( _
+        arrTopX, _
+        arrBottomX, _
+        dblHeaderBottomY, _
+        dblHeaderTopY, _
+        dblTableTopY)
+
     lngSlot = 0
 
     For lngTradeIndex = lngFirstTrade To lngLastTrade
         lngSlot = lngSlot + 1
         dblTopBaseline = GetTransactionTopBaseline(blnFirstPage, lngSlot)
         dblBottomBaseline = dblTopBaseline - DATA_ROW_HEIGHT
-        dblTopRowY = dblTopBaseline - DATA_BASELINE_OFFSET
-        dblBottomRowY = dblBottomBaseline - DATA_BASELINE_OFFSET
-        dblSeparatorY = dblBottomBaseline - (DATA_BASELINE_OFFSET + SEPARATOR_HEIGHT)
+        dblTopRowTopY = GetTransactionTopRowTopY(blnFirstPage, lngSlot)
+        dblTopRowY = GetTransactionTopRowBottomY(blnFirstPage, lngSlot)
+        dblBottomRowY = GetTransactionBottomRowBottomY(blnFirstPage, lngSlot)
+        dblSeparatorY = GetTransactionSeparatorBottomY(blnFirstPage, lngSlot)
+        dblSeparatorHeight = dblBottomRowY - dblSeparatorY
+
+        If dblSeparatorHeight <= 0# Then
+            Err.Raise 1024, METHOD_NAME, "The Oracle separator height is not positive."
+        End If
 
         strContent = strContent & BuildGridRowContent( _
             wksSource, _
@@ -712,9 +725,20 @@ Private Function BuildSinglePageContent( _
         strContent = strContent & _
             "q " & PdfNumber(SEPARATOR_GRAY_LEVEL) & " g " & _
             PdfNumber(TABLE_LEFT_X) & " " & PdfNumber(dblSeparatorY) & " " & _
-            PdfNumber(TABLE_WIDTH) & " " & PdfNumber(SEPARATOR_HEIGHT) & " re f Q" & vbCrLf & _
-            PdfNumber(TABLE_LEFT_X) & " " & PdfNumber(dblSeparatorY) & " " & _
-            PdfNumber(TABLE_WIDTH) & " " & PdfNumber(SEPARATOR_HEIGHT) & " re S" & vbCrLf
+            PdfNumber(TABLE_WIDTH) & " " & PdfNumber(dblSeparatorHeight) & " re f Q" & vbCrLf
+
+        blnDrawTradeTop = (lngSlot > 1)
+        blnDrawSeparatorBottom = (lngTradeIndex < lngLastTrade)
+
+        strContent = strContent & BuildTransactionGridStrokeContent( _
+            arrTopX, _
+            arrBottomX, _
+            dblTopRowTopY, _
+            dblTopRowY, _
+            dblBottomRowY, _
+            dblSeparatorY, _
+            blnDrawTradeTop, _
+            blnDrawSeparatorBottom)
     Next lngTradeIndex
 
     dblTableBottomY = dblSeparatorY
@@ -725,7 +749,7 @@ Private Function BuildSinglePageContent( _
 
     If blnLastPage Then
         strContent = strContent & BuildAbsoluteTextCommand( _
-            "/F0", _
+            "/F2", _
             FOOTER_FONT_SIZE, _
             FOOTER_X, _
             dblTableBottomY - FOOTER_BASELINE_GAP, _
@@ -769,7 +793,7 @@ End Function
 ' Creation date: 2026-08-05
 ' Parameters:    wksSource As Excel.Worksheet, lngSourceRow As Long, arrSourceColumns As Variant, arrX As Variant, arrWidths As Variant, dblRowY As Double, dblBaselineY As Double, blnHeader As Boolean, varFixedTextX As Variant
 ' Returns:       String
-' Description:   Draws one complete 12-column or 13-column row.
+' Description:   Builds cell backgrounds and text for one 12-column or 13-column row.
 '-------------------------------------------------------------------------------
 Private Function BuildGridRowContent( _
     ByVal wksSource As Excel.Worksheet, _
@@ -858,7 +882,7 @@ End Function
 ' Creation date: 2026-08-05
 ' Parameters:    rngSource As Excel.Range, dblX As Double, dblY As Double, dblWidth As Double, dblHeight As Double, dblBaselineY As Double, blnHeader As Boolean, dblFixedTextX As Double
 ' Returns:       String
-' Description:   Draws one explicit PDF rectangle and the worksheet text inside it.
+' Description:   Builds a cell background and worksheet text without duplicating shared borders.
 '-------------------------------------------------------------------------------
 Private Function BuildCellContent( _
     ByVal rngSource As Excel.Range, _
@@ -900,10 +924,6 @@ Private Function BuildCellContent( _
         dblFontSize = GetDataFontSize(strText)
         lngAlignment = ResolveCellAlignment(rngSource, strText)
     End If
-
-    strContent = strContent & _
-        PdfNumber(dblX) & " " & PdfNumber(dblY) & " " & _
-        PdfNumber(dblWidth) & " " & PdfNumber(dblHeight) & " re S" & vbCrLf
 
     If Len(strText) = 0 Then
         BuildCellContent = strContent
@@ -959,6 +979,269 @@ ErrorHandler:
         dblHeight, _
         blnHeader, _
         dblFixedTextX
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-06
+' Parameters:    arrTopX As Variant, arrBottomX As Variant, dblHeaderBottomY As Double, dblHeaderTopY As Double, dblTableTopY As Double
+' Returns:       String
+' Description:   Draws the two-row header grid once using Oracle-style m/l strokes.
+'-------------------------------------------------------------------------------
+Private Function BuildHeaderGridStrokeContent( _
+    ByVal arrTopX As Variant, _
+    ByVal arrBottomX As Variant, _
+    ByVal dblHeaderBottomY As Double, _
+    ByVal dblHeaderTopY As Double, _
+    ByVal dblTableTopY As Double) As String
+
+    Const METHOD_NAME As String = "BuildHeaderGridStrokeContent"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strContent As String
+
+    On Error GoTo ErrorHandler
+
+    strContent = BuildLineCommand( _
+        TABLE_LEFT_X, _
+        dblHeaderTopY, _
+        TABLE_RIGHT_X, _
+        dblHeaderTopY)
+
+    strContent = strContent & BuildLineCommand( _
+        TABLE_LEFT_X, _
+        dblHeaderBottomY, _
+        TABLE_RIGHT_X, _
+        dblHeaderBottomY)
+
+    strContent = strContent & BuildInteriorVerticalLines( _
+        arrTopX, _
+        dblHeaderTopY, _
+        dblTableTopY)
+
+    strContent = strContent & BuildInteriorVerticalLines( _
+        arrBottomX, _
+        dblHeaderBottomY, _
+        dblHeaderTopY)
+
+    BuildHeaderGridStrokeContent = strContent
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildHeaderGridStrokeContent = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "headerBottomY;headerTopY;tableTopY", _
+        dblHeaderBottomY, _
+        dblHeaderTopY, _
+        dblTableTopY
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-06
+' Parameters:    arrTopX As Variant, arrBottomX As Variant, dblTopRowTopY As Double, dblTopRowBottomY As Double, dblBottomRowBottomY As Double, dblSeparatorBottomY As Double, blnDrawTopBoundary As Boolean, blnDrawSeparatorBottom As Boolean
+' Returns:       String
+' Description:   Draws one two-row transaction grid with every shared border stroked once.
+'-------------------------------------------------------------------------------
+Private Function BuildTransactionGridStrokeContent( _
+    ByVal arrTopX As Variant, _
+    ByVal arrBottomX As Variant, _
+    ByVal dblTopRowTopY As Double, _
+    ByVal dblTopRowBottomY As Double, _
+    ByVal dblBottomRowBottomY As Double, _
+    ByVal dblSeparatorBottomY As Double, _
+    ByVal blnDrawTopBoundary As Boolean, _
+    ByVal blnDrawSeparatorBottom As Boolean) As String
+
+    Const METHOD_NAME As String = "BuildTransactionGridStrokeContent"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strContent As String
+
+    On Error GoTo ErrorHandler
+
+    If blnDrawTopBoundary Then
+        strContent = strContent & BuildLineCommand( _
+            TABLE_LEFT_X, _
+            dblTopRowTopY, _
+            TABLE_RIGHT_X, _
+            dblTopRowTopY)
+    End If
+
+    strContent = strContent & BuildLineCommand( _
+        TABLE_LEFT_X, _
+        dblTopRowBottomY, _
+        TABLE_RIGHT_X, _
+        dblTopRowBottomY)
+
+    strContent = strContent & BuildLineCommand( _
+        TABLE_LEFT_X, _
+        dblBottomRowBottomY, _
+        TABLE_RIGHT_X, _
+        dblBottomRowBottomY)
+
+    If blnDrawSeparatorBottom Then
+        strContent = strContent & BuildLineCommand( _
+            TABLE_LEFT_X, _
+            dblSeparatorBottomY, _
+            TABLE_RIGHT_X, _
+            dblSeparatorBottomY)
+    End If
+
+    strContent = strContent & BuildInteriorVerticalLines( _
+        arrTopX, _
+        dblTopRowBottomY, _
+        dblTopRowTopY)
+
+    strContent = strContent & BuildInteriorVerticalLines( _
+        arrBottomX, _
+        dblBottomRowBottomY, _
+        dblTopRowBottomY)
+
+    BuildTransactionGridStrokeContent = strContent
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildTransactionGridStrokeContent = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "topRowTopY;topRowBottomY;bottomRowBottomY;separatorBottomY", _
+        dblTopRowTopY, _
+        dblTopRowBottomY, _
+        dblBottomRowBottomY, _
+        dblSeparatorBottomY
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-06
+' Parameters:    arrX As Variant, dblBottomY As Double, dblTopY As Double
+' Returns:       String
+' Description:   Draws each internal vertical grid boundary once as an m/l stroke.
+'-------------------------------------------------------------------------------
+Private Function BuildInteriorVerticalLines( _
+    ByVal arrX As Variant, _
+    ByVal dblBottomY As Double, _
+    ByVal dblTopY As Double) As String
+
+    Const METHOD_NAME As String = "BuildInteriorVerticalLines"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim strContent As String
+
+    On Error GoTo ErrorHandler
+
+    If Not IsArray(arrX) Then
+        Err.Raise 1024, METHOD_NAME, "The X-coordinate configuration is not an array."
+    End If
+
+    If dblTopY <= dblBottomY Then
+        Err.Raise 1024, METHOD_NAME, "The vertical line span is not positive."
+    End If
+
+    For lngIndex = LBound(arrX) + 1 To UBound(arrX)
+        strContent = strContent & BuildLineCommand( _
+            CDbl(arrX(lngIndex)), _
+            dblBottomY, _
+            CDbl(arrX(lngIndex)), _
+            dblTopY)
+    Next lngIndex
+
+    BuildInteriorVerticalLines = strContent
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildInteriorVerticalLines = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "bottomY;topY", _
+        dblBottomY, _
+        dblTopY
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-06
+' Parameters:    dblX1 As Double, dblY1 As Double, dblX2 As Double, dblY2 As Double
+' Returns:       String
+' Description:   Builds one Oracle-style PDF line command using m, l, and S.
+'-------------------------------------------------------------------------------
+Private Function BuildLineCommand( _
+    ByVal dblX1 As Double, _
+    ByVal dblY1 As Double, _
+    ByVal dblX2 As Double, _
+    ByVal dblY2 As Double) As String
+
+    Const METHOD_NAME As String = "BuildLineCommand"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    BuildLineCommand = _
+        PdfNumber(dblX1) & " " & PdfNumber(dblY1) & " m " & _
+        PdfNumber(dblX2) & " " & PdfNumber(dblY2) & " l S" & vbCrLf
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildLineCommand = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "x1;y1;x2;y2", _
+        dblX1, _
+        dblY1, _
+        dblX2, _
+        dblY2
 
     errorManager.save
     Resume ExitFunction
@@ -1387,27 +1670,24 @@ Private Function GetTransactionTopBaseline( _
     ByVal lngSlot As Long) As Double
 
     Const METHOD_NAME As String = "GetTransactionTopBaseline"
-    Dim arrOffsets As Variant
-    Dim dblFirstBaseline As Double
+    Dim arrValues As Variant
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
 
     On Error GoTo ErrorHandler
 
-    arrOffsets = Array(0#, 40.52, 81#, 121.52, 162#, 202.52, 243#, 283.52, 324#, 364.52, 405#)
-
     If lngSlot < 1 Or lngSlot > MAX_TRANSACTIONS_PER_PAGE Then
         Err.Raise 1001, METHOD_NAME, "The transaction slot must be between 1 and 11."
     End If
 
     If blnFirstPage Then
-        dblFirstBaseline = FIRST_PAGE_FIRST_TOP_BASELINE_Y
+        arrValues = Array(504#, 463.48, 423#, 382.48, 342#, 301.48, 261#, 220.48, 180#, 139.48, 99#)
     Else
-        dblFirstBaseline = CONTINUATION_PAGE_FIRST_TOP_BASELINE_Y
+        arrValues = Array(558#, 517.48, 477#, 436.48, 396#, 355.48, 315#, 274.48, 234#, 193.48, 153#)
     End If
 
-    GetTransactionTopBaseline = dblFirstBaseline - CDbl(arrOffsets(lngSlot - 1))
+    GetTransactionTopBaseline = CDbl(arrValues(lngSlot - 1))
 
 ExitFunction:
     Exit Function
@@ -1426,6 +1706,182 @@ ErrorHandler:
         blnFirstPage, _
         lngSlot
 
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-06
+' Parameters:    blnFirstPage As Boolean, lngSlot As Long
+' Returns:       Double
+' Description:   Returns the exact Oracle top edge of one transaction upper row.
+'-------------------------------------------------------------------------------
+Private Function GetTransactionTopRowTopY( _
+    ByVal blnFirstPage As Boolean, _
+    ByVal lngSlot As Long) As Double
+
+    Const METHOD_NAME As String = "GetTransactionTopRowTopY"
+    Dim arrValues As Variant
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If lngSlot < 1 Or lngSlot > MAX_TRANSACTIONS_PER_PAGE Then
+        Err.Raise 1001, METHOD_NAME, "The transaction slot must be between 1 and 11."
+    End If
+
+    If blnFirstPage Then
+        arrValues = Array(517.48, 477#, 436.48, 396#, 355.48, 315#, 274.48, 234#, 193.48, 153#, 112.48)
+    Else
+        arrValues = Array(571.48, 531#, 490.48, 450#, 409.48, 369#, 328.48, 288#, 247.48, 207#, 166.48)
+    End If
+
+    GetTransactionTopRowTopY = CDbl(arrValues(lngSlot - 1))
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetTransactionTopRowTopY = 0#
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-06
+' Parameters:    blnFirstPage As Boolean, lngSlot As Long
+' Returns:       Double
+' Description:   Returns the exact Oracle bottom edge of one transaction upper row.
+'-------------------------------------------------------------------------------
+Private Function GetTransactionTopRowBottomY( _
+    ByVal blnFirstPage As Boolean, _
+    ByVal lngSlot As Long) As Double
+
+    Const METHOD_NAME As String = "GetTransactionTopRowBottomY"
+    Dim arrValues As Variant
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If lngSlot < 1 Or lngSlot > MAX_TRANSACTIONS_PER_PAGE Then
+        Err.Raise 1001, METHOD_NAME, "The transaction slot must be between 1 and 11."
+    End If
+
+    If blnFirstPage Then
+        arrValues = Array(499.48, 459#, 418.48, 378#, 337.48, 297#, 256.48, 216#, 175.48, 135#, 94.48)
+    Else
+        arrValues = Array(553.48, 513#, 472.48, 432#, 391.48, 351#, 310.48, 270#, 229.48, 189#, 148.48)
+    End If
+
+    GetTransactionTopRowBottomY = CDbl(arrValues(lngSlot - 1))
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetTransactionTopRowBottomY = 0#
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-06
+' Parameters:    blnFirstPage As Boolean, lngSlot As Long
+' Returns:       Double
+' Description:   Returns the exact Oracle bottom edge of one transaction lower row.
+'-------------------------------------------------------------------------------
+Private Function GetTransactionBottomRowBottomY( _
+    ByVal blnFirstPage As Boolean, _
+    ByVal lngSlot As Long) As Double
+
+    Const METHOD_NAME As String = "GetTransactionBottomRowBottomY"
+    Dim arrValues As Variant
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If lngSlot < 1 Or lngSlot > MAX_TRANSACTIONS_PER_PAGE Then
+        Err.Raise 1001, METHOD_NAME, "The transaction slot must be between 1 and 11."
+    End If
+
+    If blnFirstPage Then
+        arrValues = Array(481.48, 441#, 400.48, 360#, 319.47, 279#, 238.48, 198#, 157.47, 117#, 76.48)
+    Else
+        arrValues = Array(535.48, 495#, 454.48, 414#, 373.47, 333#, 292.48, 252#, 211.47, 171#, 130.48)
+    End If
+
+    GetTransactionBottomRowBottomY = CDbl(arrValues(lngSlot - 1))
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetTransactionBottomRowBottomY = 0#
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-06
+' Parameters:    blnFirstPage As Boolean, lngSlot As Long
+' Returns:       Double
+' Description:   Returns the exact Oracle bottom edge of the separator after one transaction.
+'-------------------------------------------------------------------------------
+Private Function GetTransactionSeparatorBottomY( _
+    ByVal blnFirstPage As Boolean, _
+    ByVal lngSlot As Long) As Double
+
+    Const METHOD_NAME As String = "GetTransactionSeparatorBottomY"
+    Dim arrValues As Variant
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If lngSlot < 1 Or lngSlot > MAX_TRANSACTIONS_PER_PAGE Then
+        Err.Raise 1001, METHOD_NAME, "The transaction slot must be between 1 and 11."
+    End If
+
+    If blnFirstPage Then
+        arrValues = Array(476.96, 436.48, 395.96, 355.48, 314.95, 274.48, 233.96, 193.48, 152.96, 112.48, 71.96)
+    Else
+        arrValues = Array(530.96, 490.48, 449.96, 409.48, 368.95, 328.48, 287.96, 247.48, 206.96, 166.48, 125.96)
+    End If
+
+    GetTransactionSeparatorBottomY = CDbl(arrValues(lngSlot - 1))
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetTransactionSeparatorBottomY = 0#
+
+    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
     errorManager.save
     Resume ExitFunction
 End Function
@@ -2116,9 +2572,9 @@ Private Function BuildPdfDocument( _
         Err.Raise 1001, METHOD_NAME, "At least one PDF page is required."
     End If
 
-    lngImageObject = 5
-    lngFirstPageObject = 6
-    lngObjectCount = 5 + (colPageContents.Count * 2)
+    lngImageObject = 6
+    lngFirstPageObject = 7
+    lngObjectCount = 6 + (colPageContents.Count * 2)
 
     ReDim arrObjects(1 To lngObjectCount)
     ReDim arrOffsets(1 To lngObjectCount)
@@ -2126,6 +2582,7 @@ Private Function BuildPdfDocument( _
     arrObjects(1) = "<< /Type /Catalog /Pages 2 0 R >>"
     arrObjects(3) = "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold /Encoding /WinAnsiEncoding >>"
     arrObjects(4) = "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman /Encoding /WinAnsiEncoding >>"
+    arrObjects(5) = "<< /Type /Font /Subtype /Type1 /BaseFont /Arial-Bold /Encoding /WinAnsiEncoding >>"
 
     Select Case lngLogoComponents
         Case 1
@@ -2155,7 +2612,7 @@ Private Function BuildPdfDocument( _
         End If
         strKids = strKids & CStr(lngPageObject) & " 0 R"
 
-        strPageResources = "<< /Font << /F0 3 0 R /F1 4 0 R >>"
+        strPageResources = "<< /Font << /F0 3 0 R /F1 4 0 R /F2 5 0 R >>"
         If lngPage = 1 Then
             strPageResources = strPageResources & " /XObject << /Im0 " & CStr(lngImageObject) & " 0 R >>"
         End If
@@ -2314,3 +2771,4 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
+
