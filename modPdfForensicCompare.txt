@@ -7,6 +7,18 @@ Private Const COORD_TOLERANCE As Double = 0.1
 Private Const TARGET_TOLERANCE As Double = 0.25
 Private Const MAX_DETAIL_LINES As Long = 500
 Private Const ERR_BASE As Long = vbObjectError + 4200
+Private Const BREAKS_POSITION_TOLERANCE As Double = 0.15
+Private Const BREAKS_GEOMETRY_TEXT_X_TOLERANCE As Double = 25#
+Private Const BREAKS_GEOMETRY_TEXT_Y_TOLERANCE As Double = 2#
+Private Const BREAKS_LINE_MATCH_TOLERANCE As Double = 0.75
+Private Const BREAKS_LINE_NEAR_TOLERANCE As Double = 6#
+Private Const BREAKS_FULL_WIDTH_MIN As Double = 1200#
+Private Const BREAKS_BASELINE_TOLERANCE As Double = 1#
+Private Const BREAKS_MAX_DETAILS_PER_PAGE As Long = 120
+Private Const BREAKS_IGNORE_INPUT_CONTENT_DIFFERENCES As Boolean = True
+Private Const ORACLE_MAX_TRADES_PER_PAGE As Long = 11
+Private Const ORACLE_MIN_DATA_ROW_STEP As Double = 16#
+Private Const ORACLE_MAX_DATA_ROW_STEP As Double = 20#
 
 Private Type tPdfLine
     PageNo As Long
@@ -175,6 +187,7 @@ Public Sub RunPdfComparisonBrowse()
     Dim errDescription As String
     Dim errNumber As Long
     Dim strAuditPath As String
+    Dim strBreaksPath As String
     Dim strDetailPath As String
     Dim strNewPdfPath As String
     Dim strOldPdfPath As String
@@ -193,12 +206,21 @@ Public Sub RunPdfComparisonBrowse()
 
     strAuditPath = BuildOracleAuditOutputPath(strOldPdfPath, strNewPdfPath)
     strDetailPath = BuildComparisonOutputPath(strOldPdfPath, strNewPdfPath)
-    If Not PdfOracleCloneAudit(strOldPdfPath, strNewPdfPath, strAuditPath, strDetailPath) Then
+    strBreaksPath = BuildBreaksOnlyOutputPath(strOldPdfPath, strNewPdfPath)
+
+    If Not PdfOracleCloneAudit( _
+        strOldPdfPath, _
+        strNewPdfPath, _
+        strAuditPath, _
+        strDetailPath, _
+        strBreaksPath) Then
+
         Err.Raise ERR_BASE + 2, METHOD_NAME, "The Oracle clone PDF audit could not be completed."
     End If
 
     MsgBox _
         "Oracle clone audit completed." & vbCrLf & vbCrLf & _
+        "Concise remaining breaks:" & vbCrLf & strBreaksPath & vbCrLf & vbCrLf & _
         "Main audit:" & vbCrLf & strAuditPath & vbCrLf & vbCrLf & _
         "Detailed vector comparison:" & vbCrLf & strDetailPath, _
         vbInformation, _
@@ -216,11 +238,12 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "oldPdfPath;newPdfPath;auditPath;detailPath", _
+        "oldPdfPath;newPdfPath;auditPath;detailPath;breaksPath", _
         strOldPdfPath, _
         strNewPdfPath, _
         strAuditPath, _
-        strDetailPath
+        strDetailPath, _
+        strBreaksPath
 
     errorManager.save
     errorManager.display "The Oracle PDF audit failed."
@@ -4490,7 +4513,8 @@ Public Function PdfOracleCloneAudit( _
     ByVal oldPdfPath As String, _
     ByVal newPdfPath As String, _
     ByVal auditOutputPath As String, _
-    ByVal detailOutputPath As String) As Boolean
+    ByVal detailOutputPath As String, _
+    Optional ByVal breaksOutputPath As String = vbNullString) As Boolean
 
     Const METHOD_NAME As String = "PdfOracleCloneAudit"
     Dim errorManager As New ErrorManager
@@ -4517,6 +4541,10 @@ Public Function PdfOracleCloneAudit( _
         Err.Raise 1020, METHOD_NAME, "The detail output path is required."
     End If
 
+    If Len(Trim$(breaksOutputPath)) = 0 Then
+        breaksOutputPath = BuildBreaksOnlyOutputPath(oldPdfPath, newPdfPath)
+    End If
+
     Call LoadPdfDocument(oldPdfPath, oldDoc)
     If oldDoc.PageCount = 0 Then
         Err.Raise 1014, METHOD_NAME, "The old PDF could not be parsed into page content."
@@ -4529,6 +4557,7 @@ Public Function PdfOracleCloneAudit( _
 
     Call WriteOracleCloneAuditReport(oldDoc, newDoc, auditOutputPath)
     Call WriteComparisonReport(oldDoc, newDoc, detailOutputPath)
+    Call WriteBreaksOnlyReport(oldDoc, newDoc, breaksOutputPath)
     PdfOracleCloneAudit = True
 
 ExitFunction:
@@ -4545,11 +4574,12 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "oldPdfPath;newPdfPath;auditOutputPath;detailOutputPath", _
+        "oldPdfPath;newPdfPath;auditOutputPath;detailOutputPath;breaksOutputPath", _
         oldPdfPath, _
         newPdfPath, _
         auditOutputPath, _
-        detailOutputPath
+        detailOutputPath, _
+        breaksOutputPath
 
     errorManager.save
     Resume ExitFunction
@@ -4607,6 +4637,59 @@ ErrorHandler:
     Resume ExitFunction
 End Function
 
+ '-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldPdfPath As String, newPdfPath As String
+' Returns:       String
+' Description:   Builds the path for the concise actionable Oracle compatibility report.
+'-------------------------------------------------------------------------------
+Private Function BuildBreaksOnlyOutputPath( _
+    ByVal oldPdfPath As String, _
+    ByVal newPdfPath As String) As String
+
+    Const METHOD_NAME As String = "BuildBreaksOnlyOutputPath"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngSlashPosition As Long
+    Dim strFolder As String
+    Dim strNewBase As String
+    Dim strOldBase As String
+
+    On Error GoTo ErrorHandler
+
+    lngSlashPosition = InStrRev(newPdfPath, "\")
+    If lngSlashPosition > 0 Then
+        strFolder = Left$(newPdfPath, lngSlashPosition)
+    End If
+
+    strOldBase = FileBaseName(oldPdfPath)
+    strNewBase = FileBaseName(newPdfPath)
+    BuildBreaksOnlyOutputPath = _
+        strFolder & strOldBase & "_VS_" & strNewBase & "_BREAKS_ONLY.txt"
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildBreaksOnlyOutputPath = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "oldPdfPath;newPdfPath", _
+        oldPdfPath, _
+        newPdfPath
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-07
@@ -4641,7 +4724,8 @@ Private Sub WriteOracleCloneAuditReport( _
     Call EmitLine(lngFileNumber, "OLD|" & oldDoc.PdfPath)
     Call EmitLine(lngFileNumber, "NEW|" & newDoc.PdfPath)
     Call EmitLine(lngFileNumber, "PURPOSE|Normalize ordering and object-number noise, then report parser-sensitive geometry, text, font, filter, and operator differences.")
-    Call EmitLine(lngFileNumber, "IMPORTANT|Use PDFs containing the same transactions and the same logical report content.")
+    Call EmitLine(lngFileNumber, "IMPORTANT|Use matching PDFs when possible. This version can ignore business-value text differences while still auditing text anchors, fonts, geometry, and reading-order topology.")
+    Call EmitLine(lngFileNumber, "INPUT_CONTENT_POLICY|ignoreBusinessValueDifferences=" & BoolText(BREAKS_IGNORE_INPUT_CONTENT_DIFFERENCES))
     Call WriteDocumentAudit(oldDoc, newDoc, lngFileNumber, lngCriticalTotal, lngStructuralTotal, lngInfoTotal)
 
     lngCommonPages = oldDoc.PageCount
@@ -4863,7 +4947,12 @@ Private Sub WriteOraclePageAudit( _
     Call DictionaryDifferenceCounts(dictOld, dictNew, lngOldOnly, lngNewOnly, lngChanged)
     Call EmitLine(fileNumber, "TEXT_CONTENT_AUDIT|oldOnly=" & CStr(lngOldOnly) & "|newOnly=" & CStr(lngNewOnly) & "|multiplicity=" & CStr(lngChanged) & "|match=" & BoolText(lngOldOnly = 0 And lngNewOnly = 0 And lngChanged = 0))
     If lngOldOnly > 0 Or lngNewOnly > 0 Or lngChanged > 0 Then
-        structuralCount = structuralCount + 1
+        If BREAKS_IGNORE_INPUT_CONTENT_DIFFERENCES Then
+            infoCount = infoCount + 1
+            Call EmitLine(fileNumber, "TEXT_CONTENT_CLASSIFICATION|INFORMATIONAL_EXPECTED_INPUT_DIFFERENCE")
+        Else
+            structuralCount = structuralCount + 1
+        End If
         Call WriteDictionaryDifferenceSamples("TEXT_CONTENT", dictOld, dictNew, fileNumber, 20)
     End If
     Set dictOld = Nothing
@@ -4884,7 +4973,12 @@ Private Sub WriteOraclePageAudit( _
     strNewTextSequence = BuildNormalizedTextSequence(newDoc, pageNo)
     Call EmitLine(fileNumber, "TEXT_READING_ORDER|match=" & BoolText(strOldTextSequence = strNewTextSequence))
     If strOldTextSequence <> strNewTextSequence Then
-        criticalCount = criticalCount + 1
+        If BREAKS_IGNORE_INPUT_CONTENT_DIFFERENCES Then
+            infoCount = infoCount + 1
+            Call EmitLine(fileNumber, "TEXT_READING_ORDER_CLASSIFICATION|INFORMATIONAL_WHEN_INPUT_VALUES_DIFFER")
+        Else
+            criticalCount = criticalCount + 1
+        End If
         Call EmitLine(fileNumber, "TEXT_READING_ORDER_OLD|" & Left$(strOldTextSequence, 1500))
         Call EmitLine(fileNumber, "TEXT_READING_ORDER_NEW|" & Left$(strNewTextSequence, 1500))
     End If
@@ -5179,7 +5273,14 @@ Private Function BuildTextAuditDictionary( _
     For lngIndex = 0 To pdfDoc.TextCount - 1
         If pdfDoc.Texts(lngIndex).PageNo = pageNo Then
             If includePosition Then
-                strKey = "x=" & NumTxt(pdfDoc.Texts(lngIndex).X) & "|y=" & NumTxt(pdfDoc.Texts(lngIndex).Y) & "|font=" & pdfDoc.Texts(lngIndex).FontName & "|size=" & NumTxt(pdfDoc.Texts(lngIndex).FontSize) & "|text=" & SanitizeReportText(pdfDoc.Texts(lngIndex).TextValue)
+                strKey = "x=" & NumTxt(pdfDoc.Texts(lngIndex).X) & _
+                         "|y=" & NumTxt(pdfDoc.Texts(lngIndex).Y) & _
+                         "|font=" & pdfDoc.Texts(lngIndex).FontName & _
+                         "|size=" & NumTxt(pdfDoc.Texts(lngIndex).FontSize)
+
+                If Not BREAKS_IGNORE_INPUT_CONTENT_DIFFERENCES Then
+                    strKey = strKey & "|text=" & SanitizeReportText(pdfDoc.Texts(lngIndex).TextValue)
+                End If
             Else
                 strKey = "text=" & SanitizeReportText(pdfDoc.Texts(lngIndex).TextValue)
             End If
@@ -5369,7 +5470,14 @@ Private Function BuildNormalizedTextSequence( _
             dblBaseline = pdfDoc.Texts(arrIndices(lngIndex)).Y
             strResult = strResult & "^y=" & NumTxt(dblBaseline) & ":"
         End If
-        strResult = strResult & SanitizeReportText(pdfDoc.Texts(arrIndices(lngIndex)).TextValue)
+        If BREAKS_IGNORE_INPUT_CONTENT_DIFFERENCES Then
+            strResult = strResult & _
+                "[x=" & NumTxt(pdfDoc.Texts(arrIndices(lngIndex)).X) & _
+                ",f=" & pdfDoc.Texts(arrIndices(lngIndex)).FontName & _
+                ",s=" & NumTxt(pdfDoc.Texts(arrIndices(lngIndex)).FontSize) & "]"
+        Else
+            strResult = strResult & SanitizeReportText(pdfDoc.Texts(arrIndices(lngIndex)).TextValue)
+        End If
     Next lngIndex
 
     BuildNormalizedTextSequence = strResult
@@ -6387,6 +6495,2236 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
+
+
+'===============================================================================
+' CONCISE ACTIONABLE ORACLE COMPATIBILITY REPORT
+'===============================================================================
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDoc As tPdfDocument, newDoc As tPdfDocument, outputPath As String
+' Returns:       ---
+' Description:   Writes only remaining parser-sensitive differences with OLD, NEW, DELTA, and FIX hints.
+'-------------------------------------------------------------------------------
+Private Sub WriteBreaksOnlyReport( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal outputPath As String)
+
+    Const METHOD_NAME As String = "WriteBreaksOnlyReport"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim dictActions As Object
+    Dim lngCommonPages As Long
+    Dim lngCritical As Long
+    Dim lngFileNumber As Long
+    Dim lngInfo As Long
+    Dim lngPage As Long
+    Dim lngStructural As Long
+    Dim strStatus As String
+
+    On Error GoTo ErrorHandler
+
+    Set dictActions = CreateObject("Scripting.Dictionary")
+    lngFileNumber = OpenNew(outputPath)
+
+    Call EmitLine(lngFileNumber, "ORACLE_COMPATIBILITY_BREAKS_ONLY_V1")
+    Call EmitLine(lngFileNumber, "OLD|" & oldDoc.PdfPath)
+    Call EmitLine(lngFileNumber, "NEW|" & newDoc.PdfPath)
+    Call EmitLine(lngFileNumber, _
+        "POLICY|Geometry, text position, fonts, vector style, page structure, pagination, and target separators are actionable.")
+    Call EmitLine(lngFileNumber, _
+        "POLICY|Different business values caused by different input files are INFORMATIONAL and do not create a parser-critical break.")
+    Call EmitLine(lngFileNumber, _
+        "POLICY|Whitespace-only text changes are reported separately. WKN or security-description value differences may therefore remain informational.")
+    Call EmitLine(lngFileNumber, _
+        "TOLERANCE|textPosition=" & NumTxt(BREAKS_POSITION_TOLERANCE) & _
+        "|lineMatch=" & NumTxt(BREAKS_LINE_MATCH_TOLERANCE) & _
+        "|baselineCluster=" & NumTxt(BREAKS_BASELINE_TOLERANCE))
+
+    If oldDoc.PdfVersion <> newDoc.PdfVersion Then
+        lngCritical = lngCritical + 1
+        Call EmitLine(lngFileNumber, _
+            "DOCUMENT_BREAK|type=PDF_VERSION|OLD=" & oldDoc.PdfVersion & _
+            "|NEW=" & newDoc.PdfVersion & _
+            "|FIX=Generate NEW with the OLD PDF version.")
+        Call IncrementDictionaryValue(dictActions, _
+            "PDF_VERSION|old=" & oldDoc.PdfVersion & "|new=" & newDoc.PdfVersion)
+    End If
+
+    If oldDoc.PageCount <> newDoc.PageCount Then
+        lngCritical = lngCritical + 1
+        Call EmitLine(lngFileNumber, _
+            "DOCUMENT_BREAK|type=PAGE_COUNT|OLD=" & CStr(oldDoc.PageCount) & _
+            "|NEW=" & CStr(newDoc.PageCount) & _
+            "|FIX=Match Oracle pagination and trades-per-page.")
+        Call IncrementDictionaryValue(dictActions, _
+            "PAGE_COUNT|old=" & CStr(oldDoc.PageCount) & "|new=" & CStr(newDoc.PageCount))
+    End If
+
+    If oldDoc.XrefKind <> newDoc.XrefKind Then
+        lngInfo = lngInfo + 1
+        Call EmitLine(lngFileNumber, _
+            "DOCUMENT_INFO|type=XREF|OLD=" & oldDoc.XrefKind & _
+            "|NEW=" & newDoc.XrefKind)
+    End If
+
+    lngCommonPages = oldDoc.PageCount
+    If newDoc.PageCount < lngCommonPages Then
+        lngCommonPages = newDoc.PageCount
+    End If
+
+    For lngPage = 1 To lngCommonPages
+        Call WriteBreaksPageReport( _
+            oldDoc, _
+            newDoc, _
+            lngPage, _
+            lngFileNumber, _
+            dictActions, _
+            lngCritical, _
+            lngStructural, _
+            lngInfo)
+    Next lngPage
+
+    If lngCritical = 0 And lngStructural = 0 Then
+        strStatus = "READY_FOR_CLIENT_PARSER_TEST"
+    ElseIf lngCritical = 0 Then
+        strStatus = "NO_CRITICAL_BREAKS_STRUCTURAL_DIFFERENCES_REMAIN"
+    Else
+        strStatus = "ACTION_REQUIRED"
+    End If
+
+    Call EmitLine(lngFileNumber, vbNullString)
+    Call EmitLine(lngFileNumber, "============================================================")
+    Call EmitLine(lngFileNumber, "ACTION_SUMMARY")
+    Call EmitLine(lngFileNumber, "============================================================")
+    Call WriteBreaksActionSummary(dictActions, lngFileNumber)
+
+    Call EmitLine(lngFileNumber, vbNullString)
+    Call EmitLine(lngFileNumber, _
+        "BREAKS_SUMMARY|status=" & strStatus & _
+        "|critical=" & CStr(lngCritical) & _
+        "|structural=" & CStr(lngStructural) & _
+        "|informational=" & CStr(lngInfo) & _
+        "|pagesCompared=" & CStr(lngCommonPages))
+    Call EmitLine(lngFileNumber, _
+        "NEXT_ACTION|Apply CRITICAL fixes first, rerun the audit, then reduce STRUCTURAL differences. Ignore input-value differences unless the client parser proves they are relevant.")
+    Call EmitLine(lngFileNumber, _
+        "LIMITATION|The report compares PDF structure and extracted operators; it cannot execute the proprietary client parser.")
+
+ExitSub:
+    If lngFileNumber > 0 Then
+        Close #lngFileNumber
+    End If
+    Set dictActions = Nothing
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "outputPath", _
+        outputPath
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDoc, newDoc, pageNo, fileNumber, actionDictionary, counters
+' Returns:       ---
+' Description:   Writes one concise page section including pagination, fingerprint, text, vector, and target checks.
+'-------------------------------------------------------------------------------
+Private Sub WriteBreaksPageReport( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal fileNumber As Long, _
+    ByVal actionDictionary As Object, _
+    ByRef criticalCount As Long, _
+    ByRef structuralCount As Long, _
+    ByRef infoCount As Long)
+
+    Const METHOD_NAME As String = "WriteBreaksPageReport"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim blnNewFooter As Boolean
+    Dim blnOldFooter As Boolean
+    Dim dblNewBottomHeaderY As Double
+    Dim dblNewFooterX As Double
+    Dim dblNewFooterY As Double
+    Dim dblNewTopHeaderY As Double
+    Dim dblOldBottomHeaderY As Double
+    Dim dblOldFooterX As Double
+    Dim dblOldFooterY As Double
+    Dim dblOldTopHeaderY As Double
+    Dim lngChanged As Long
+    Dim lngNewOnly As Long
+    Dim lngNewTradeCount As Long
+    Dim lngNewUnpaired As Long
+    Dim lngOldOnly As Long
+    Dim lngOldTradeCount As Long
+    Dim lngOldUnpaired As Long
+    Dim lngPageCriticalBefore As Long
+    Dim lngPageStructuralBefore As Long
+    Dim strNewFooterFont As String
+    Dim strNewFooterText As String
+    Dim strOldFooterFont As String
+    Dim strOldFooterText As String
+    Dim strResult As String
+    Dim dictNew As Object
+    Dim dictOld As Object
+
+    On Error GoTo ErrorHandler
+
+    lngPageCriticalBefore = criticalCount
+    lngPageStructuralBefore = structuralCount
+
+    Call EmitLine(fileNumber, vbNullString)
+    Call EmitLine(fileNumber, "============================================================")
+    Call EmitLine(fileNumber, "PAGE|" & CStr(pageNo))
+    Call EmitLine(fileNumber, "============================================================")
+    Call EmitLine(fileNumber, "FINGERPRINT_OLD|" & BuildBreaksPageFingerprint(oldDoc, pageNo))
+    Call EmitLine(fileNumber, "FINGERPRINT_NEW|" & BuildBreaksPageFingerprint(newDoc, pageNo))
+
+    If NormalizePdfValue(oldDoc.Pages(pageNo).MediaBox) <> _
+       NormalizePdfValue(newDoc.Pages(pageNo).MediaBox) Then
+
+        criticalCount = criticalCount + 1
+        Call EmitLine(fileNumber, _
+            "PAGE_BREAK|type=MEDIABOX|OLD=" & NormalizePdfValue(oldDoc.Pages(pageNo).MediaBox) & _
+            "|NEW=" & NormalizePdfValue(newDoc.Pages(pageNo).MediaBox) & _
+            "|FIX=Use the OLD MediaBox.")
+        Call IncrementDictionaryValue(actionDictionary, "PAGE_MEDIABOX")
+    End If
+
+    If EffectiveCropBox(oldDoc.Pages(pageNo)) <> EffectiveCropBox(newDoc.Pages(pageNo)) Then
+        criticalCount = criticalCount + 1
+        Call EmitLine(fileNumber, _
+            "PAGE_BREAK|type=CROPBOX|OLD=" & EffectiveCropBox(oldDoc.Pages(pageNo)) & _
+            "|NEW=" & EffectiveCropBox(newDoc.Pages(pageNo)) & _
+            "|FIX=Use the OLD effective CropBox.")
+        Call IncrementDictionaryValue(actionDictionary, "PAGE_CROPBOX")
+    End If
+
+    If NormalizeRotateValue(oldDoc.Pages(pageNo).RotateValue) <> _
+       NormalizeRotateValue(newDoc.Pages(pageNo).RotateValue) Then
+
+        criticalCount = criticalCount + 1
+        Call EmitLine(fileNumber, _
+            "PAGE_BREAK|type=ROTATE|OLD=" & NormalizeRotateValue(oldDoc.Pages(pageNo).RotateValue) & _
+            "|NEW=" & NormalizeRotateValue(newDoc.Pages(pageNo).RotateValue) & _
+            "|FIX=Use the OLD page rotation.")
+        Call IncrementDictionaryValue(actionDictionary, "PAGE_ROTATE")
+    End If
+
+    dblOldTopHeaderY = FindBreaksTextBaseline(oldDoc, pageNo, "DEPOTNR")
+    dblNewTopHeaderY = FindBreaksTextBaseline(newDoc, pageNo, "DEPOTNR")
+    dblOldBottomHeaderY = FindBreaksTextBaseline(oldDoc, pageNo, "TRANSAKTIONSNR")
+    dblNewBottomHeaderY = FindBreaksTextBaseline(newDoc, pageNo, "TRANSAKTIONSNR")
+
+    lngOldTradeCount = CountBreaksTradePairs(oldDoc, pageNo, dblOldBottomHeaderY, lngOldUnpaired)
+    lngNewTradeCount = CountBreaksTradePairs(newDoc, pageNo, dblNewBottomHeaderY, lngNewUnpaired)
+
+    blnOldFooter = FindBreaksFooter( _
+        oldDoc, _
+        pageNo, _
+        strOldFooterText, _
+        dblOldFooterX, _
+        dblOldFooterY, _
+        strOldFooterFont)
+
+    blnNewFooter = FindBreaksFooter( _
+        newDoc, _
+        pageNo, _
+        strNewFooterText, _
+        dblNewFooterX, _
+        dblNewFooterY, _
+        strNewFooterFont)
+
+    Call EmitLine(fileNumber, _
+        "PAGE_LAYOUT|topHeaderYOld=" & NumTxt(dblOldTopHeaderY) & _
+        "|topHeaderYNew=" & NumTxt(dblNewTopHeaderY) & _
+        "|bottomHeaderYOld=" & NumTxt(dblOldBottomHeaderY) & _
+        "|bottomHeaderYNew=" & NumTxt(dblNewBottomHeaderY) & _
+        "|tradesOld=" & CStr(lngOldTradeCount) & _
+        "|tradesNew=" & CStr(lngNewTradeCount) & _
+        "|unpairedRowsOld=" & CStr(lngOldUnpaired) & _
+        "|unpairedRowsNew=" & CStr(lngNewUnpaired) & _
+        "|footerOld=" & BoolText(blnOldFooter) & _
+        "|footerNew=" & BoolText(blnNewFooter))
+
+    Call WriteBreaksPositionDelta( _
+        fileNumber, _
+        actionDictionary, _
+        criticalCount, _
+        pageNo, _
+        "HEADER_TOP_BASELINE", _
+        dblOldTopHeaderY, _
+        dblNewTopHeaderY)
+
+    Call WriteBreaksPositionDelta( _
+        fileNumber, _
+        actionDictionary, _
+        criticalCount, _
+        pageNo, _
+        "HEADER_BOTTOM_BASELINE", _
+        dblOldBottomHeaderY, _
+        dblNewBottomHeaderY)
+
+    If lngOldTradeCount <> lngNewTradeCount Then
+        criticalCount = criticalCount + 1
+        Call EmitLine(fileNumber, _
+            "PAGE_BREAK|type=TRADE_COUNT|OLD=" & CStr(lngOldTradeCount) & _
+            "|NEW=" & CStr(lngNewTradeCount) & _
+            "|FIX=Match Oracle pagination and two-row trade grouping.")
+        Call IncrementDictionaryValue(actionDictionary, _
+            "TRADE_COUNT|old=" & CStr(lngOldTradeCount) & "|new=" & CStr(lngNewTradeCount))
+    End If
+
+    If lngNewTradeCount > ORACLE_MAX_TRADES_PER_PAGE Then
+        criticalCount = criticalCount + 1
+        Call EmitLine(fileNumber, _
+            "PAGE_BREAK|type=MAX_TRADES|NEW=" & CStr(lngNewTradeCount) & _
+            "|EXPECTED_MAX=" & CStr(ORACLE_MAX_TRADES_PER_PAGE) & _
+            "|FIX=Paginate at the Oracle maximum.")
+        Call IncrementDictionaryValue(actionDictionary, "MAX_TRADES_PER_PAGE")
+    End If
+
+    If lngOldUnpaired <> lngNewUnpaired Or lngNewUnpaired > 0 Then
+        structuralCount = structuralCount + 1
+        Call EmitLine(fileNumber, _
+            "PAGE_BREAK|type=TRADE_ROW_PAIRING|OLD_UNPAIRED=" & CStr(lngOldUnpaired) & _
+            "|NEW_UNPAIRED=" & CStr(lngNewUnpaired) & _
+            "|FIX=Keep each transaction as one top row plus one bottom row.")
+        Call IncrementDictionaryValue(actionDictionary, "TRADE_ROW_PAIRING")
+    End If
+
+    If blnOldFooter <> blnNewFooter Then
+        criticalCount = criticalCount + 1
+        Call EmitLine(fileNumber, _
+            "PAGE_BREAK|type=FOOTER_PRESENCE|OLD=" & BoolText(blnOldFooter) & _
+            "|NEW=" & BoolText(blnNewFooter) & _
+            "|FIX=Match Oracle footer placement by page.")
+        Call IncrementDictionaryValue(actionDictionary, "FOOTER_PRESENCE")
+    ElseIf blnOldFooter And blnNewFooter Then
+        If Abs(dblOldFooterX - dblNewFooterX) > BREAKS_POSITION_TOLERANCE Or _
+           Abs(dblOldFooterY - dblNewFooterY) > BREAKS_POSITION_TOLERANCE Then
+
+            criticalCount = criticalCount + 1
+            Call EmitLine(fileNumber, _
+                "TEXT_POSITION|role=FOOTER|OLD=x=" & NumTxt(dblOldFooterX) & _
+                ",y=" & NumTxt(dblOldFooterY) & _
+                "|NEW=x=" & NumTxt(dblNewFooterX) & _
+                ",y=" & NumTxt(dblNewFooterY) & _
+                "|DELTA_NEW_MINUS_OLD=x=" & NumTxt(dblNewFooterX - dblOldFooterX) & _
+                ",y=" & NumTxt(dblNewFooterY - dblOldFooterY) & _
+                "|FIX=" & BreaksMoveFix(dblOldFooterX - dblNewFooterX, dblOldFooterY - dblNewFooterY))
+            Call IncrementDictionaryValue(actionDictionary, _
+                "FOOTER_SHIFT|shiftX=" & NumTxt(dblOldFooterX - dblNewFooterX) & _
+                "|shiftY=" & NumTxt(dblOldFooterY - dblNewFooterY))
+        End If
+
+        If strOldFooterFont <> strNewFooterFont Then
+            structuralCount = structuralCount + 1
+            Call EmitLine(fileNumber, _
+                "TEXT_FONT|role=FOOTER|OLD=" & strOldFooterFont & _
+                "|NEW=" & strNewFooterFont & _
+                "|FIX=Use the OLD footer font resource and size.")
+            Call IncrementDictionaryValue(actionDictionary, _
+                "FOOTER_FONT|old=" & strOldFooterFont & "|new=" & strNewFooterFont)
+        End If
+    End If
+
+    If oldDoc.Pages(pageNo).ResolvedFonts <> newDoc.Pages(pageNo).ResolvedFonts Then
+        structuralCount = structuralCount + 1
+        Call EmitLine(fileNumber, _
+            "PAGE_STREAM_BREAK|type=FONT_RESOURCES|OLD=" & oldDoc.Pages(pageNo).ResolvedFonts & _
+            "|NEW=" & newDoc.Pages(pageNo).ResolvedFonts & _
+            "|FIX=Reproduce the OLD font dictionaries/descriptors where possible.")
+        Call IncrementDictionaryValue(actionDictionary, "PAGE_FONT_RESOURCES")
+    End If
+
+    If oldDoc.Pages(pageNo).ContentFilters <> newDoc.Pages(pageNo).ContentFilters Then
+        structuralCount = structuralCount + 1
+        Call EmitLine(fileNumber, _
+            "PAGE_STREAM_BREAK|type=CONTENT_FILTERS|OLD=" & oldDoc.Pages(pageNo).ContentFilters & _
+            "|NEW=" & newDoc.Pages(pageNo).ContentFilters & _
+            "|FIX=Match the OLD page-stream filters.")
+        Call IncrementDictionaryValue(actionDictionary, "PAGE_CONTENT_FILTERS")
+    End If
+
+    Set dictOld = BuildOperatorProfileDictionary(oldDoc.Pages(pageNo).ContentText)
+    Set dictNew = BuildOperatorProfileDictionary(newDoc.Pages(pageNo).ContentText)
+    Call DictionaryDifferenceCounts(dictOld, dictNew, lngOldOnly, lngNewOnly, lngChanged)
+
+    If lngOldOnly > 0 Or lngNewOnly > 0 Or lngChanged > 0 Then
+        structuralCount = structuralCount + 1
+        Call EmitLine(fileNumber, _
+            "PAGE_STREAM_BREAK|type=OPERATOR_PROFILE|oldOnly=" & CStr(lngOldOnly) & _
+            "|newOnly=" & CStr(lngNewOnly) & _
+            "|countChanged=" & CStr(lngChanged) & _
+            "|FIX=Review only after geometry/text-position breaks are removed.")
+        Call IncrementDictionaryValue(actionDictionary, "OPERATOR_PROFILE")
+    End If
+    Set dictOld = Nothing
+    Set dictNew = Nothing
+
+    Call WriteBreaksTargetSeparator( _
+        oldDoc, _
+        newDoc, _
+        pageNo, _
+        TARGET_X_FIRST, _
+        fileNumber, _
+        actionDictionary, _
+        criticalCount)
+
+    Call WriteBreaksTargetSeparator( _
+        oldDoc, _
+        newDoc, _
+        pageNo, _
+        TARGET_X_SECOND, _
+        fileNumber, _
+        actionDictionary, _
+        criticalCount)
+
+    Call WriteBreaksTextDifferences( _
+        oldDoc, _
+        newDoc, _
+        pageNo, _
+        fileNumber, _
+        actionDictionary, _
+        criticalCount, _
+        structuralCount, _
+        infoCount)
+
+    Call WriteBreaksVectorDifferences( _
+        oldDoc, _
+        newDoc, _
+        pageNo, _
+        fileNumber, _
+        actionDictionary, _
+        criticalCount, _
+        structuralCount)
+
+    If criticalCount = lngPageCriticalBefore And _
+       structuralCount = lngPageStructuralBefore Then
+
+        strResult = "PASS"
+    ElseIf criticalCount = lngPageCriticalBefore Then
+        strResult = "WARN"
+    Else
+        strResult = "FAIL"
+    End If
+
+    Call EmitLine(fileNumber, _
+        "PAGE_RESULT|page=" & CStr(pageNo) & _
+        "|result=" & strResult & _
+        "|newCritical=" & CStr(criticalCount - lngPageCriticalBefore) & _
+        "|newStructural=" & CStr(structuralCount - lngPageStructuralBefore))
+
+ExitSub:
+    Set dictOld = Nothing
+    Set dictNew = Nothing
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo", _
+        pageNo
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pdfDoc, pageNo
+' Returns:       String
+' Description:   Builds a compact page fingerprint for fast multi-page consistency checks.
+'-------------------------------------------------------------------------------
+Private Function BuildBreaksPageFingerprint( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long) As String
+
+    Const METHOD_NAME As String = "BuildBreaksPageFingerprint"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim blnFooter As Boolean
+    Dim dblBottomHeaderY As Double
+    Dim dblFooterX As Double
+    Dim dblFooterY As Double
+    Dim lngFullWidthH As Long
+    Dim lngH As Long
+    Dim lngIndex As Long
+    Dim lngTrades As Long
+    Dim lngUnpaired As Long
+    Dim lngV As Long
+    Dim strFooterFont As String
+    Dim strFooterText As String
+
+    On Error GoTo ErrorHandler
+
+    For lngIndex = 0 To pdfDoc.LineCount - 1
+        If pdfDoc.Lines(lngIndex).PageNo = pageNo Then
+            If Abs(pdfDoc.Lines(lngIndex).Y1 - pdfDoc.Lines(lngIndex).Y2) <= COORD_TOLERANCE Then
+                lngH = lngH + 1
+                If Abs(pdfDoc.Lines(lngIndex).X2 - pdfDoc.Lines(lngIndex).X1) >= BREAKS_FULL_WIDTH_MIN Then
+                    lngFullWidthH = lngFullWidthH + 1
+                End If
+            ElseIf Abs(pdfDoc.Lines(lngIndex).X1 - pdfDoc.Lines(lngIndex).X2) <= COORD_TOLERANCE Then
+                lngV = lngV + 1
+            End If
+        End If
+    Next lngIndex
+
+    dblBottomHeaderY = FindBreaksTextBaseline(pdfDoc, pageNo, "TRANSAKTIONSNR")
+    lngTrades = CountBreaksTradePairs(pdfDoc, pageNo, dblBottomHeaderY, lngUnpaired)
+    blnFooter = FindBreaksFooter( _
+        pdfDoc, _
+        pageNo, _
+        strFooterText, _
+        dblFooterX, _
+        dblFooterY, _
+        strFooterFont)
+
+    BuildBreaksPageFingerprint = _
+        "lines=" & CStr(pdfDoc.Pages(pageNo).LineCount) & _
+        "|H=" & CStr(lngH) & _
+        "|V=" & CStr(lngV) & _
+        "|fullWidthH=" & CStr(lngFullWidthH) & _
+        "|textRuns=" & CStr(pdfDoc.Pages(pageNo).TextCount) & _
+        "|baselines=" & CStr(CountBreaksTextBaselines(pdfDoc, pageNo)) & _
+        "|images=" & CStr(pdfDoc.Pages(pageNo).ImageCount) & _
+        "|target468=" & CStr(CountBreaksTargetOccurrences(pdfDoc, pageNo, TARGET_X_FIRST)) & _
+        "|target639=" & CStr(CountBreaksTargetOccurrences(pdfDoc, pageNo, TARGET_X_SECOND)) & _
+        "|trades=" & CStr(lngTrades) & _
+        "|unpairedRows=" & CStr(lngUnpaired) & _
+        "|footer=" & BoolText(blnFooter)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildBreaksPageFingerprint = "error"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo", _
+        pageNo
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    fileNumber, actionDictionary, criticalCount, pageNo, roleName, oldY, newY
+' Returns:       ---
+' Description:   Reports a baseline Y shift and gives the exact shift required on NEW.
+'-------------------------------------------------------------------------------
+Private Sub WriteBreaksPositionDelta( _
+    ByVal fileNumber As Long, _
+    ByVal actionDictionary As Object, _
+    ByRef criticalCount As Long, _
+    ByVal pageNo As Long, _
+    ByVal roleName As String, _
+    ByVal oldY As Double, _
+    ByVal newY As Double)
+
+    Const METHOD_NAME As String = "WriteBreaksPositionDelta"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If oldY = 0 And newY = 0 Then
+        GoTo ExitSub
+    End If
+
+    If oldY = 0 Or newY = 0 Then
+        criticalCount = criticalCount + 1
+        Call EmitLine(fileNumber, _
+            "PAGE_BREAK|type=" & roleName & "|page=" & CStr(pageNo) & _
+            "|OLD=" & NumTxt(oldY) & "|NEW=" & NumTxt(newY) & _
+            "|FIX=Restore the missing Oracle header baseline.")
+        Call IncrementDictionaryValue(actionDictionary, roleName & "|missing")
+        GoTo ExitSub
+    End If
+
+    If Abs(newY - oldY) > BREAKS_POSITION_TOLERANCE Then
+        criticalCount = criticalCount + 1
+        Call EmitLine(fileNumber, _
+            "PAGE_BREAK|type=" & roleName & "|page=" & CStr(pageNo) & _
+            "|OLD=" & NumTxt(oldY) & "|NEW=" & NumTxt(newY) & _
+            "|DELTA_NEW_MINUS_OLD=" & NumTxt(newY - oldY) & _
+            "|FIX=" & BreaksMoveFix(0, oldY - newY))
+        Call IncrementDictionaryValue(actionDictionary, _
+            roleName & "|shiftY=" & NumTxt(oldY - newY))
+    End If
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;roleName", _
+        pageNo, _
+        roleName
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDoc, newDoc, pageNo, targetX, fileNumber, actionDictionary, criticalCount
+' Returns:       ---
+' Description:   Gives a concise exact audit for the client-sensitive separators at x=468 and x=639.
+'-------------------------------------------------------------------------------
+Private Sub WriteBreaksTargetSeparator( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal targetX As Double, _
+    ByVal fileNumber As Long, _
+    ByVal actionDictionary As Object, _
+    ByRef criticalCount As Long)
+
+    Const METHOD_NAME As String = "WriteBreaksTargetSeparator"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim dictNew As Object
+    Dim dictOld As Object
+    Dim lngChanged As Long
+    Dim lngNewCrossings As Long
+    Dim lngNewOnly As Long
+    Dim lngOldCrossings As Long
+    Dim lngOldOnly As Long
+
+    On Error GoTo ErrorHandler
+
+    Set dictOld = BuildTargetLineAuditDictionary(oldDoc, pageNo, targetX)
+    Set dictNew = BuildTargetLineAuditDictionary(newDoc, pageNo, targetX)
+    Call DictionaryDifferenceCounts(dictOld, dictNew, lngOldOnly, lngNewOnly, lngChanged)
+
+    lngOldCrossings = CountTargetTextCrossings(oldDoc, pageNo, targetX, 0, False)
+    lngNewCrossings = CountTargetTextCrossings(newDoc, pageNo, targetX, 0, False)
+
+    If lngOldOnly = 0 And lngNewOnly = 0 And lngChanged = 0 And _
+       lngOldCrossings = lngNewCrossings Then
+
+        Call EmitLine(fileNumber, _
+            "TARGET_SEPARATOR|x=" & NumTxt(targetX) & _
+            "|result=PASS|occurrences=" & CStr(DictionaryValueTotal(dictOld)) & _
+            "|crossings=" & CStr(lngOldCrossings))
+    Else
+        criticalCount = criticalCount + 1
+        Call EmitLine(fileNumber, _
+            "TARGET_SEPARATOR|x=" & NumTxt(targetX) & _
+            "|result=FAIL|oldOccurrences=" & CStr(DictionaryValueTotal(dictOld)) & _
+            "|newOccurrences=" & CStr(DictionaryValueTotal(dictNew)) & _
+            "|oldOnly=" & CStr(lngOldOnly) & _
+            "|newOnly=" & CStr(lngNewOnly) & _
+            "|styleOrMultiplicity=" & CStr(lngChanged) & _
+            "|oldCrossings=" & CStr(lngOldCrossings) & _
+            "|newCrossings=" & CStr(lngNewCrossings) & _
+            "|FIX=Match OLD y-ranges, multiplicity, width, paint/source operator, and color exactly.")
+        Call IncrementDictionaryValue(actionDictionary, _
+            "TARGET_SEPARATOR_X_" & Replace(NumTxt(targetX), ".", "_"))
+        Call WriteDictionaryDifferenceSamples( _
+            "TARGET_" & Replace(NumTxt(targetX), ".", "_"), _
+            dictOld, _
+            dictNew, _
+            fileNumber, _
+            12)
+    End If
+
+ExitSub:
+    Set dictOld = Nothing
+    Set dictNew = Nothing
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;targetX", _
+        pageNo, _
+        targetX
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDoc, newDoc, pageNo, fileNumber, actionDictionary, counters
+' Returns:       ---
+' Description:   Pairs text runs and separates true position/font breaks from expected input-value and whitespace differences.
+'-------------------------------------------------------------------------------
+Private Sub WriteBreaksTextDifferences( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal fileNumber As Long, _
+    ByVal actionDictionary As Object, _
+    ByRef criticalCount As Long, _
+    ByRef structuralCount As Long, _
+    ByRef infoCount As Long)
+
+    Const METHOD_NAME As String = "WriteBreaksTextDifferences"
+    Dim errorManager As New ErrorManager
+    Dim blnNewUsed() As Boolean
+    Dim dblShiftX As Double
+    Dim dblShiftY As Double
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim lngNewIndex As Long
+    Dim lngWritten As Long
+    Dim strNewText As String
+    Dim strOldText As String
+
+    On Error GoTo ErrorHandler
+
+    If newDoc.TextCount > 0 Then
+        ReDim blnNewUsed(0 To newDoc.TextCount - 1)
+    Else
+        ReDim blnNewUsed(0 To 0)
+    End If
+
+    For lngIndex = 0 To oldDoc.TextCount - 1
+        If oldDoc.Texts(lngIndex).PageNo = pageNo Then
+            lngNewIndex = FindBreaksExactTextMatch( _
+                oldDoc, _
+                newDoc, _
+                lngIndex, _
+                pageNo, _
+                blnNewUsed)
+
+            If lngNewIndex < 0 Then
+                lngNewIndex = FindBreaksGeometryTextMatch( _
+                    oldDoc, _
+                    newDoc, _
+                    lngIndex, _
+                    pageNo, _
+                    blnNewUsed)
+            End If
+
+            If lngNewIndex >= 0 Then
+                blnNewUsed(lngNewIndex) = True
+                dblShiftX = oldDoc.Texts(lngIndex).X - newDoc.Texts(lngNewIndex).X
+                dblShiftY = oldDoc.Texts(lngIndex).Y - newDoc.Texts(lngNewIndex).Y
+
+                If Abs(dblShiftX) > BREAKS_POSITION_TOLERANCE Or _
+                   Abs(dblShiftY) > BREAKS_POSITION_TOLERANCE Then
+
+                    criticalCount = criticalCount + 1
+                    If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
+                        Call EmitLine(fileNumber, _
+                            "TEXT_POSITION|text=" & BreaksShortText(oldDoc.Texts(lngIndex).TextValue) & _
+                            "|OLD=x=" & NumTxt(oldDoc.Texts(lngIndex).X) & _
+                            ",y=" & NumTxt(oldDoc.Texts(lngIndex).Y) & _
+                            "|NEW=x=" & NumTxt(newDoc.Texts(lngNewIndex).X) & _
+                            ",y=" & NumTxt(newDoc.Texts(lngNewIndex).Y) & _
+                            "|DELTA_NEW_MINUS_OLD=x=" & NumTxt(-dblShiftX) & _
+                            ",y=" & NumTxt(-dblShiftY) & _
+                            "|FIX=" & BreaksMoveFix(dblShiftX, dblShiftY))
+                        lngWritten = lngWritten + 1
+                    End If
+                    Call IncrementDictionaryValue(actionDictionary, _
+                        "TEXT_SHIFT|text=" & BreaksShortText(oldDoc.Texts(lngIndex).TextValue) & _
+                        "|shiftX=" & NumTxt(dblShiftX) & _
+                        "|shiftY=" & NumTxt(dblShiftY))
+                End If
+
+                If oldDoc.Texts(lngIndex).FontName <> newDoc.Texts(lngNewIndex).FontName Or _
+                   Abs(oldDoc.Texts(lngIndex).FontSize - newDoc.Texts(lngNewIndex).FontSize) > 0.01 Then
+
+                    structuralCount = structuralCount + 1
+                    If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
+                        Call EmitLine(fileNumber, _
+                            "TEXT_FONT|text=" & BreaksShortText(oldDoc.Texts(lngIndex).TextValue) & _
+                            "|OLD=" & oldDoc.Texts(lngIndex).FontName & "@" & NumTxt(oldDoc.Texts(lngIndex).FontSize) & _
+                            "|NEW=" & newDoc.Texts(lngNewIndex).FontName & "@" & NumTxt(newDoc.Texts(lngNewIndex).FontSize) & _
+                            "|FIX=Use the OLD font resource and size for this text role.")
+                        lngWritten = lngWritten + 1
+                    End If
+                    Call IncrementDictionaryValue(actionDictionary, _
+                        "TEXT_FONT|old=" & oldDoc.Texts(lngIndex).FontName & "@" & NumTxt(oldDoc.Texts(lngIndex).FontSize) & _
+                        "|new=" & newDoc.Texts(lngNewIndex).FontName & "@" & NumTxt(newDoc.Texts(lngNewIndex).FontSize))
+                End If
+
+                strOldText = oldDoc.Texts(lngIndex).TextValue
+                strNewText = newDoc.Texts(lngNewIndex).TextValue
+
+                If StrComp(strOldText, strNewText, vbBinaryCompare) <> 0 Then
+                    If NormalizeBreaksWhitespace(strOldText) = NormalizeBreaksWhitespace(strNewText) Then
+                        infoCount = infoCount + 1
+                        If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
+                            Call EmitLine(fileNumber, _
+                                "WHITESPACE_ONLY|OLD=" & BreaksShortText(strOldText) & _
+                                "|NEW=" & BreaksShortText(strNewText) & _
+                                "|ACTION=No geometry change. Review only if the client parser is whitespace-sensitive.")
+                            lngWritten = lngWritten + 1
+                        End If
+                    ElseIf IsBreaksFixedTextRole(oldDoc, pageNo, lngIndex) Or _
+                           IsBreaksFixedTextRole(newDoc, pageNo, lngNewIndex) Then
+
+                        criticalCount = criticalCount + 1
+                        If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
+                            Call EmitLine(fileNumber, _
+                                "FIXED_TEXT_CONTENT|OLD=" & BreaksShortText(strOldText) & _
+                                "|NEW=" & BreaksShortText(strNewText) & _
+                                "|FIX=Use the OLD fixed Oracle label/footer text.")
+                            lngWritten = lngWritten + 1
+                        End If
+                        Call IncrementDictionaryValue(actionDictionary, _
+                            "FIXED_TEXT_CONTENT|old=" & BreaksShortText(strOldText) & _
+                            "|new=" & BreaksShortText(strNewText))
+                    ElseIf BREAKS_IGNORE_INPUT_CONTENT_DIFFERENCES Then
+                        infoCount = infoCount + 1
+                        If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
+                            Call EmitLine(fileNumber, _
+                                "EXPECTED_INPUT_CONTENT|OLD=" & BreaksShortText(strOldText) & _
+                                "|NEW=" & BreaksShortText(strNewText) & _
+                                "|OLD_XY=" & NumTxt(oldDoc.Texts(lngIndex).X) & "," & NumTxt(oldDoc.Texts(lngIndex).Y) & _
+                                "|NEW_XY=" & NumTxt(newDoc.Texts(lngNewIndex).X) & "," & NumTxt(newDoc.Texts(lngNewIndex).Y) & _
+                                "|ACTION=Ignored as business-value difference; position/font are audited separately.")
+                            lngWritten = lngWritten + 1
+                        End If
+                    Else
+                        criticalCount = criticalCount + 1
+                    End If
+                End If
+            Else
+                If IsBreaksFixedTextRole(oldDoc, pageNo, lngIndex) Then
+                    criticalCount = criticalCount + 1
+                    If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
+                        Call EmitLine(fileNumber, _
+                            "FIXED_TEXT_ONLY_OLD|text=" & BreaksShortText(oldDoc.Texts(lngIndex).TextValue) & _
+                            "|x=" & NumTxt(oldDoc.Texts(lngIndex).X) & _
+                            "|y=" & NumTxt(oldDoc.Texts(lngIndex).Y) & _
+                            "|FIX=Restore this fixed Oracle label/footer text.")
+                        lngWritten = lngWritten + 1
+                    End If
+                    Call IncrementDictionaryValue(actionDictionary, _
+                        "FIXED_TEXT_MISSING_NEW|text=" & BreaksShortText(oldDoc.Texts(lngIndex).TextValue))
+                Else
+                    infoCount = infoCount + 1
+                    If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
+                        Call EmitLine(fileNumber, _
+                            "EXPECTED_INPUT_ONLY_OLD|text=" & BreaksShortText(oldDoc.Texts(lngIndex).TextValue) & _
+                            "|x=" & NumTxt(oldDoc.Texts(lngIndex).X) & _
+                            "|y=" & NumTxt(oldDoc.Texts(lngIndex).Y) & _
+                            "|ACTION=Ignored as missing business value.")
+                        lngWritten = lngWritten + 1
+                    End If
+                End If
+            End If
+        End If
+    Next lngIndex
+
+    For lngIndex = 0 To newDoc.TextCount - 1
+        If newDoc.Texts(lngIndex).PageNo = pageNo Then
+            If Not blnNewUsed(lngIndex) Then
+                If IsBreaksFixedTextRole(newDoc, pageNo, lngIndex) Then
+                    criticalCount = criticalCount + 1
+                    If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
+                        Call EmitLine(fileNumber, _
+                            "FIXED_TEXT_ONLY_NEW|text=" & BreaksShortText(newDoc.Texts(lngIndex).TextValue) & _
+                            "|x=" & NumTxt(newDoc.Texts(lngIndex).X) & _
+                            "|y=" & NumTxt(newDoc.Texts(lngIndex).Y) & _
+                            "|FIX=Remove or reconcile this extra fixed label with OLD.")
+                        lngWritten = lngWritten + 1
+                    End If
+                    Call IncrementDictionaryValue(actionDictionary, _
+                        "FIXED_TEXT_EXTRA_NEW|text=" & BreaksShortText(newDoc.Texts(lngIndex).TextValue))
+                Else
+                    infoCount = infoCount + 1
+                    If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
+                        Call EmitLine(fileNumber, _
+                            "EXPECTED_INPUT_ONLY_NEW|text=" & BreaksShortText(newDoc.Texts(lngIndex).TextValue) & _
+                            "|x=" & NumTxt(newDoc.Texts(lngIndex).X) & _
+                            "|y=" & NumTxt(newDoc.Texts(lngIndex).Y) & _
+                            "|ACTION=Ignored as additional business value.")
+                        lngWritten = lngWritten + 1
+                    End If
+                End If
+            End If
+        End If
+    Next lngIndex
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo", _
+        pageNo
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDoc, newDoc, oldIndex, pageNo, newUsed
+' Returns:       Long
+' Description:   Finds the nearest unused NEW run with the same whitespace-normalized text.
+'-------------------------------------------------------------------------------
+Private Function FindBreaksExactTextMatch( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal oldIndex As Long, _
+    ByVal pageNo As Long, _
+    ByRef newUsed() As Boolean) As Long
+
+    Const METHOD_NAME As String = "FindBreaksExactTextMatch"
+    Dim errorManager As New ErrorManager
+    Dim dblBestScore As Double
+    Dim dblScore As Double
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim strOldNormalized As String
+
+    On Error GoTo ErrorHandler
+
+    FindBreaksExactTextMatch = -1
+    dblBestScore = 1E+30
+    strOldNormalized = NormalizeBreaksWhitespace(oldDoc.Texts(oldIndex).TextValue)
+
+    For lngIndex = 0 To newDoc.TextCount - 1
+        If newDoc.Texts(lngIndex).PageNo = pageNo Then
+            If Not newUsed(lngIndex) Then
+                If StrComp( _
+                    strOldNormalized, _
+                    NormalizeBreaksWhitespace(newDoc.Texts(lngIndex).TextValue), _
+                    vbBinaryCompare) = 0 Then
+
+                    dblScore = _
+                        Abs(oldDoc.Texts(oldIndex).X - newDoc.Texts(lngIndex).X) + _
+                        (Abs(oldDoc.Texts(oldIndex).Y - newDoc.Texts(lngIndex).Y) * 5#) + _
+                        (Abs(oldDoc.Texts(oldIndex).FontSize - newDoc.Texts(lngIndex).FontSize) * 2#)
+
+                    If dblScore < dblBestScore Then
+                        dblBestScore = dblScore
+                        FindBreaksExactTextMatch = lngIndex
+                    End If
+                End If
+            End If
+        End If
+    Next lngIndex
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    FindBreaksExactTextMatch = -1
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "oldIndex;pageNo", _
+        oldIndex, _
+        pageNo
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDoc, newDoc, oldIndex, pageNo, newUsed
+' Returns:       Long
+' Description:   Pairs different business values only when their anchors occupy the same logical cell.
+'-------------------------------------------------------------------------------
+Private Function FindBreaksGeometryTextMatch( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal oldIndex As Long, _
+    ByVal pageNo As Long, _
+    ByRef newUsed() As Boolean) As Long
+
+    Const METHOD_NAME As String = "FindBreaksGeometryTextMatch"
+    Dim errorManager As New ErrorManager
+    Dim dblBestScore As Double
+    Dim dblDx As Double
+    Dim dblDy As Double
+    Dim dblScore As Double
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+
+    On Error GoTo ErrorHandler
+
+    FindBreaksGeometryTextMatch = -1
+    dblBestScore = 1E+30
+
+    For lngIndex = 0 To newDoc.TextCount - 1
+        If newDoc.Texts(lngIndex).PageNo = pageNo Then
+            If Not newUsed(lngIndex) Then
+                dblDx = Abs(oldDoc.Texts(oldIndex).X - newDoc.Texts(lngIndex).X)
+                dblDy = Abs(oldDoc.Texts(oldIndex).Y - newDoc.Texts(lngIndex).Y)
+
+                If dblDx <= BREAKS_GEOMETRY_TEXT_X_TOLERANCE And _
+                   dblDy <= BREAKS_GEOMETRY_TEXT_Y_TOLERANCE And _
+                   Abs(oldDoc.Texts(oldIndex).FontSize - newDoc.Texts(lngIndex).FontSize) <= 2# Then
+
+                    dblScore = dblDx + (dblDy * 5#)
+                    If dblScore < dblBestScore Then
+                        dblBestScore = dblScore
+                        FindBreaksGeometryTextMatch = lngIndex
+                    End If
+                End If
+            End If
+        End If
+    Next lngIndex
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    FindBreaksGeometryTextMatch = -1
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "oldIndex;pageNo", _
+        oldIndex, _
+        pageNo
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDoc, newDoc, pageNo, fileNumber, actionDictionary, counters
+' Returns:       ---
+' Description:   Pairs non-target vector segments by geometry and reports style or coordinate changes.
+'-------------------------------------------------------------------------------
+Private Sub WriteBreaksVectorDifferences( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal fileNumber As Long, _
+    ByVal actionDictionary As Object, _
+    ByRef criticalCount As Long, _
+    ByRef structuralCount As Long)
+
+    Const METHOD_NAME As String = "WriteBreaksVectorDifferences"
+    Dim errorManager As New ErrorManager
+    Dim blnNewUsed() As Boolean
+    Dim dblDistance As Double
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngGeometryBreaks As Long
+    Dim lngIndex As Long
+    Dim lngNewIndex As Long
+    Dim lngStyleBreaks As Long
+    Dim lngWritten As Long
+
+    On Error GoTo ErrorHandler
+
+    If newDoc.LineCount > 0 Then
+        ReDim blnNewUsed(0 To newDoc.LineCount - 1)
+    Else
+        ReDim blnNewUsed(0 To 0)
+    End If
+
+    For lngIndex = 0 To oldDoc.LineCount - 1
+        If oldDoc.Lines(lngIndex).PageNo = pageNo Then
+            If Not IsVerticalAtX(oldDoc.Lines(lngIndex), TARGET_X_FIRST) And _
+               Not IsVerticalAtX(oldDoc.Lines(lngIndex), TARGET_X_SECOND) Then
+
+                lngNewIndex = FindBreaksNearestLine( _
+                    oldDoc, _
+                    newDoc, _
+                    lngIndex, _
+                    pageNo, _
+                    blnNewUsed, _
+                    dblDistance)
+
+                If lngNewIndex >= 0 And dblDistance <= BREAKS_LINE_MATCH_TOLERANCE Then
+                    blnNewUsed(lngNewIndex) = True
+
+                    If Not BreaksLineStyleMatches(oldDoc.Lines(lngIndex), newDoc.Lines(lngNewIndex)) Then
+                        lngStyleBreaks = lngStyleBreaks + 1
+                        If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
+                            Call EmitLine(fileNumber, _
+                                "VECTOR_STYLE|geometry=" & CanonicalLineGeometryKey(oldDoc.Lines(lngIndex)) & _
+                                "|OLD=" & BreaksLineStyle(oldDoc.Lines(lngIndex)) & _
+                                "|NEW=" & BreaksLineStyle(newDoc.Lines(lngNewIndex)) & _
+                                "|FIX=Use OLD width, paint/source operator, and stroke color.")
+                            lngWritten = lngWritten + 1
+                        End If
+                        Call IncrementDictionaryValue(actionDictionary, _
+                            "VECTOR_STYLE|old=" & BreaksLineStyle(oldDoc.Lines(lngIndex)) & _
+                            "|new=" & BreaksLineStyle(newDoc.Lines(lngNewIndex)))
+                    End If
+
+                ElseIf lngNewIndex >= 0 And dblDistance <= BREAKS_LINE_NEAR_TOLERANCE Then
+                    blnNewUsed(lngNewIndex) = True
+                    lngGeometryBreaks = lngGeometryBreaks + 1
+                    If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
+                        Call EmitLine(fileNumber, _
+                            "VECTOR_GEOMETRY|OLD=" & CanonicalLineGeometryKey(oldDoc.Lines(lngIndex)) & _
+                            "|NEW=" & CanonicalLineGeometryKey(newDoc.Lines(lngNewIndex)) & _
+                            "|distance=" & NumTxt(dblDistance) & _
+                            "|FIX=Move/resize NEW segment to the OLD coordinates.")
+                        lngWritten = lngWritten + 1
+                    End If
+                    Call IncrementDictionaryValue(actionDictionary, _
+                        "VECTOR_GEOMETRY|" & BreaksLineOrientation(oldDoc.Lines(lngIndex)))
+                Else
+                    lngGeometryBreaks = lngGeometryBreaks + 1
+                    If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
+                        Call EmitLine(fileNumber, _
+                            "VECTOR_ONLY_OLD|OLD=" & CanonicalLineGeometryKey(oldDoc.Lines(lngIndex)) & _
+                            "|style=" & BreaksLineStyle(oldDoc.Lines(lngIndex)) & _
+                            "|FIX=Restore the corresponding Oracle vector segment.")
+                        lngWritten = lngWritten + 1
+                    End If
+                    Call IncrementDictionaryValue(actionDictionary, _
+                        "VECTOR_MISSING_NEW|" & BreaksLineOrientation(oldDoc.Lines(lngIndex)))
+                End If
+            End If
+        End If
+    Next lngIndex
+
+    For lngIndex = 0 To newDoc.LineCount - 1
+        If newDoc.Lines(lngIndex).PageNo = pageNo Then
+            If Not IsVerticalAtX(newDoc.Lines(lngIndex), TARGET_X_FIRST) And _
+               Not IsVerticalAtX(newDoc.Lines(lngIndex), TARGET_X_SECOND) Then
+
+                If Not blnNewUsed(lngIndex) Then
+                    lngGeometryBreaks = lngGeometryBreaks + 1
+                    If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
+                        Call EmitLine(fileNumber, _
+                            "VECTOR_ONLY_NEW|NEW=" & CanonicalLineGeometryKey(newDoc.Lines(lngIndex)) & _
+                            "|style=" & BreaksLineStyle(newDoc.Lines(lngIndex)) & _
+                            "|FIX=Remove or reconcile this extra segment with OLD.")
+                        lngWritten = lngWritten + 1
+                    End If
+                    Call IncrementDictionaryValue(actionDictionary, _
+                        "VECTOR_EXTRA_NEW|" & BreaksLineOrientation(newDoc.Lines(lngIndex)))
+                End If
+            End If
+        End If
+    Next lngIndex
+
+    If lngGeometryBreaks > 0 Then
+        criticalCount = criticalCount + 1
+        Call EmitLine(fileNumber, _
+            "VECTOR_GEOMETRY_SUMMARY|breaks=" & CStr(lngGeometryBreaks) & _
+            "|classification=CRITICAL")
+    End If
+
+    If lngStyleBreaks > 0 Then
+        structuralCount = structuralCount + 1
+        Call EmitLine(fileNumber, _
+            "VECTOR_STYLE_SUMMARY|breaks=" & CStr(lngStyleBreaks) & _
+            "|classification=STRUCTURAL")
+    End If
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo", _
+        pageNo
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    oldDoc, newDoc, oldIndex, pageNo, newUsed, distance
+' Returns:       Long
+' Description:   Finds the nearest unused NEW line with the same orientation.
+'-------------------------------------------------------------------------------
+Private Function FindBreaksNearestLine( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal oldIndex As Long, _
+    ByVal pageNo As Long, _
+    ByRef newUsed() As Boolean, _
+    ByRef distance As Double) As Long
+
+    Const METHOD_NAME As String = "FindBreaksNearestLine"
+    Dim errorManager As New ErrorManager
+    Dim dblCandidate As Double
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+
+    On Error GoTo ErrorHandler
+
+    FindBreaksNearestLine = -1
+    distance = 1E+30
+
+    For lngIndex = 0 To newDoc.LineCount - 1
+        If newDoc.Lines(lngIndex).PageNo = pageNo Then
+            If Not newUsed(lngIndex) Then
+                If Not IsVerticalAtX(newDoc.Lines(lngIndex), TARGET_X_FIRST) And _
+                   Not IsVerticalAtX(newDoc.Lines(lngIndex), TARGET_X_SECOND) Then
+
+                    dblCandidate = BreaksLineGeometryDistance( _
+                        oldDoc.Lines(oldIndex), _
+                        newDoc.Lines(lngIndex))
+
+                    If dblCandidate < distance Then
+                        distance = dblCandidate
+                        FindBreaksNearestLine = lngIndex
+                    End If
+                End If
+            End If
+        End If
+    Next lngIndex
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    distance = 1E+30
+    FindBreaksNearestLine = -1
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "oldIndex;pageNo", _
+        oldIndex, _
+        pageNo
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    firstLine, secondLine
+' Returns:       Double
+' Description:   Returns a coordinate distance for two lines of the same orientation.
+'-------------------------------------------------------------------------------
+Private Function BreaksLineGeometryDistance( _
+    ByRef firstLine As tPdfLine, _
+    ByRef secondLine As tPdfLine) As Double
+
+    Const METHOD_NAME As String = "BreaksLineGeometryDistance"
+    Dim errorManager As New ErrorManager
+    Dim dblValue As Double
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strFirstOrientation As String
+    Dim strSecondOrientation As String
+
+    On Error GoTo ErrorHandler
+
+    BreaksLineGeometryDistance = 1E+30
+    strFirstOrientation = BreaksLineOrientation(firstLine)
+    strSecondOrientation = BreaksLineOrientation(secondLine)
+
+    If strFirstOrientation <> strSecondOrientation Then
+        GoTo ExitFunction
+    End If
+
+    Select Case strFirstOrientation
+        Case "V"
+            dblValue = _
+                Abs(((firstLine.X1 + firstLine.X2) / 2) - ((secondLine.X1 + secondLine.X2) / 2)) + _
+                Abs(MinDouble(firstLine.Y1, firstLine.Y2) - MinDouble(secondLine.Y1, secondLine.Y2)) + _
+                Abs(MaxDouble(firstLine.Y1, firstLine.Y2) - MaxDouble(secondLine.Y1, secondLine.Y2))
+
+        Case "H"
+            dblValue = _
+                Abs(((firstLine.Y1 + firstLine.Y2) / 2) - ((secondLine.Y1 + secondLine.Y2) / 2)) + _
+                Abs(MinDouble(firstLine.X1, firstLine.X2) - MinDouble(secondLine.X1, secondLine.X2)) + _
+                Abs(MaxDouble(firstLine.X1, firstLine.X2) - MaxDouble(secondLine.X1, secondLine.X2))
+
+        Case Else
+            dblValue = _
+                Abs(firstLine.X1 - secondLine.X1) + _
+                Abs(firstLine.Y1 - secondLine.Y1) + _
+                Abs(firstLine.X2 - secondLine.X2) + _
+                Abs(firstLine.Y2 - secondLine.Y2)
+    End Select
+
+    BreaksLineGeometryDistance = dblValue
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksLineGeometryDistance = 1E+30
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    lineInfo
+' Returns:       String
+' Description:   Returns H, V, or D for a normalized PDF line.
+'-------------------------------------------------------------------------------
+Private Function BreaksLineOrientation(ByRef lineInfo As tPdfLine) As String
+    Const METHOD_NAME As String = "BreaksLineOrientation"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If Abs(lineInfo.X1 - lineInfo.X2) <= COORD_TOLERANCE Then
+        BreaksLineOrientation = "V"
+    ElseIf Abs(lineInfo.Y1 - lineInfo.Y2) <= COORD_TOLERANCE Then
+        BreaksLineOrientation = "H"
+    Else
+        BreaksLineOrientation = "D"
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksLineOrientation = "?"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    firstLine, secondLine
+' Returns:       Boolean
+' Description:   Compares the parser-visible line style fields.
+'-------------------------------------------------------------------------------
+Private Function BreaksLineStyleMatches( _
+    ByRef firstLine As tPdfLine, _
+    ByRef secondLine As tPdfLine) As Boolean
+
+    Const METHOD_NAME As String = "BreaksLineStyleMatches"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    BreaksLineStyleMatches = _
+        Abs(firstLine.LineWidth - secondLine.LineWidth) <= 0.01 And _
+        firstLine.PaintOperator = secondLine.PaintOperator And _
+        firstLine.SourceOperator = secondLine.SourceOperator And _
+        firstLine.StrokeColor = secondLine.StrokeColor
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksLineStyleMatches = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    lineInfo
+' Returns:       String
+' Description:   Formats one line style for OLD versus NEW diagnostics.
+'-------------------------------------------------------------------------------
+Private Function BreaksLineStyle(ByRef lineInfo As tPdfLine) As String
+    Const METHOD_NAME As String = "BreaksLineStyle"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    BreaksLineStyle = _
+        "width=" & NumTxt(lineInfo.LineWidth) & _
+        ",paint=" & lineInfo.PaintOperator & _
+        ",source=" & lineInfo.SourceOperator & _
+        ",color=" & lineInfo.StrokeColor
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksLineStyle = "error"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pdfDoc, pageNo, normalizedNeedle
+' Returns:       Double
+' Description:   Finds a fixed label baseline after punctuation and whitespace normalization.
+'-------------------------------------------------------------------------------
+Private Function FindBreaksTextBaseline( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal normalizedNeedle As String) As Double
+
+    Const METHOD_NAME As String = "FindBreaksTextBaseline"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+
+    On Error GoTo ErrorHandler
+
+    For lngIndex = 0 To pdfDoc.TextCount - 1
+        If pdfDoc.Texts(lngIndex).PageNo = pageNo Then
+            If NormalizeBreaksLabel(pdfDoc.Texts(lngIndex).TextValue) = normalizedNeedle Then
+                FindBreaksTextBaseline = pdfDoc.Texts(lngIndex).Y
+                Exit For
+            End If
+        End If
+    Next lngIndex
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    FindBreaksTextBaseline = 0
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;needle", _
+        pageNo, _
+        normalizedNeedle
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pdfDoc, pageNo, bottomHeaderY, unpairedRows
+' Returns:       Long
+' Description:   Counts Oracle two-row transactions and exposes leftover rows that could indicate a split transaction.
+'-------------------------------------------------------------------------------
+Private Function CountBreaksTradePairs( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal bottomHeaderY As Double, _
+    ByRef unpairedRows As Long) As Long
+
+    Const METHOD_NAME As String = "CountBreaksTradePairs"
+    Dim errorManager As New ErrorManager
+    Dim arrY() As Double
+    Dim dblStep As Double
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngCount As Long
+    Dim lngIndex As Long
+    Dim lngPairs As Long
+
+    On Error GoTo ErrorHandler
+
+    unpairedRows = 0
+    lngCount = CollectBreaksDataBaselines(pdfDoc, pageNo, bottomHeaderY, arrY)
+    lngIndex = 0
+
+    Do While lngIndex < lngCount
+        If lngIndex + 1 < lngCount Then
+            dblStep = arrY(lngIndex) - arrY(lngIndex + 1)
+            If dblStep >= ORACLE_MIN_DATA_ROW_STEP And _
+               dblStep <= ORACLE_MAX_DATA_ROW_STEP Then
+
+                lngPairs = lngPairs + 1
+                lngIndex = lngIndex + 2
+            Else
+                unpairedRows = unpairedRows + 1
+                lngIndex = lngIndex + 1
+            End If
+        Else
+            unpairedRows = unpairedRows + 1
+            lngIndex = lngIndex + 1
+        End If
+    Loop
+
+    CountBreaksTradePairs = lngPairs
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    CountBreaksTradePairs = 0
+    unpairedRows = 0
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;bottomHeaderY", _
+        pageNo, _
+        bottomHeaderY
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pdfDoc, pageNo, bottomHeaderY, baselines
+' Returns:       Long
+' Description:   Collects unique data baselines between the bottom header and the bottom full-width table rule.
+'-------------------------------------------------------------------------------
+Private Function CollectBreaksDataBaselines( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal bottomHeaderY As Double, _
+    ByRef baselines() As Double) As Long
+
+    Const METHOD_NAME As String = "CollectBreaksDataBaselines"
+    Dim errorManager As New ErrorManager
+    Dim arrRaw() As Double
+    Dim dblBottomY As Double
+    Dim dblSwap As Double
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngCount As Long
+    Dim lngIndex As Long
+    Dim lngInner As Long
+    Dim lngUnique As Long
+
+    On Error GoTo ErrorHandler
+
+    ReDim arrRaw(0 To pdfDoc.Pages(pageNo).TextCount + 4)
+    dblBottomY = FindBreaksTableBottomY(pdfDoc, pageNo)
+
+    For lngIndex = 0 To pdfDoc.TextCount - 1
+        If pdfDoc.Texts(lngIndex).PageNo = pageNo Then
+            If pdfDoc.Texts(lngIndex).X >= 40# And pdfDoc.Texts(lngIndex).X <= 1324# Then
+                If bottomHeaderY = 0 Or pdfDoc.Texts(lngIndex).Y < bottomHeaderY - BREAKS_BASELINE_TOLERANCE Then
+                    If dblBottomY = 0 Or pdfDoc.Texts(lngIndex).Y > dblBottomY + BREAKS_BASELINE_TOLERANCE Then
+                        If InStr(1, UCase$(pdfDoc.Texts(lngIndex).TextValue), "DIESE ABRECHNUNG", vbTextCompare) = 0 Then
+                            arrRaw(lngCount) = pdfDoc.Texts(lngIndex).Y
+                            lngCount = lngCount + 1
+                        End If
+                    End If
+                End If
+            End If
+        End If
+    Next lngIndex
+
+    If lngCount = 0 Then
+        ReDim baselines(0 To 0)
+        GoTo ExitFunction
+    End If
+
+    For lngIndex = 0 To lngCount - 2
+        For lngInner = lngIndex + 1 To lngCount - 1
+            If arrRaw(lngInner) > arrRaw(lngIndex) Then
+                dblSwap = arrRaw(lngIndex)
+                arrRaw(lngIndex) = arrRaw(lngInner)
+                arrRaw(lngInner) = dblSwap
+            End If
+        Next lngInner
+    Next lngIndex
+
+    ReDim baselines(0 To lngCount - 1)
+    baselines(0) = arrRaw(0)
+    lngUnique = 1
+
+    For lngIndex = 1 To lngCount - 1
+        If Abs(arrRaw(lngIndex) - baselines(lngUnique - 1)) > BREAKS_BASELINE_TOLERANCE Then
+            baselines(lngUnique) = arrRaw(lngIndex)
+            lngUnique = lngUnique + 1
+        End If
+    Next lngIndex
+
+    ReDim Preserve baselines(0 To lngUnique - 1)
+    CollectBreaksDataBaselines = lngUnique
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ReDim baselines(0 To 0)
+    CollectBreaksDataBaselines = 0
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;bottomHeaderY", _
+        pageNo, _
+        bottomHeaderY
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pdfDoc, pageNo
+' Returns:       Double
+' Description:   Finds the lowest full-width horizontal table rule.
+'-------------------------------------------------------------------------------
+Private Function FindBreaksTableBottomY( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long) As Double
+
+    Const METHOD_NAME As String = "FindBreaksTableBottomY"
+    Dim errorManager As New ErrorManager
+    Dim dblY As Double
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+
+    On Error GoTo ErrorHandler
+
+    For lngIndex = 0 To pdfDoc.LineCount - 1
+        If pdfDoc.Lines(lngIndex).PageNo = pageNo Then
+            If Abs(pdfDoc.Lines(lngIndex).Y1 - pdfDoc.Lines(lngIndex).Y2) <= COORD_TOLERANCE Then
+                If Abs(pdfDoc.Lines(lngIndex).X2 - pdfDoc.Lines(lngIndex).X1) >= BREAKS_FULL_WIDTH_MIN Then
+                    dblY = (pdfDoc.Lines(lngIndex).Y1 + pdfDoc.Lines(lngIndex).Y2) / 2
+                    If FindBreaksTableBottomY = 0 Or dblY < FindBreaksTableBottomY Then
+                        FindBreaksTableBottomY = dblY
+                    End If
+                End If
+            End If
+        End If
+    Next lngIndex
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    FindBreaksTableBottomY = 0
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo", _
+        pageNo
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pdfDoc, pageNo, footer fields
+' Returns:       Boolean
+' Description:   Finds the machine-generated statement footer and returns its anchor and font signature.
+'-------------------------------------------------------------------------------
+Private Function FindBreaksFooter( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByRef footerText As String, _
+    ByRef footerX As Double, _
+    ByRef footerY As Double, _
+    ByRef footerFont As String) As Boolean
+
+    Const METHOD_NAME As String = "FindBreaksFooter"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+
+    On Error GoTo ErrorHandler
+
+    For lngIndex = 0 To pdfDoc.TextCount - 1
+        If pdfDoc.Texts(lngIndex).PageNo = pageNo Then
+            If InStr(1, UCase$(pdfDoc.Texts(lngIndex).TextValue), "DIESE ABRECHNUNG", vbTextCompare) > 0 Then
+                footerText = pdfDoc.Texts(lngIndex).TextValue
+                footerX = pdfDoc.Texts(lngIndex).X
+                footerY = pdfDoc.Texts(lngIndex).Y
+                footerFont = pdfDoc.Texts(lngIndex).FontName & "@" & NumTxt(pdfDoc.Texts(lngIndex).FontSize)
+                FindBreaksFooter = True
+                Exit For
+            End If
+        End If
+    Next lngIndex
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    FindBreaksFooter = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo", _
+        pageNo
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pdfDoc, pageNo
+' Returns:       Long
+' Description:   Counts unique visual text baselines with Oracle jitter tolerance.
+'-------------------------------------------------------------------------------
+Private Function CountBreaksTextBaselines( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long) As Long
+
+    Const METHOD_NAME As String = "CountBreaksTextBaselines"
+    Dim errorManager As New ErrorManager
+    Dim arrY() As Double
+    Dim dblSwap As Double
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngCount As Long
+    Dim lngIndex As Long
+    Dim lngInner As Long
+    Dim lngUnique As Long
+
+    On Error GoTo ErrorHandler
+
+    ReDim arrY(0 To pdfDoc.Pages(pageNo).TextCount + 2)
+
+    For lngIndex = 0 To pdfDoc.TextCount - 1
+        If pdfDoc.Texts(lngIndex).PageNo = pageNo Then
+            arrY(lngCount) = pdfDoc.Texts(lngIndex).Y
+            lngCount = lngCount + 1
+        End If
+    Next lngIndex
+
+    If lngCount = 0 Then
+        GoTo ExitFunction
+    End If
+
+    For lngIndex = 0 To lngCount - 2
+        For lngInner = lngIndex + 1 To lngCount - 1
+            If arrY(lngInner) > arrY(lngIndex) Then
+                dblSwap = arrY(lngIndex)
+                arrY(lngIndex) = arrY(lngInner)
+                arrY(lngInner) = dblSwap
+            End If
+        Next lngInner
+    Next lngIndex
+
+    lngUnique = 1
+    For lngIndex = 1 To lngCount - 1
+        If Abs(arrY(lngIndex) - arrY(lngIndex - 1)) > BREAKS_BASELINE_TOLERANCE Then
+            lngUnique = lngUnique + 1
+        End If
+    Next lngIndex
+
+    CountBreaksTextBaselines = lngUnique
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    CountBreaksTextBaselines = 0
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo", _
+        pageNo
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pdfDoc, pageNo, targetX
+' Returns:       Long
+' Description:   Counts vertical target-separator segments on one page.
+'-------------------------------------------------------------------------------
+Private Function CountBreaksTargetOccurrences( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal targetX As Double) As Long
+
+    Const METHOD_NAME As String = "CountBreaksTargetOccurrences"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+
+    On Error GoTo ErrorHandler
+
+    For lngIndex = 0 To pdfDoc.LineCount - 1
+        If pdfDoc.Lines(lngIndex).PageNo = pageNo Then
+            If IsVerticalAtX(pdfDoc.Lines(lngIndex), targetX) Then
+                CountBreaksTargetOccurrences = CountBreaksTargetOccurrences + 1
+            End If
+        End If
+    Next lngIndex
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    CountBreaksTargetOccurrences = 0
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;targetX", _
+        pageNo, _
+        targetX
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+ '-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    pdfDoc, pageNo, textIndex
+' Returns:       Boolean
+' Description:   Identifies header/footer text that must not be ignored as a variable input value.
+'-------------------------------------------------------------------------------
+Private Function IsBreaksFixedTextRole( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal textIndex As Long) As Boolean
+
+    Const METHOD_NAME As String = "IsBreaksFixedTextRole"
+    Dim errorManager As New ErrorManager
+    Dim dblBottomHeaderY As Double
+    Dim dblTopHeaderY As Double
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If InStr(1, UCase$(pdfDoc.Texts(textIndex).TextValue), "DIESE ABRECHNUNG", vbTextCompare) > 0 Then
+        IsBreaksFixedTextRole = True
+        GoTo ExitFunction
+    End If
+
+    dblTopHeaderY = FindBreaksTextBaseline(pdfDoc, pageNo, "DEPOTNR")
+    dblBottomHeaderY = FindBreaksTextBaseline(pdfDoc, pageNo, "TRANSAKTIONSNR")
+
+    If dblTopHeaderY <> 0 Then
+        If Abs(pdfDoc.Texts(textIndex).Y - dblTopHeaderY) <= BREAKS_GEOMETRY_TEXT_Y_TOLERANCE Then
+            IsBreaksFixedTextRole = True
+            GoTo ExitFunction
+        End If
+    End If
+
+    If dblBottomHeaderY <> 0 Then
+        If Abs(pdfDoc.Texts(textIndex).Y - dblBottomHeaderY) <= BREAKS_GEOMETRY_TEXT_Y_TOLERANCE Then
+            IsBreaksFixedTextRole = True
+        End If
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    IsBreaksFixedTextRole = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;textIndex", _
+        pageNo, _
+        textIndex
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    value
+' Returns:       String
+' Description:   Normalizes horizontal whitespace without changing business characters.
+'-------------------------------------------------------------------------------
+Private Function NormalizeBreaksWhitespace(ByVal value As String) As String
+    Const METHOD_NAME As String = "NormalizeBreaksWhitespace"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strValue As String
+
+    On Error GoTo ErrorHandler
+
+    strValue = Replace(value, vbTab, " ")
+    strValue = Replace(strValue, vbCr, " ")
+    strValue = Replace(strValue, vbLf, " ")
+    strValue = Replace(strValue, Chr$(160), " ")
+
+    Do While InStr(1, strValue, "  ", vbBinaryCompare) > 0
+        strValue = Replace(strValue, "  ", " ")
+    Loop
+
+    NormalizeBreaksWhitespace = Trim$(strValue)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    NormalizeBreaksWhitespace = value
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    value
+' Returns:       String
+' Description:   Produces a punctuation-free uppercase key for fixed Oracle labels.
+'-------------------------------------------------------------------------------
+Private Function NormalizeBreaksLabel(ByVal value As String) As String
+    Const METHOD_NAME As String = "NormalizeBreaksLabel"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim strCharacter As String
+    Dim strResult As String
+
+    On Error GoTo ErrorHandler
+
+    value = UCase$(Trim$(value))
+    For lngIndex = 1 To Len(value)
+        strCharacter = Mid$(value, lngIndex, 1)
+        If (strCharacter >= "A" And strCharacter <= "Z") Or _
+           (strCharacter >= "0" And strCharacter <= "9") Then
+
+            strResult = strResult & strCharacter
+        End If
+    Next lngIndex
+
+    NormalizeBreaksLabel = strResult
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    NormalizeBreaksLabel = UCase$(Trim$(value))
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    value
+' Returns:       String
+' Description:   Sanitizes and truncates text so the concise report stays readable.
+'-------------------------------------------------------------------------------
+Private Function BreaksShortText(ByVal value As String) As String
+    Const METHOD_NAME As String = "BreaksShortText"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strValue As String
+
+    On Error GoTo ErrorHandler
+
+    strValue = SanitizeReportText(value)
+    If Len(strValue) > 80 Then
+        strValue = Left$(strValue, 77) & "..."
+    End If
+    BreaksShortText = strValue
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksShortText = Left$(value, 80)
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    shiftX, shiftY
+' Returns:       String
+' Description:   Formats the exact NEW-to-OLD translation as a human-readable fix.
+'-------------------------------------------------------------------------------
+Private Function BreaksMoveFix( _
+    ByVal shiftX As Double, _
+    ByVal shiftY As Double) As String
+
+    Const METHOD_NAME As String = "BreaksMoveFix"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strResult As String
+
+    On Error GoTo ErrorHandler
+
+    strResult = "MOVE_NEW"
+    If Abs(shiftX) > BREAKS_POSITION_TOLERANCE Then
+        If shiftX > 0 Then
+            strResult = strResult & " RIGHT " & NumTxt(shiftX) & "pt"
+        Else
+            strResult = strResult & " LEFT " & NumTxt(Abs(shiftX)) & "pt"
+        End If
+    End If
+
+    If Abs(shiftY) > BREAKS_POSITION_TOLERANCE Then
+        If shiftY > 0 Then
+            strResult = strResult & " UP " & NumTxt(shiftY) & "pt"
+        Else
+            strResult = strResult & " DOWN " & NumTxt(Abs(shiftY)) & "pt"
+        End If
+    End If
+
+    If strResult = "MOVE_NEW" Then
+        strResult = strResult & " 0pt"
+    End If
+
+    BreaksMoveFix = strResult
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksMoveFix = "MOVE_NEW"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    actionDictionary, fileNumber
+' Returns:       ---
+' Description:   Writes grouped recurring fixes, useful for six-page and larger reports.
+'-------------------------------------------------------------------------------
+Private Sub WriteBreaksActionSummary( _
+    ByVal actionDictionary As Object, _
+    ByVal fileNumber As Long)
+
+    Const METHOD_NAME As String = "WriteBreaksActionSummary"
+    Dim errorManager As New ErrorManager
+    Dim arrKeys As Variant
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim strKey As String
+
+    On Error GoTo ErrorHandler
+
+    If actionDictionary.Count = 0 Then
+        Call EmitLine(fileNumber, "NO_ACTIONS|All parser-sensitive checks in BREAKS_ONLY passed.")
+        GoTo ExitSub
+    End If
+
+    arrKeys = SortedDictionaryKeys(actionDictionary)
+    For lngIndex = LBound(arrKeys) To UBound(arrKeys)
+        strKey = CStr(arrKeys(lngIndex))
+        Call EmitLine(fileNumber, _
+            "ACTION|count=" & CStr(actionDictionary(strKey)) & "|" & strKey)
+    Next lngIndex
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitSub
+End Sub
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
