@@ -929,8 +929,9 @@ Private Function BuildSinglePageContent( _
         dblTableTopY - dblTableBottomY)
 
     If blnLastPage Then
+        ' V12 final audit: OLD Oracle footer uses /F2 Arial-Bold at 8 pt.
         strContent = strContent & BuildAbsoluteTextCommand( _
-            "/F1", _
+            "/F2", _
             FOOTER_FONT_SIZE, _
             FOOTER_X, _
             dblTableBottomY - FOOTER_BASELINE_GAP, _
@@ -4677,7 +4678,11 @@ Private Function BuildPdfDocument( _
     ' explicit Widths/FontDescriptor. The previous Arial-Bold mapping caused
     ' visually bold Whg, Spesen and Devisenkurs despite matching alias/XY.
     arrObjects(4) = "<< /Type /Font /Subtype /Type1 /BaseFont /#54#69#6D#65#73#2D#52#6F#6D#61#6E /Encoding /WinAnsiEncoding >>"
-    arrObjects(5) = "<< /Type /Font /Subtype /Type1 /BaseFont /#54#69#6D#65#73#2D#52#6F#6D#61#6E /Encoding /WinAnsiEncoding >>"
+    ' OLD Oracle uses a dedicated footer-only /F2 Arial-Bold resource.
+    arrObjects(5) = _
+        "<< /Type /Font /Subtype /Type1 /BaseFont /#41#72#69#61#6C#2D#42#6F#6C#64 " & _
+        "/FirstChar 32 /LastChar 255 /Widths 6 0 R /FontDescriptor 7 0 R " & _
+        "/Encoding /WinAnsiEncoding >>"
     arrObjects(6) = GetArialBoldWidthsArray()
     arrObjects(7) = _
         "<< /Type /FontDescriptor /FontName /#41#72#69#61#6C#2D#42#6F#6C#64 /Flags 32 " & _
@@ -4712,7 +4717,11 @@ Private Function BuildPdfDocument( _
         End If
         strKids = strKids & CStr(lngPageObject) & " 0 R"
 
-        strPageResources = "<< /Font << /F0 3 0 R /F1 4 0 R >>"
+        If lngPage = colPageContents.Count Then
+            strPageResources = "<< /Font << /F0 3 0 R /F1 4 0 R /F2 5 0 R >>"
+        Else
+            strPageResources = "<< /Font << /F0 3 0 R /F1 4 0 R >>"
+        End If
 
         If lngPage = 1 Then
             strPageResources = strPageResources & _
