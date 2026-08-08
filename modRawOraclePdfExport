@@ -34,6 +34,7 @@ Private Const FOOTER_X As Double = 40.52
 Private Const FOOTER_BASELINE_GAP As Double = 26.24
 Private Const FOOTER_FONT_SIZE As Double = 8#
 Private Const FOOTER_TEXT As String = "Diese Abrechnung wurde maschinell erstellt und ist ohne eigenhaendige Unterschrift gueltig"
+' Latest audit: OLD and NEW pagination both use x=1287, y=55.52, /F0 at 8 pt. Do not apply a visual-only shift.
 Private Const PAGE_NUMBER_X As Double = 1287#
 Private Const PAGE_NUMBER_Y As Double = 55.52
 Private Const PAGE_NUMBER_FONT_SIZE As Double = 8#
@@ -929,7 +930,7 @@ Private Function BuildSinglePageContent( _
         dblTableTopY - dblTableBottomY)
 
     If blnLastPage Then
-        ' V12 final audit: OLD Oracle footer uses /F2 Arial-Bold at 8 pt.
+        ' Latest audit: OLD Oracle footer uses /F2 /Arial,Bold at 8 pt.
         strContent = strContent & BuildAbsoluteTextCommand( _
             "/F2", _
             FOOTER_FONT_SIZE, _
@@ -4678,14 +4679,14 @@ Private Function BuildPdfDocument( _
     ' explicit Widths/FontDescriptor. The previous Arial-Bold mapping caused
     ' visually bold Whg, Spesen and Devisenkurs despite matching alias/XY.
     arrObjects(4) = "<< /Type /Font /Subtype /Type1 /BaseFont /#54#69#6D#65#73#2D#52#6F#6D#61#6E /Encoding /WinAnsiEncoding >>"
-    ' OLD Oracle uses a dedicated footer-only /F2 Arial-Bold resource.
+    ' OLD Oracle uses a dedicated footer-only /F2 PostScript /Arial,Bold resource.
     arrObjects(5) = _
-        "<< /Type /Font /Subtype /Type1 /BaseFont /#41#72#69#61#6C#2D#42#6F#6C#64 " & _
+        "<< /Type /Font /Subtype /Type1 /BaseFont /#41#72#69#61#6C#2C#42#6F#6C#64 " & _
         "/FirstChar 32 /LastChar 255 /Widths 6 0 R /FontDescriptor 7 0 R " & _
         "/Encoding /WinAnsiEncoding >>"
     arrObjects(6) = GetArialBoldWidthsArray()
     arrObjects(7) = _
-        "<< /Type /FontDescriptor /FontName /#41#72#69#61#6C#2D#42#6F#6C#64 /Flags 32 " & _
+        "<< /Type /FontDescriptor /FontName /#41#72#69#61#6C#2C#42#6F#6C#64 /Flags 32 " & _
         "/FontBBox [-664 -324 2000 1039] /ItalicAngle 0 /Ascent 1031 " & _
         "/Descent -281 /CapHeight 750 /StemV 0 /MissingWidth 0 >>"
 
