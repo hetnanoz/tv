@@ -22,6 +22,9 @@ Private Const ORACLE_MIN_DATA_ROW_STEP As Double = 16#
 Private Const ORACLE_MAX_DATA_ROW_STEP As Double = 20#
 Private Const BREAKS_FIELD_X_TOLERANCE As Double = 3#
 Private Const BREAKS_NEAR_RULE_Y_TOLERANCE As Double = 0.75
+Private Const BREAKS_EXCLUDE_WKN_CONTENT As Boolean = True
+Private Const BREAKS_SUPER_SHORT_MAX_FAMILIES As Long = 12
+Private Const BREAKS_SUPER_SHORT_SAMPLES_PER_FAMILY As Long = 2
 
 Private Type tPdfLine
     PageNo As Long
@@ -193,6 +196,7 @@ Public Sub RunPdfComparisonBrowse()
     Dim strAuditPath As String
     Dim strBreaksPath As String
     Dim strBreaksSummaryPath As String
+    Dim strBreaksSuperShortPath As String
     Dim strDetailPath As String
     Dim strNewPdfPath As String
     Dim strOldPdfPath As String
@@ -213,6 +217,7 @@ Public Sub RunPdfComparisonBrowse()
     strDetailPath = BuildComparisonOutputPath(strOldPdfPath, strNewPdfPath)
     strBreaksPath = BuildBreaksOnlyOutputPath(strOldPdfPath, strNewPdfPath)
     strBreaksSummaryPath = BuildBreaksSummaryOutputPath(strOldPdfPath, strNewPdfPath)
+    strBreaksSuperShortPath = BuildBreaksSuperShortOutputPath(strOldPdfPath, strNewPdfPath)
 
     If Not PdfOracleCloneAudit( _
         strOldPdfPath, _
@@ -220,14 +225,16 @@ Public Sub RunPdfComparisonBrowse()
         strAuditPath, _
         strDetailPath, _
         strBreaksPath, _
-        strBreaksSummaryPath) Then
+        strBreaksSummaryPath, _
+        strBreaksSuperShortPath) Then
 
         Err.Raise ERR_BASE + 2, METHOD_NAME, "The Oracle clone PDF audit could not be completed."
     End If
 
     MsgBox _
         "Oracle clone audit completed." & vbCrLf & vbCrLf & _
-        "SEND / SCREENSHOT THIS FILE (V11 structural fields):" & vbCrLf & strBreaksSummaryPath & vbCrLf & vbCrLf & _
+        "SEND THIS SUPER-SHORT FILE FIRST:" & vbCrLf & strBreaksSuperShortPath & vbCrLf & vbCrLf & _
+        "Full actionable summary:" & vbCrLf & strBreaksSummaryPath & vbCrLf & vbCrLf & _
         "Full remaining breaks:" & vbCrLf & strBreaksPath & vbCrLf & vbCrLf & _
         "Main audit:" & vbCrLf & strAuditPath & vbCrLf & vbCrLf & _
         "Detailed vector comparison:" & vbCrLf & strDetailPath, _
@@ -246,13 +253,14 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "oldPdfPath;newPdfPath;auditPath;detailPath;breaksPath;breaksSummaryPath", _
+        "oldPdfPath;newPdfPath;auditPath;detailPath;breaksPath;breaksSummaryPath;breaksSuperShortPath", _
         strOldPdfPath, _
         strNewPdfPath, _
         strAuditPath, _
         strDetailPath, _
         strBreaksPath, _
-        strBreaksSummaryPath
+        strBreaksSummaryPath, _
+        strBreaksSuperShortPath
 
     errorManager.save
     errorManager.display "The Oracle PDF audit failed."
@@ -4525,7 +4533,8 @@ Public Function PdfOracleCloneAudit( _
     ByVal auditOutputPath As String, _
     ByVal detailOutputPath As String, _
     Optional ByVal breaksOutputPath As String = vbNullString, _
-    Optional ByVal breaksSummaryOutputPath As String = vbNullString) As Boolean
+    Optional ByVal breaksSummaryOutputPath As String = vbNullString, _
+    Optional ByVal breaksSuperShortOutputPath As String = vbNullString) As Boolean
 
     Const METHOD_NAME As String = "PdfOracleCloneAudit"
     Dim errorManager As New ErrorManager
@@ -4560,6 +4569,10 @@ Public Function PdfOracleCloneAudit( _
         breaksSummaryOutputPath = BuildBreaksSummaryOutputPath(oldPdfPath, newPdfPath)
     End If
 
+    If Len(Trim$(breaksSuperShortOutputPath)) = 0 Then
+        breaksSuperShortOutputPath = BuildBreaksSuperShortOutputPath(oldPdfPath, newPdfPath)
+    End If
+
     Call LoadPdfDocument(oldPdfPath, oldDoc)
     If oldDoc.PageCount = 0 Then
         Err.Raise 1014, METHOD_NAME, "The old PDF could not be parsed into page content."
@@ -4573,6 +4586,11 @@ Public Function PdfOracleCloneAudit( _
     Call WriteOracleCloneAuditReport(oldDoc, newDoc, auditOutputPath)
     Call WriteComparisonReport(oldDoc, newDoc, detailOutputPath)
     Call WriteBreaksOnlyReport(oldDoc, newDoc, breaksOutputPath)
+    Call WriteBreaksSuperShortReport( _
+        oldDoc, _
+        newDoc, _
+        breaksOutputPath, _
+        breaksSuperShortOutputPath)
     Call WriteBreaksExecutiveSummary( _
         oldDoc, _
         newDoc, _
@@ -4594,13 +4612,14 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "oldPdfPath;newPdfPath;auditOutputPath;detailOutputPath;breaksOutputPath;breaksSummaryOutputPath", _
+        "oldPdfPath;newPdfPath;auditOutputPath;detailOutputPath;breaksOutputPath;breaksSummaryOutputPath;breaksSuperShortOutputPath", _
         oldPdfPath, _
         newPdfPath, _
         auditOutputPath, _
         detailOutputPath, _
         breaksOutputPath, _
-        breaksSummaryOutputPath
+        breaksSummaryOutputPath, _
+        breaksSuperShortOutputPath
 
     errorManager.save
     Resume ExitFunction
@@ -4751,6 +4770,60 @@ ErrorHandler:
     errNumber = VBA.Err.Number
     errDescription = VBA.Err.Description
     BuildBreaksSummaryOutputPath = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "oldPdfPath;newPdfPath", _
+        oldPdfPath, _
+        newPdfPath
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-08
+' Parameters:    oldPdfPath As String, newPdfPath As String
+' Returns:       String
+' Description:   Builds the path for the super-short parser-sensitive breaks report.
+'-------------------------------------------------------------------------------
+Private Function BuildBreaksSuperShortOutputPath( _
+    ByVal oldPdfPath As String, _
+    ByVal newPdfPath As String) As String
+
+    Const METHOD_NAME As String = "BuildBreaksSuperShortOutputPath"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngSlashPosition As Long
+    Dim strFolder As String
+    Dim strNewBase As String
+    Dim strOldBase As String
+
+    On Error GoTo ErrorHandler
+
+    lngSlashPosition = InStrRev(newPdfPath, "\")
+    If lngSlashPosition > 0 Then
+        strFolder = Left$(newPdfPath, lngSlashPosition)
+    End If
+
+    strOldBase = FileBaseName(oldPdfPath)
+    strNewBase = FileBaseName(newPdfPath)
+
+    BuildBreaksSuperShortOutputPath = _
+        strFolder & strOldBase & "_VS_" & strNewBase & "_BREAKS_SUPER_SHORT.txt"
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildBreaksSuperShortOutputPath = vbNullString
 
     errorManager.addError _
         CLASS_NAME, _
@@ -7023,6 +7096,563 @@ End Function
 ' Returns:       ---
 ' Description:   Writes a short, screenshot-friendly summary of the detailed
 '                BREAKS_ONLY report. Raw events are grouped into fix families.
+ '-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-08
+' Parameters:    oldDoc, newDoc, detailedBreaksPath, outputPath
+' Returns:       ---
+' Description:   Writes an ultra-short report containing only parser-sensitive
+'                break families and enough representative detail to fix them.
+'-------------------------------------------------------------------------------
+Private Sub WriteBreaksSuperShortReport( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal detailedBreaksPath As String, _
+    ByVal outputPath As String)
+
+    Const METHOD_NAME As String = "WriteBreaksSuperShortReport"
+    Dim arrIssueKeys As Variant
+    Dim blnReady As Boolean
+    Dim dictIssueCounts As Object
+    Dim dictIssueSamples As Object
+    Dim dictPageResults As Object
+    Dim dictSampleCounts As Object
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngCritical As Long
+    Dim lngCurrentPage As Long
+    Dim lngFileIn As Long
+    Dim lngFileOut As Long
+    Dim lngIndex As Long
+    Dim lngInfo As Long
+    Dim lngOperatorSerializationPages As Long
+    Dim lngPage As Long
+    Dim lngPagesCompared As Long
+    Dim lngSampleIndex As Long
+    Dim lngStructural As Long
+    Dim strFamily As String
+    Dim strIssueKey As String
+    Dim strLine As String
+    Dim strPageLine As String
+    Dim strPageResult As String
+    Dim strResult As String
+    Dim strSampleKey As String
+
+    On Error GoTo ErrorHandler
+
+    Set dictIssueCounts = CreateObject("Scripting.Dictionary")
+    Set dictIssueSamples = CreateObject("Scripting.Dictionary")
+    Set dictPageResults = CreateObject("Scripting.Dictionary")
+    Set dictSampleCounts = CreateObject("Scripting.Dictionary")
+
+    lngFileIn = FreeFile
+    Open detailedBreaksPath For Input Access Read As #lngFileIn
+
+    Do While Not EOF(lngFileIn)
+        Line Input #lngFileIn, strLine
+
+        If Left$(strLine, 5) = "PAGE|" Then
+            lngCurrentPage = CLng(Val(Mid$(strLine, 6)))
+            If lngCurrentPage > lngPagesCompared Then
+                lngPagesCompared = lngCurrentPage
+            End If
+
+        ElseIf Left$(strLine, 12) = "PAGE_RESULT|" Then
+            lngPage = CLng(Val(BreaksSummaryField(strLine, "page")))
+            If lngPage <= 0 Then
+                lngPage = lngCurrentPage
+            End If
+
+            dictPageResults(CStr(lngPage)) = strLine
+
+        ElseIf Left$(strLine, 17) = "PAGE_STREAM_INFO|" Then
+            If BreaksSummaryField(strLine, "type") = "OPERATOR_PROFILE_COUNT_ONLY" Then
+                lngOperatorSerializationPages = lngOperatorSerializationPages + 1
+            End If
+
+        ElseIf Left$(strLine, 15) = "BREAKS_SUMMARY|" Then
+            lngCritical = CLng(Val(BreaksSummaryField(strLine, "critical")))
+            lngStructural = CLng(Val(BreaksSummaryField(strLine, "structural")))
+            lngInfo = CLng(Val(BreaksSummaryField(strLine, "informational")))
+
+            If CLng(Val(BreaksSummaryField(strLine, "pagesCompared"))) > 0 Then
+                lngPagesCompared = CLng(Val(BreaksSummaryField(strLine, "pagesCompared")))
+            End If
+
+        ElseIf BreaksIsSuperShortBreakingLine(strLine) Then
+            strFamily = BreaksSuperShortIssueFamily(strLine)
+
+            If Len(strFamily) = 0 Then
+                strFamily = "UNCLASSIFIED_BREAK"
+            End If
+
+            Call BreaksSummaryIncrementBy( _
+                dictIssueCounts, _
+                strFamily, _
+                1)
+
+            Call BreaksSuperShortAddSample( _
+                dictIssueSamples, _
+                dictSampleCounts, _
+                strFamily, _
+                "page=" & CStr(lngCurrentPage) & "|" & strLine)
+        End If
+    Loop
+
+    Close #lngFileIn
+    lngFileIn = 0
+
+    If dictIssueCounts.Count = 0 And _
+       (lngCritical > 0 Or lngStructural > 0) Then
+
+        Call BreaksSummaryIncrementBy( _
+            dictIssueCounts, _
+            "UNCLASSIFIED_BREAKS", _
+            lngCritical + lngStructural)
+    End If
+
+    blnReady = _
+        dictIssueCounts.Count = 0 And _
+        lngCritical = 0 And _
+        lngStructural = 0
+
+    If blnReady Then
+        strResult = "READY_FOR_CLIENT_PARSER_TEST"
+    Else
+        strResult = "ACTION_REQUIRED"
+    End If
+
+    lngFileOut = OpenNew(outputPath)
+
+    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_SUPER_SHORT_V1")
+    Call EmitLine(lngFileOut, "OLD|" & oldDoc.PdfPath)
+    Call EmitLine(lngFileOut, "NEW|" & newDoc.PdfPath)
+    Call EmitLine(lngFileOut, _
+        "RESULT|status=" & strResult & _
+        "|breakFamilies=" & CStr(dictIssueCounts.Count) & _
+        "|criticalEvents=" & CStr(lngCritical) & _
+        "|structuralActionableEvents=" & CStr(lngStructural) & _
+        "|pagesCompared=" & CStr(lngPagesCompared))
+    Call EmitLine(lngFileOut, _
+        "SCOPE|Only parser-sensitive breaks are listed. Compatible operator-count serialization and input-value differences are omitted.")
+    Call EmitLine(lngFileOut, _
+        "POLICY|WKN_CONTENT=EXCLUDED|positionFontStillAudited=TRUE")
+
+    If blnReady Then
+        Call EmitLine(lngFileOut, "BREAKING_ISSUES|NONE")
+
+        If lngOperatorSerializationPages > 0 Then
+            Call EmitLine(lngFileOut, _
+                "COMPATIBLE_INFO|operatorProfileCountOnlyPages=" & _
+                CStr(lngOperatorSerializationPages) & _
+                "|actionRequired=FALSE")
+        End If
+
+        Call EmitLine(lngFileOut, _
+            "NEXT|Proceed to the proprietary client-parser test.")
+        GoTo ExitSub
+    End If
+
+    Call EmitLine(lngFileOut, vbNullString)
+    Call EmitLine(lngFileOut, "BREAKING_ISSUES")
+
+    arrIssueKeys = BreaksSuperShortSortedIssueKeys(dictIssueCounts)
+
+    For lngIndex = LBound(arrIssueKeys) To UBound(arrIssueKeys)
+        If lngIndex >= BREAKS_SUPER_SHORT_MAX_FAMILIES Then
+            Call EmitLine(lngFileOut, _
+                "ISSUE|... " & _
+                CStr(dictIssueCounts.Count - BREAKS_SUPER_SHORT_MAX_FAMILIES) & _
+                " additional family/families omitted")
+            Exit For
+        End If
+
+        strIssueKey = CStr(arrIssueKeys(lngIndex))
+        Call EmitLine(lngFileOut, _
+            "ISSUE|family=" & strIssueKey & _
+            "|count=" & CStr(dictIssueCounts(strIssueKey)))
+    Next lngIndex
+
+    Call EmitLine(lngFileOut, vbNullString)
+    Call EmitLine(lngFileOut, "AFFECTED_PAGES")
+
+    For lngPage = 1 To lngPagesCompared
+        If dictPageResults.Exists(CStr(lngPage)) Then
+            strPageLine = CStr(dictPageResults(CStr(lngPage)))
+            strPageResult = BreaksSummaryField(strPageLine, "result")
+
+            If Not BreaksSuperShortPageResultIsPass(strPageResult) Then
+                Call EmitLine(lngFileOut, _
+                    "PAGE_ISSUE|" & Mid$(strPageLine, Len("PAGE_RESULT|") + 1))
+            End If
+        End If
+    Next lngPage
+
+    Call EmitLine(lngFileOut, vbNullString)
+    Call EmitLine(lngFileOut, "DETAIL_SAMPLES")
+
+    For lngIndex = LBound(arrIssueKeys) To UBound(arrIssueKeys)
+        If lngIndex >= BREAKS_SUPER_SHORT_MAX_FAMILIES Then
+            Exit For
+        End If
+
+        strIssueKey = CStr(arrIssueKeys(lngIndex))
+
+        For lngSampleIndex = 1 To BREAKS_SUPER_SHORT_SAMPLES_PER_FAMILY
+            strSampleKey = strIssueKey & Chr$(30) & CStr(lngSampleIndex)
+
+            If dictIssueSamples.Exists(strSampleKey) Then
+                Call EmitLine(lngFileOut, _
+                    "DETAIL|family=" & strIssueKey & _
+                    "|" & CStr(dictIssueSamples(strSampleKey)))
+            End If
+        Next lngSampleIndex
+    Next lngIndex
+
+    Call EmitLine(lngFileOut, vbNullString)
+    Call EmitLine(lngFileOut, _
+        "NEXT|Fix the listed families in order, rerun the audit, and send this same super-short file.")
+
+ExitSub:
+    If lngFileIn > 0 Then Close #lngFileIn
+    If lngFileOut > 0 Then Close #lngFileOut
+
+    Set dictIssueCounts = Nothing
+    Set dictIssueSamples = Nothing
+    Set dictPageResults = Nothing
+    Set dictSampleCounts = Nothing
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "detailedBreaksPath;outputPath", _
+        detailedBreaksPath, _
+        outputPath
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-08
+' Parameters:    lineText As String
+' Returns:       Boolean
+' Description:   Returns True only for parser-sensitive break-detail lines.
+'-------------------------------------------------------------------------------
+Private Function BreaksIsSuperShortBreakingLine( _
+    ByVal lineText As String) As Boolean
+
+    Const METHOD_NAME As String = "BreaksIsSuperShortBreakingLine"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    BreaksIsSuperShortBreakingLine = _
+        Left$(lineText, Len("DOCUMENT_BREAK|")) = "DOCUMENT_BREAK|" Or _
+        Left$(lineText, Len("PAGE_BREAK|")) = "PAGE_BREAK|" Or _
+        Left$(lineText, Len("PAGE_STREAM_BREAK|")) = "PAGE_STREAM_BREAK|" Or _
+        Left$(lineText, Len("TEXT_POSITION|")) = "TEXT_POSITION|" Or _
+        Left$(lineText, Len("TEXT_FONT|")) = "TEXT_FONT|" Or _
+        Left$(lineText, Len("WHITESPACE_ONLY|")) = "WHITESPACE_ONLY|" Or _
+        Left$(lineText, Len("FIXED_TEXT_CONTENT|")) = "FIXED_TEXT_CONTENT|" Or _
+        Left$(lineText, Len("FIXED_TEXT_ONLY_OLD|")) = "FIXED_TEXT_ONLY_OLD|" Or _
+        Left$(lineText, Len("FIXED_TEXT_ONLY_NEW|")) = "FIXED_TEXT_ONLY_NEW|" Or _
+        Left$(lineText, Len("TARGET_SEPARATOR_STYLE|")) = "TARGET_SEPARATOR_STYLE|" Or _
+        Left$(lineText, Len("TARGET_SEPARATOR_GEOMETRY|")) = "TARGET_SEPARATOR_GEOMETRY|" Or _
+        Left$(lineText, Len("TARGET_SEPARATOR_EXTRA_NEW|")) = "TARGET_SEPARATOR_EXTRA_NEW|" Or _
+        Left$(lineText, Len("VECTOR_STYLE|")) = "VECTOR_STYLE|" Or _
+        Left$(lineText, Len("VECTOR_GEOMETRY|")) = "VECTOR_GEOMETRY|" Or _
+        Left$(lineText, Len("VECTOR_ONLY_OLD|")) = "VECTOR_ONLY_OLD|" Or _
+        Left$(lineText, Len("VECTOR_ONLY_NEW|")) = "VECTOR_ONLY_NEW|"
+
+    If Left$(lineText, Len("TARGET_SEPARATOR|")) = "TARGET_SEPARATOR|" Then
+        If BreaksSummaryField(lineText, "result") = "FAIL" Then
+            BreaksIsSuperShortBreakingLine = True
+        End If
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksIsSuperShortBreakingLine = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-08
+' Parameters:    lineText As String
+' Returns:       String
+' Description:   Creates a stable code-level issue family from one raw break line.
+'-------------------------------------------------------------------------------
+Private Function BreaksSuperShortIssueFamily( _
+    ByVal lineText As String) As String
+
+    Const METHOD_NAME As String = "BreaksSuperShortIssueFamily"
+    Dim arrParts() As String
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strPrefix As String
+    Dim strRole As String
+    Dim strType As String
+    Dim strX As String
+
+    On Error GoTo ErrorHandler
+
+    arrParts = Split(lineText, "|")
+    strPrefix = arrParts(0)
+    strType = BreaksSummaryField(lineText, "type")
+    strRole = BreaksSummaryField(lineText, "role")
+    strX = BreaksSummaryField(lineText, "x")
+
+    Select Case strPrefix
+        Case "DOCUMENT_BREAK"
+            BreaksSuperShortIssueFamily = "DOCUMENT_" & strType
+
+        Case "PAGE_BREAK"
+            BreaksSuperShortIssueFamily = "PAGE_" & strType
+
+        Case "PAGE_STREAM_BREAK"
+            BreaksSuperShortIssueFamily = "STREAM_" & strType
+
+        Case "TEXT_POSITION"
+            If Len(strRole) = 0 Then strRole = "UNCLASSIFIED"
+            BreaksSuperShortIssueFamily = "TEXT_POSITION_" & strRole
+
+        Case "TEXT_FONT"
+            If Len(strRole) = 0 Then strRole = "UNCLASSIFIED"
+            BreaksSuperShortIssueFamily = "TEXT_FONT_" & strRole
+
+        Case "WHITESPACE_ONLY"
+            If Len(strRole) = 0 Then strRole = "UNCLASSIFIED"
+            BreaksSuperShortIssueFamily = "WHITESPACE_" & strRole
+
+        Case "TARGET_SEPARATOR", _
+             "TARGET_SEPARATOR_STYLE", _
+             "TARGET_SEPARATOR_GEOMETRY", _
+             "TARGET_SEPARATOR_EXTRA_NEW"
+
+            If Len(strX) = 0 Then strX = "UNKNOWN"
+            BreaksSuperShortIssueFamily = "TARGET_SEPARATOR_X_" & _
+                Replace(strX, ".", "_")
+
+        Case "VECTOR_STYLE"
+            BreaksSuperShortIssueFamily = "VECTOR_STYLE"
+
+        Case "VECTOR_GEOMETRY", _
+             "VECTOR_ONLY_OLD", _
+             "VECTOR_ONLY_NEW"
+
+            BreaksSuperShortIssueFamily = "VECTOR_GEOMETRY"
+
+        Case Else
+            BreaksSuperShortIssueFamily = strPrefix
+    End Select
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksSuperShortIssueFamily = "UNCLASSIFIED_BREAK"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-08
+' Parameters:    sampleDictionary, countDictionary, family, sampleText
+' Returns:       ---
+' Description:   Stores a bounded number of representative samples per issue family.
+'-------------------------------------------------------------------------------
+Private Sub BreaksSuperShortAddSample( _
+    ByVal sampleDictionary As Object, _
+    ByVal countDictionary As Object, _
+    ByVal family As String, _
+    ByVal sampleText As String)
+
+    Const METHOD_NAME As String = "BreaksSuperShortAddSample"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngCount As Long
+    Dim strSampleKey As String
+
+    On Error GoTo ErrorHandler
+
+    If countDictionary.Exists(family) Then
+        lngCount = CLng(countDictionary(family))
+    End If
+
+    If lngCount >= BREAKS_SUPER_SHORT_SAMPLES_PER_FAMILY Then
+        GoTo ExitSub
+    End If
+
+    lngCount = lngCount + 1
+    countDictionary(family) = lngCount
+    strSampleKey = family & Chr$(30) & CStr(lngCount)
+    sampleDictionary(strSampleKey) = SanitizeReportText(sampleText)
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "family", _
+        family
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-08
+' Parameters:    issueDictionary As Object
+' Returns:       Variant
+' Description:   Returns issue-family keys sorted by count descending, then name.
+'-------------------------------------------------------------------------------
+Private Function BreaksSuperShortSortedIssueKeys( _
+    ByVal issueDictionary As Object) As Variant
+
+    Const METHOD_NAME As String = "BreaksSuperShortSortedIssueKeys"
+    Dim arrKeys() As String
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim lngInner As Long
+    Dim strSwap As String
+    Dim varKey As Variant
+
+    On Error GoTo ErrorHandler
+
+    If issueDictionary.Count = 0 Then
+        BreaksSuperShortSortedIssueKeys = Array()
+        GoTo ExitFunction
+    End If
+
+    ReDim arrKeys(0 To issueDictionary.Count - 1)
+
+    For Each varKey In issueDictionary.Keys
+        arrKeys(lngIndex) = CStr(varKey)
+        lngIndex = lngIndex + 1
+    Next varKey
+
+    For lngIndex = LBound(arrKeys) To UBound(arrKeys) - 1
+        For lngInner = lngIndex + 1 To UBound(arrKeys)
+            If CLng(issueDictionary(arrKeys(lngInner))) > _
+               CLng(issueDictionary(arrKeys(lngIndex))) Or _
+               (CLng(issueDictionary(arrKeys(lngInner))) = _
+                CLng(issueDictionary(arrKeys(lngIndex))) And _
+                StrComp(arrKeys(lngInner), arrKeys(lngIndex), vbBinaryCompare) < 0) Then
+
+                strSwap = arrKeys(lngIndex)
+                arrKeys(lngIndex) = arrKeys(lngInner)
+                arrKeys(lngInner) = strSwap
+            End If
+        Next lngInner
+    Next lngIndex
+
+    BreaksSuperShortSortedIssueKeys = arrKeys
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksSuperShortSortedIssueKeys = Array()
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-08
+' Parameters:    pageResult As String
+' Returns:       Boolean
+' Description:   Treats PASS and PASS_* compatibility statuses as non-breaking.
+'-------------------------------------------------------------------------------
+Private Function BreaksSuperShortPageResultIsPass( _
+    ByVal pageResult As String) As Boolean
+
+    Const METHOD_NAME As String = "BreaksSuperShortPageResultIsPass"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    BreaksSuperShortPageResultIsPass = _
+        Left$(UCase$(Trim$(pageResult)), 4) = "PASS"
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksSuperShortPageResultIsPass = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageResult", _
+        pageResult
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
 '-------------------------------------------------------------------------------
 Private Sub WriteBreaksExecutiveSummary( _
     ByRef oldDoc As tPdfDocument, _
@@ -7050,6 +7680,7 @@ Private Sub WriteBreaksExecutiveSummary( _
     Dim lngFileOut As Long
     Dim lngLikelyTextShift As Long
     Dim lngMatchingNoise As Long
+    Dim lngOperatorSerializationPages As Long
     Dim lngPage As Long
     Dim lngPagesCompared As Long
     Dim lngRawCritical As Long
@@ -7070,6 +7701,7 @@ Private Sub WriteBreaksExecutiveSummary( _
     Dim strFooterOld As String
     Dim strFooterNew As String
     Dim strKey As Variant
+    Dim strCompatibilityStatus As String
     Dim strLine As String
     Dim strRawStatus As String
 
@@ -7208,6 +7840,11 @@ Private Sub WriteBreaksExecutiveSummary( _
                Left$(strLine, 13) = "FOOTER_SHIFT|" Then
 
             Call BreaksSummaryAddSample(sampleFooter, strLine, 4)
+
+        ElseIf Left$(strLine, 17) = "PAGE_STREAM_INFO|" Then
+            If BreaksSummaryField(strLine, "type") = "OPERATOR_PROFILE_COUNT_ONLY" Then
+                lngOperatorSerializationPages = lngOperatorSerializationPages + 1
+            End If
 
         ElseIf Left$(strLine, 18) = "PAGE_STREAM_BREAK|" Then
             If BreaksSummaryField(strLine, "type") = "OPERATOR_PROFILE" Then
@@ -7356,19 +7993,31 @@ Private Sub WriteBreaksExecutiveSummary( _
 
     Call BreaksSummaryIncrementBy( _
         dictIgnore, _
-        "EXPECTED_INPUT_VALUES|ACTION=Security description/WKN/business-value differences remain informational when OLD and NEW inputs differ.", _
+        "EXPECTED_INPUT_VALUES|ACTION=Security-description/business-value differences remain informational. WKN content is excluded by policy; position/font remain audited.", _
         1)
+
+    If dictFixNow.Count = 0 And _
+       dictVerify.Count = 0 And _
+       lngRawCritical = 0 And _
+       lngRawStructural = 0 Then
+
+        strCompatibilityStatus = "READY_FOR_CLIENT_PARSER_TEST"
+    Else
+        strCompatibilityStatus = "ACTION_REQUIRED"
+    End If
 
     '-----------------------------------------------------------------------
     ' Write compact decision-oriented summary.
     '-----------------------------------------------------------------------
     lngFileOut = OpenNew(outputPath)
 
-    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V10_PADDING_MATRIX")
+    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V13_FINAL_CLASSIFICATION")
     Call EmitLine(lngFileOut, "OLD|" & oldDoc.PdfPath)
     Call EmitLine(lngFileOut, "NEW|" & newDoc.PdfPath)
     Call EmitLine(lngFileOut, _
-        "PURPOSE|Show this file first. It converts raw events into code-level decisions and includes representative detail samples.")
+        "PURPOSE|Full diagnostic summary. Use BREAKS_SUPER_SHORT first; this file retains extended forensic detail.")
+    Call EmitLine(lngFileOut, _
+        "POLICY|WKN content is excluded from content comparison. WKN position/font remain audited when text exists.")
     Call EmitLine(lngFileOut, _
         "IMPORTANT|Raw critical/structural numbers are event counts, NOT the number of unique code fixes.")
 
@@ -7376,6 +8025,9 @@ Private Sub WriteBreaksExecutiveSummary( _
     Call EmitLine(lngFileOut, "============================================================")
     Call EmitLine(lngFileOut, "GLOBAL")
     Call EmitLine(lngFileOut, "============================================================")
+    Call EmitLine(lngFileOut, _
+        "COMPATIBILITY|status=" & strCompatibilityStatus & _
+        "|operatorSerializationInfoPages=" & CStr(lngOperatorSerializationPages))
     Call EmitLine(lngFileOut, _
         "RAW|status=" & strRawStatus & _
         "|criticalEvents=" & CStr(lngRawCritical) & _
@@ -7561,10 +8213,13 @@ Private Sub WriteBreaksExecutiveSummary( _
             "NEXT|Apply FIX_NOW_STRONG families first, rerun the audit, then reassess VERIFY families.")
     ElseIf dictVerify.Count > 0 Then
         Call EmitLine(lngFileOut, _
-            "NEXT|No strong automatic fix remains. Use the representative samples above for the next targeted code change.")
+            "NEXT|Use the representative samples above for the next targeted code change.")
+    ElseIf lngRawCritical > 0 Or lngRawStructural > 0 Then
+        Call EmitLine(lngFileOut, _
+            "NEXT|ACTION_REQUIRED. Use BREAKS_SUPER_SHORT for the ungrouped parser-sensitive details.")
     Else
         Call EmitLine(lngFileOut, _
-            "NEXT|No actionable parser-sensitive family was detected in this summary.")
+            "NEXT|READY_FOR_CLIENT_PARSER_TEST. No actionable parser-sensitive family remains.")
     End If
 
     If lngTradeMismatchPages > 0 Then
@@ -7574,7 +8229,7 @@ Private Sub WriteBreaksExecutiveSummary( _
     End If
 
     Call EmitLine(lngFileOut, _
-        "SEND_ME|Normally this ACTIONABLE_SUMMARY file alone is enough. Full BREAKS_ONLY is only needed if I explicitly ask for one unresolved family.")
+        "SEND_ME|Send BREAKS_SUPER_SHORT first. This ACTIONABLE_SUMMARY is only needed when the short report contains an unresolved issue family.")
 
 ExitSub:
     If lngFileIn > 0 Then Close #lngFileIn
@@ -8553,7 +9208,9 @@ Private Sub BreaksWriteFontResourceForensics( _
     Dim lngIndex As Long
     Dim strAlias As String
     Dim strNew As String
+    Dim strNewSemantic As String
     Dim strOld As String
+    Dim strOldSemantic As String
 
     On Error GoTo ErrorHandler
 
@@ -8572,11 +9229,15 @@ Private Sub BreaksWriteFontResourceForensics( _
             newDoc.Pages(1).FontForensicSignature, _
             strAlias)
 
+        strOldSemantic = BreaksNormalizeFontForensicEntry(strOld)
+        strNewSemantic = BreaksNormalizeFontForensicEntry(strNew)
+
         Call EmitLine(fileNumber, _
             "FONT_FORENSIC|alias=" & strAlias & _
             "|OLD=" & strOld & _
             "|NEW=" & strNew & _
-            "|exact=" & BoolText(strOld = strNew))
+            "|semanticExact=" & BoolText(strOldSemantic = strNewSemantic) & _
+            "|serializedExact=" & BoolText(strOld = strNew))
     Next lngIndex
 
 ExitSub:
@@ -8655,6 +9316,64 @@ ErrorHandler:
         errDescription, _
         "aliasName", _
         aliasName
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-08
+' Parameters:    forensicEntry As String
+' Returns:       String
+' Description:   Removes arbitrary PDF object numbers before semantic font comparison.
+'-------------------------------------------------------------------------------
+Private Function BreaksNormalizeFontForensicEntry( _
+    ByVal forensicEntry As String) As String
+
+    Const METHOD_NAME As String = "BreaksNormalizeFontForensicEntry"
+    Dim arrParts() As String
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim strPart As String
+    Dim strResult As String
+
+    On Error GoTo ErrorHandler
+
+    If Len(forensicEntry) = 0 Then
+        GoTo ExitFunction
+    End If
+
+    arrParts = Split(forensicEntry, "|")
+
+    For lngIndex = LBound(arrParts) To UBound(arrParts)
+        strPart = arrParts(lngIndex)
+
+        If Left$(strPart, 4) <> "obj=" Then
+            If Len(strResult) > 0 Then
+                strResult = strResult & "|"
+            End If
+            strResult = strResult & strPart
+        End If
+    Next lngIndex
+
+    BreaksNormalizeFontForensicEntry = strResult
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksNormalizeFontForensicEntry = forensicEntry
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
 
     errorManager.save
     Resume ExitFunction
@@ -9695,7 +10414,7 @@ Private Sub WriteBreaksOnlyReport( _
     Set dictActions = CreateObject("Scripting.Dictionary")
     lngFileNumber = OpenNew(outputPath)
 
-    Call EmitLine(lngFileNumber, "ORACLE_COMPATIBILITY_BREAKS_ONLY_V2")
+    Call EmitLine(lngFileNumber, "ORACLE_COMPATIBILITY_BREAKS_ONLY_V13_FINAL_CLASSIFICATION")
     Call EmitLine(lngFileNumber, "OLD|" & oldDoc.PdfPath)
     Call EmitLine(lngFileNumber, "NEW|" & newDoc.PdfPath)
     Call EmitLine(lngFileNumber, _
@@ -9703,7 +10422,11 @@ Private Sub WriteBreaksOnlyReport( _
     Call EmitLine(lngFileNumber, _
         "POLICY|Different business values caused by different input files are INFORMATIONAL and do not create a parser-critical break.")
     Call EmitLine(lngFileNumber, _
-        "POLICY|Whitespace-only text changes are reported separately. WKN or security-description value differences may therefore remain informational.")
+        "POLICY|Whitespace-only text changes are reported separately.")
+    Call EmitLine(lngFileNumber, _
+        "POLICY|WKN_CONTENT=EXCLUDED_FROM_COMPARISON; WKN position/font are still audited when text exists.")
+    Call EmitLine(lngFileNumber, _
+        "POLICY|Operator-profile count-only differences with oldOnly=0 and newOnly=0 are compatible serialization information, not structural breaks.")
     Call EmitLine(lngFileNumber, _
         "TOLERANCE|textPosition=" & NumTxt(BREAKS_POSITION_TOLERANCE) & _
         "|lineMatch=" & NumTxt(BREAKS_LINE_MATCH_TOLERANCE) & _
@@ -9774,8 +10497,13 @@ Private Sub WriteBreaksOnlyReport( _
         "|structural=" & CStr(lngStructural) & _
         "|informational=" & CStr(lngInfo) & _
         "|pagesCompared=" & CStr(lngCommonPages))
-    Call EmitLine(lngFileNumber, _
-        "NEXT_ACTION|Apply CRITICAL fixes first, rerun the audit, then reduce STRUCTURAL differences. Ignore input-value differences unless the client parser proves they are relevant.")
+    If strStatus = "READY_FOR_CLIENT_PARSER_TEST" Then
+        Call EmitLine(lngFileNumber, _
+            "NEXT_ACTION|No parser-sensitive break remains. Proceed to the proprietary client-parser test.")
+    Else
+        Call EmitLine(lngFileNumber, _
+            "NEXT_ACTION|Apply CRITICAL fixes first, rerun the audit, then reduce actionable STRUCTURAL differences.")
+    End If
     Call EmitLine(lngFileNumber, _
         "LIMITATION|The report compares PDF structure and extracted operators; it cannot execute the proprietary client parser.")
 
@@ -9831,6 +10559,7 @@ Private Sub WriteBreaksPageReport( _
 
     Const METHOD_NAME As String = "WriteBreaksPageReport"
     Dim errorManager As New ErrorManager
+    Dim blnOperatorSerializationOnly As Boolean
     Dim errDescription As String
     Dim errNumber As Long
     Dim blnNewFooter As Boolean
@@ -10052,14 +10781,22 @@ Private Sub WriteBreaksPageReport( _
     Set dictNew = BuildOperatorProfileDictionary(newDoc.Pages(pageNo).ContentText)
     Call DictionaryDifferenceCounts(dictOld, dictNew, lngOldOnly, lngNewOnly, lngChanged)
 
-    If lngOldOnly > 0 Or lngNewOnly > 0 Or lngChanged > 0 Then
+    If lngOldOnly > 0 Or lngNewOnly > 0 Then
         structuralCount = structuralCount + 1
         Call EmitLine(fileNumber, _
             "PAGE_STREAM_BREAK|type=OPERATOR_PROFILE|oldOnly=" & CStr(lngOldOnly) & _
             "|newOnly=" & CStr(lngNewOnly) & _
             "|countChanged=" & CStr(lngChanged) & _
-            "|FIX=Review only after geometry/text-position breaks are removed.")
+            "|FIX=Review missing or additional operator families after geometry/text-position fixes.")
         Call IncrementDictionaryValue(actionDictionary, "OPERATOR_PROFILE")
+    ElseIf lngChanged > 0 Then
+        infoCount = infoCount + 1
+        blnOperatorSerializationOnly = True
+        Call EmitLine(fileNumber, _
+            "PAGE_STREAM_INFO|type=OPERATOR_PROFILE_COUNT_ONLY|oldOnly=0|newOnly=0" & _
+            "|countChanged=" & CStr(lngChanged) & _
+            "|classification=COMPATIBLE_SERIALIZATION" & _
+            "|ACTION=None; operator families are identical and only occurrence counts differ.")
     End If
     Set dictOld = Nothing
     Set dictNew = Nothing
@@ -10104,7 +10841,11 @@ Private Sub WriteBreaksPageReport( _
     If criticalCount = lngPageCriticalBefore And _
        structuralCount = lngPageStructuralBefore Then
 
-        strResult = "PASS"
+        If blnOperatorSerializationOnly Then
+            strResult = "PASS_COMPATIBLE_OPERATOR_SERIALIZATION_DIFF"
+        Else
+            strResult = "PASS"
+        End If
     ElseIf criticalCount = lngPageCriticalBefore Then
         strResult = "WARN"
     Else
@@ -10115,7 +10856,8 @@ Private Sub WriteBreaksPageReport( _
         "PAGE_RESULT|page=" & CStr(pageNo) & _
         "|result=" & strResult & _
         "|newCritical=" & CStr(criticalCount - lngPageCriticalBefore) & _
-        "|newStructural=" & CStr(structuralCount - lngPageStructuralBefore))
+        "|newStructural=" & CStr(structuralCount - lngPageStructuralBefore) & _
+        "|operatorSerializationOnly=" & BoolText(blnOperatorSerializationOnly))
 
 ExitSub:
     Set dictOld = Nothing
@@ -10465,6 +11207,47 @@ End Sub
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
+' Creation date: 2026-08-08
+' Parameters:    fieldRole As String
+' Returns:       Boolean
+' Description:   Excludes WKN business content while leaving position and font checks active.
+'-------------------------------------------------------------------------------
+Private Function BreaksIsContentComparisonExcludedRole( _
+    ByVal fieldRole As String) As Boolean
+
+    Const METHOD_NAME As String = "BreaksIsContentComparisonExcludedRole"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    BreaksIsContentComparisonExcludedRole = _
+        BREAKS_EXCLUDE_WKN_CONTENT And _
+        StrComp(fieldRole, "TOP_WKN", vbTextCompare) = 0
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksIsContentComparisonExcludedRole = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "fieldRole", _
+        fieldRole
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
 ' Creation date: 2026-08-07
 ' Parameters:    oldDoc, newDoc, pageNo, fileNumber, actionDictionary, counters
 ' Returns:       ---
@@ -10524,9 +11307,16 @@ Private Sub WriteBreaksTextDifferences( _
 
             If lngNewIndex >= 0 Then
                 blnNewUsed(lngNewIndex) = True
-                strFieldRole = BreaksInferFieldRole( _
-                    oldDoc.Texts(lngIndex).TextValue, _
-                    oldDoc.Texts(lngIndex).X)
+                strFieldRole = BreaksInferStructuralFieldRole( _
+                    pageNo, _
+                    oldDoc.Texts(lngIndex).X, _
+                    oldDoc.Texts(lngIndex).Y)
+
+                If Len(strFieldRole) = 0 Then
+                    strFieldRole = BreaksInferFieldRole( _
+                        oldDoc.Texts(lngIndex).TextValue, _
+                        oldDoc.Texts(lngIndex).X)
+                End If
 
                 dblShiftX = oldDoc.Texts(lngIndex).X - newDoc.Texts(lngNewIndex).X
                 dblShiftY = oldDoc.Texts(lngIndex).Y - newDoc.Texts(lngNewIndex).Y
@@ -10596,58 +11386,67 @@ Private Sub WriteBreaksTextDifferences( _
                 strOldText = oldDoc.Texts(lngIndex).TextValue
                 strNewText = newDoc.Texts(lngNewIndex).TextValue
 
-                If StrComp(strOldText, strNewText, vbBinaryCompare) <> 0 Then
-                    If NormalizeBreaksWhitespace(strOldText) = NormalizeBreaksWhitespace(strNewText) Then
-                        infoCount = infoCount + 1
-                        If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
-                            Call EmitLine(fileNumber, _
-                                "WHITESPACE_ONLY" & _
-                                "|role=" & strFieldRole & _
-                                "|text=" & BreaksShortText(strOldText) & _
-                                "|OLD_XY=" & NumTxt(oldDoc.Texts(lngIndex).X) & "," & NumTxt(oldDoc.Texts(lngIndex).Y) & _
-                                "|NEW_XY=" & NumTxt(newDoc.Texts(lngNewIndex).X) & "," & NumTxt(newDoc.Texts(lngNewIndex).Y) & _
-                                "|OLD_VISIBLE=" & BreaksVisibleWhitespace(strOldText) & _
-                                "|NEW_VISIBLE=" & BreaksVisibleWhitespace(strNewText) & _
-                                "|leadingOld=" & CStr(BreaksLeadingSpaceCount(strOldText)) & _
-                                "|leadingNew=" & CStr(BreaksLeadingSpaceCount(strNewText)) & _
-                                "|trailingOld=" & CStr(BreaksTrailingSpaceCount(strOldText)) & _
-                                "|trailingNew=" & CStr(BreaksTrailingSpaceCount(strNewText)) & _
-                                "|lengthOld=" & CStr(Len(strOldText)) & _
-                                "|lengthNew=" & CStr(Len(strNewText)) & _
-                                "|ACTION=Whitespace differs. Use the counts above before changing text coordinates.")
-                            lngWritten = lngWritten + 1
-                        End If
-                    ElseIf IsBreaksFixedTextRole(oldDoc, pageNo, lngIndex) Or _
-                           IsBreaksFixedTextRole(newDoc, pageNo, lngNewIndex) Then
+                If Not BreaksIsContentComparisonExcludedRole(strFieldRole) Then
+                    If StrComp(strOldText, strNewText, vbBinaryCompare) <> 0 Then
+                        If NormalizeBreaksWhitespace(strOldText) = NormalizeBreaksWhitespace(strNewText) Then
+                            infoCount = infoCount + 1
+                            If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
+                                Call EmitLine(fileNumber, _
+                                    "WHITESPACE_ONLY" & _
+                                    "|role=" & strFieldRole & _
+                                    "|text=" & BreaksShortText(strOldText) & _
+                                    "|OLD_XY=" & NumTxt(oldDoc.Texts(lngIndex).X) & "," & NumTxt(oldDoc.Texts(lngIndex).Y) & _
+                                    "|NEW_XY=" & NumTxt(newDoc.Texts(lngNewIndex).X) & "," & NumTxt(newDoc.Texts(lngNewIndex).Y) & _
+                                    "|OLD_VISIBLE=" & BreaksVisibleWhitespace(strOldText) & _
+                                    "|NEW_VISIBLE=" & BreaksVisibleWhitespace(strNewText) & _
+                                    "|leadingOld=" & CStr(BreaksLeadingSpaceCount(strOldText)) & _
+                                    "|leadingNew=" & CStr(BreaksLeadingSpaceCount(strNewText)) & _
+                                    "|trailingOld=" & CStr(BreaksTrailingSpaceCount(strOldText)) & _
+                                    "|trailingNew=" & CStr(BreaksTrailingSpaceCount(strNewText)) & _
+                                    "|lengthOld=" & CStr(Len(strOldText)) & _
+                                    "|lengthNew=" & CStr(Len(strNewText)) & _
+                                    "|ACTION=Whitespace differs. Use the counts above before changing text coordinates.")
+                                lngWritten = lngWritten + 1
+                            End If
+                        ElseIf IsBreaksFixedTextRole(oldDoc, pageNo, lngIndex) Or _
+                               IsBreaksFixedTextRole(newDoc, pageNo, lngNewIndex) Then
 
-                        criticalCount = criticalCount + 1
-                        If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
-                            Call EmitLine(fileNumber, _
-                                "FIXED_TEXT_CONTENT|OLD=" & BreaksShortText(strOldText) & _
-                                "|NEW=" & BreaksShortText(strNewText) & _
-                                "|FIX=Use the OLD fixed Oracle label/footer text.")
-                            lngWritten = lngWritten + 1
+                            criticalCount = criticalCount + 1
+                            If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
+                                Call EmitLine(fileNumber, _
+                                    "FIXED_TEXT_CONTENT|OLD=" & BreaksShortText(strOldText) & _
+                                    "|NEW=" & BreaksShortText(strNewText) & _
+                                    "|FIX=Use the OLD fixed Oracle label/footer text.")
+                                lngWritten = lngWritten + 1
+                            End If
+                            Call IncrementDictionaryValue(actionDictionary, _
+                                "FIXED_TEXT_CONTENT|old=" & BreaksShortText(strOldText) & _
+                                "|new=" & BreaksShortText(strNewText))
+                        ElseIf BREAKS_IGNORE_INPUT_CONTENT_DIFFERENCES Then
+                            infoCount = infoCount + 1
+                            If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
+                                Call EmitLine(fileNumber, _
+                                    "EXPECTED_INPUT_CONTENT|OLD=" & BreaksShortText(strOldText) & _
+                                    "|NEW=" & BreaksShortText(strNewText) & _
+                                    "|OLD_XY=" & NumTxt(oldDoc.Texts(lngIndex).X) & "," & NumTxt(oldDoc.Texts(lngIndex).Y) & _
+                                    "|NEW_XY=" & NumTxt(newDoc.Texts(lngNewIndex).X) & "," & NumTxt(newDoc.Texts(lngNewIndex).Y) & _
+                                    "|ACTION=Ignored as business-value difference; position/font are audited separately.")
+                                lngWritten = lngWritten + 1
+                            End If
+                        Else
+                            criticalCount = criticalCount + 1
                         End If
-                        Call IncrementDictionaryValue(actionDictionary, _
-                            "FIXED_TEXT_CONTENT|old=" & BreaksShortText(strOldText) & _
-                            "|new=" & BreaksShortText(strNewText))
-                    ElseIf BREAKS_IGNORE_INPUT_CONTENT_DIFFERENCES Then
-                        infoCount = infoCount + 1
-                        If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
-                            Call EmitLine(fileNumber, _
-                                "EXPECTED_INPUT_CONTENT|OLD=" & BreaksShortText(strOldText) & _
-                                "|NEW=" & BreaksShortText(strNewText) & _
-                                "|OLD_XY=" & NumTxt(oldDoc.Texts(lngIndex).X) & "," & NumTxt(oldDoc.Texts(lngIndex).Y) & _
-                                "|NEW_XY=" & NumTxt(newDoc.Texts(lngNewIndex).X) & "," & NumTxt(newDoc.Texts(lngNewIndex).Y) & _
-                                "|ACTION=Ignored as business-value difference; position/font are audited separately.")
-                            lngWritten = lngWritten + 1
-                        End If
-                    Else
-                        criticalCount = criticalCount + 1
                     End If
                 End If
             Else
-                If IsBreaksFixedTextRole(oldDoc, pageNo, lngIndex) Then
+                strFieldRole = BreaksInferStructuralFieldRole( _
+                    pageNo, _
+                    oldDoc.Texts(lngIndex).X, _
+                    oldDoc.Texts(lngIndex).Y)
+
+                If BreaksIsContentComparisonExcludedRole(strFieldRole) Then
+                    ' WKN content is intentionally excluded. No content event is recorded.
+                ElseIf IsBreaksFixedTextRole(oldDoc, pageNo, lngIndex) Then
                     criticalCount = criticalCount + 1
                     If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
                         Call EmitLine(fileNumber, _
@@ -10677,7 +11476,14 @@ Private Sub WriteBreaksTextDifferences( _
     For lngIndex = 0 To newDoc.TextCount - 1
         If newDoc.Texts(lngIndex).PageNo = pageNo Then
             If Not blnNewUsed(lngIndex) Then
-                If IsBreaksFixedTextRole(newDoc, pageNo, lngIndex) Then
+                strFieldRole = BreaksInferStructuralFieldRole( _
+                    pageNo, _
+                    newDoc.Texts(lngIndex).X, _
+                    newDoc.Texts(lngIndex).Y)
+
+                If BreaksIsContentComparisonExcludedRole(strFieldRole) Then
+                    ' WKN content is intentionally excluded. No content event is recorded.
+                ElseIf IsBreaksFixedTextRole(newDoc, pageNo, lngIndex) Then
                     criticalCount = criticalCount + 1
                     If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
                         Call EmitLine(fileNumber, _
