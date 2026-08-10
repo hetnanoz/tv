@@ -780,6 +780,7 @@ Public Sub fillTradeData(ByRef inputArr As Variant, inR As Long, wsOut As Excel.
     wsOut.Cells(outR, 10).Value = ""
 
     wsOut.Cells(outR, 11).Value = "'" & safeString(inputArr(inR, 11))
+    wsOut.Cells(outR, 11).ShrinkToFit = False
 
     secNameStr = safeString(inputArr(inR, 12))
     wsOut.Cells(outR, 13).Value = "'" & secNameStr
@@ -2665,7 +2666,7 @@ End Sub
 ' Creation date: 2026-08-04
 ' Parameters:    targetCell As Excel.Range, textValue As String
 ' Returns:       ---
-' Description:   Enables shrink-to-fit for the supplied cell.
+' Description:   Disables dynamic shrink-to-fit while preserving the legacy public entry point.
 '-------------------------------------------------------------------------------
 Public Sub shrinkFontIfTooLong(targetCell As Excel.Range, textValue As String)
     Const METHOD_NAME As String = "shrinkFontIfTooLong"
@@ -2675,7 +2676,15 @@ Public Sub shrinkFontIfTooLong(targetCell As Excel.Range, textValue As String)
 
     On Error GoTo ErrorHandler
 
-    targetCell.ShrinkToFit = True
+    If targetCell Is Nothing Then
+        Err.Raise 1001, METHOD_NAME, "The target cell is required."
+    End If
+
+    If targetCell.MergeCells Then
+        targetCell.MergeArea.ShrinkToFit = False
+    Else
+        targetCell.ShrinkToFit = False
+    End If
 
 ExitSub:
     Exit Sub
@@ -2684,7 +2693,14 @@ ErrorHandler:
     errNumber = VBA.Err.Number
     errDescription = VBA.Err.Description
 
-    errorManager.addError CLASS_NAME, METHOD_NAME, errNumber, errDescription
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "textLength", _
+        Len(textValue)
+
     errorManager.save
     Resume ExitSub
 End Sub
@@ -3145,3 +3161,4 @@ ErrorHandler:
     errorManager.save
     Resume ExitSub
 End Sub
+
