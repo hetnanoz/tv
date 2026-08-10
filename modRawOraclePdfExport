@@ -1,7 +1,7 @@
 Option Explicit
 
 Private Const CLASS_NAME As String = "modRawOraclePdfExport"
-' FIX33: semantic footer/Storno fonts, BRL top-Whg correction; all FIX32 extended-field logic retained.
+' FIX34: Oracle fractional values omit the zero before the decimal separator; all FIX33 logic retained.
 Private Const CONFIG_RANGE_NAME As String = "cfg_OraclePdfFormat"
 Private Const PDF_HEADER As String = "%PDF-1.4"
 Private Const PDF_PAGE_WIDTH As Double = 1368#
@@ -2481,6 +2481,69 @@ End Function
 ' Returns:       Boolean
 ' Description:   Identifies fields whose integer part uses Oracle space grouping.
 '-------------------------------------------------------------------------------
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-10
+' Parameters:    strText As String
+' Returns:       String
+' Description:   Removes the integer zero before a decimal separator for
+'                non-zero fractional values, matching Oracle number pictures.
+'-------------------------------------------------------------------------------
+Private Function SuppressOracleFractionLeadingZero( _
+    ByVal strText As String) As String
+
+    Const METHOD_NAME As String = "SuppressOracleFractionLeadingZero"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strSign As String
+    Dim strWorking As String
+
+    On Error GoTo ErrorHandler
+
+    SuppressOracleFractionLeadingZero = strText
+    strWorking = Trim$(strText)
+
+    If Len(strWorking) = 0 Then
+        GoTo ExitFunction
+    End If
+
+    If Left$(strWorking, 1) = "-" Or Left$(strWorking, 1) = "+" Then
+        strSign = Left$(strWorking, 1)
+        strWorking = Mid$(strWorking, 2)
+    End If
+
+    If Len(strWorking) >= 2 Then
+        If Left$(strWorking, 2) = "0." Or _
+           Left$(strWorking, 2) = "0," Then
+
+            strWorking = Mid$(strWorking, 2)
+        End If
+    End If
+
+    SuppressOracleFractionLeadingZero = strSign & strWorking
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    SuppressOracleFractionLeadingZero = strText
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "text", _
+        strText
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
 Private Function IsOracleGroupedNumericDisplayField( _
     ByVal blnTopTransactionRow As Boolean, _
     ByVal lngFieldIndex As Long) As Boolean
@@ -2967,6 +3030,11 @@ Private Function NormalizeOracleFieldDisplayText( _
         strResult = FormatOracleGroupedNumericText(strResult)
     End If
 
+    ' Oracle number pictures suppress the integer zero for non-zero
+    ' fractional values: 0.96 -> .96, -0.5 -> -.5. This rule is applied
+    ' centrally to every numeric PDF field; worksheet values stay unchanged.
+    strResult = SuppressOracleFractionLeadingZero(strResult)
+
     NormalizeOracleFieldDisplayText = strResult
 
 ExitFunction:
@@ -3218,6 +3286,7 @@ Private Function CountOracleIntegerDigits( _
     Dim lngIndex As Long
     Dim lngStop As Long
     Dim strChar As String
+    Dim strIntegerPrefix As String
     Dim strText As String
 
     On Error GoTo ErrorHandler
@@ -3251,6 +3320,21 @@ Private Function CountOracleIntegerDigits( _
                 CountOracleIntegerDigits + 1
         End If
     Next lngIndex
+
+    ' The displayed Oracle value .96 has no visible integer digit, but it
+    ' still belongs to the 1-3 integer-digit number-picture bucket. Treat
+    ' .96, -.96 and +.96 as one integer digit for leading-space padding.
+    If CountOracleIntegerDigits = 0 And lngDecimalPosition > 0 Then
+        strIntegerPrefix = Trim$( _
+            Left$(strText, lngDecimalPosition - 1))
+
+        If Len(strIntegerPrefix) = 0 Or _
+           strIntegerPrefix = "-" Or _
+           strIntegerPrefix = "+" Then
+
+            CountOracleIntegerDigits = 1
+        End If
+    End If
 
 ExitFunction:
     Exit Function
