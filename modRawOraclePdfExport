@@ -27,6 +27,9 @@ Private Const TEXT_LEFT_PADDING As Double = 4.52
 Private Const TEXT_RIGHT_PADDING As Double = 4.48
 Private Const ORACLE_NUMERIC_LEADING_SPACES As Long = 3
 Private Const ORACLE_DEVISENKURS_RIGHT_PADDING As Double = 5.52
+Private Const ORACLE_NON_UNIT_DEVISENKURS_RIGHT_PADDING As Double = 4.54
+Private Const ORACLE_STUECKZINSEN_RIGHT_PADDING As Double = 4.54
+Private Const ORACLE_WHG_ABWICKLUNG_RIGHT_PADDING As Double = 8#
 Private Const ORACLE_SPESEN_RIGHT_PADDING As Double = 8.98
 Private Const HEADER_GRAY_LEVEL As Double = 0.72
 Private Const SEPARATOR_GRAY_LEVEL As Double = 0.86
@@ -51,7 +54,10 @@ Private Const ORACLE_DETAIL_HEIGHT As Double = 9#
 Private Const ORACLE_WHITE_LEVEL As Double = 1#
 Private Const ORACLE_KAUF_TEXT_X As Double = 362.24
 Private Const ORACLE_VERKAUF_TEXT_X As Double = 357#
+Private Const ORACLE_STORNO_KAUF_TEXT_X As Double = 349.14
+Private Const ORACLE_STORNO_VERKAUF_TEXT_X As Double = 343.88
 Private Const TOP_FIELD_GESCHAEFTSART_INDEX As Long = 2
+Private Const TOP_FIELD_ISIN_INDEX As Long = 6
 Private Const TOP_FIELD_SECURITY_DESCRIPTION_INDEX As Long = 7
 Private Const TOP_FIELD_NOMINALE_INDEX As Long = 8
 Private Const TOP_FIELD_WHG_INDEX As Long = 9
@@ -672,7 +678,7 @@ End Function
 ' Creation date: 2026-08-05
 ' Parameters:    wksSource As Excel.Worksheet, arrTopRows() As Long, arrBottomRows() As Long, lngTradeCount As Long, blnHasLogo As Boolean, colPageContents As Collection
 ' Returns:       Boolean
-' Description:   Builds the uncompressed content stream for every PDF page.
+' Description:   Builds every page and resolves report-wide Storno behavior once.
 '-------------------------------------------------------------------------------
 Private Function BuildAllPageContents( _
     ByVal wksSource As Excel.Worksheet, _
@@ -683,6 +689,7 @@ Private Function BuildAllPageContents( _
     ByRef colPageContents As Collection) As Boolean
 
     Const METHOD_NAME As String = "BuildAllPageContents"
+    Dim blnStornoReport As Boolean
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
@@ -700,6 +707,10 @@ Private Function BuildAllPageContents( _
     End If
 
     lngPageCount = GetOraclePageCount(lngTradeCount)
+    blnStornoReport = ReportContainsStornoTransactions( _
+        wksSource, _
+        arrTopRows, _
+        lngTradeCount)
 
     For lngPage = 1 To lngPageCount
         strPageContent = BuildSinglePageContent( _
@@ -709,7 +720,8 @@ Private Function BuildAllPageContents( _
             lngTradeCount, _
             lngPage, _
             lngPageCount, _
-            blnHasLogo)
+            blnHasLogo, _
+            blnStornoReport)
 
         If Len(strPageContent) = 0 Then
             Err.Raise 1024, METHOD_NAME, "A page content stream was empty."
@@ -743,10 +755,112 @@ End Function
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
-' Creation date: 2026-08-05
-' Parameters:    wksSource As Excel.Worksheet, arrTopRows() As Long, arrBottomRows() As Long, lngTradeCount As Long, lngPage As Long, lngPageCount As Long, blnHasLogo As Boolean
+' Creation date: 2026-08-10
+' Parameters:    wksSource As Excel.Worksheet, arrTopRows() As Long, lngTradeCount As Long
+' Returns:       Boolean
+' Description:   Returns whether the report contains at least one Storno transaction.
+'-------------------------------------------------------------------------------
+Private Function ReportContainsStornoTransactions( _
+    ByVal wksSource As Excel.Worksheet, _
+    ByRef arrTopRows() As Long, _
+    ByVal lngTradeCount As Long) As Boolean
+
+    Const METHOD_NAME As String = "ReportContainsStornoTransactions"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim strTransactionType As String
+
+    On Error GoTo ErrorHandler
+
+    ReportContainsStornoTransactions = False
+
+    If wksSource Is Nothing Or lngTradeCount <= 0 Then
+        GoTo ExitFunction
+    End If
+
+    For lngIndex = LBound(arrTopRows) To UBound(arrTopRows)
+        strTransactionType = UCase$(Trim$(GetWorksheetDisplayText( _
+            wksSource.Cells(arrTopRows(lngIndex), 5))))
+
+        If strTransactionType = "STORNO" Or _
+           Left$(strTransactionType, 7) = "STORNO " Then
+
+            ReportContainsStornoTransactions = True
+            Exit For
+        End If
+    Next lngIndex
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ReportContainsStornoTransactions = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "tradeCount", _
+        lngTradeCount
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-10
+' Parameters:    blnStornoReport As Boolean
 ' Returns:       String
-' Description:   Builds one page using the fixed Oracle report geometry.
+' Description:   Resolves the Oracle footer font for standard and Storno reports.
+'-------------------------------------------------------------------------------
+Private Function ResolveOracleFooterFont( _
+    ByVal blnStornoReport As Boolean) As String
+
+    Const METHOD_NAME As String = "ResolveOracleFooterFont"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If blnStornoReport Then
+        ResolveOracleFooterFont = "/F1"
+    Else
+        ResolveOracleFooterFont = "/F2"
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ResolveOracleFooterFont = "/F1"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "stornoReport", _
+        blnStornoReport
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-05
+' Parameters:    wksSource As Excel.Worksheet, arrTopRows() As Long, arrBottomRows() As Long, lngTradeCount As Long, lngPage As Long, lngPageCount As Long, blnHasLogo As Boolean, blnStornoReport As Boolean
+' Returns:       String
+' Description:   Builds one page using fixed Oracle geometry and adaptive Storno font roles.
 '-------------------------------------------------------------------------------
 Private Function BuildSinglePageContent( _
     ByVal wksSource As Excel.Worksheet, _
@@ -755,7 +869,8 @@ Private Function BuildSinglePageContent( _
     ByVal lngTradeCount As Long, _
     ByVal lngPage As Long, _
     ByVal lngPageCount As Long, _
-    ByVal blnHasLogo As Boolean) As String
+    ByVal blnHasLogo As Boolean, _
+    ByVal blnStornoReport As Boolean) As String
 
     Const METHOD_NAME As String = "BuildSinglePageContent"
     Dim arrBottomColumns As Variant
@@ -792,6 +907,7 @@ Private Function BuildSinglePageContent( _
     Dim lngSlot As Long
     Dim lngTradeIndex As Long
     Dim strContent As String
+    Dim strFooterFont As String
 
     On Error GoTo ErrorHandler
 
@@ -930,9 +1046,10 @@ Private Function BuildSinglePageContent( _
         dblTableTopY - dblTableBottomY)
 
     If blnLastPage Then
-        ' Latest audit: OLD Oracle footer uses /F2 /Arial,Bold at 8 pt.
+        strFooterFont = ResolveOracleFooterFont(blnStornoReport)
+
         strContent = strContent & BuildAbsoluteTextCommand( _
-            "/F2", _
+            strFooterFont, _
             FOOTER_FONT_SIZE, _
             FOOTER_X, _
             dblTableBottomY - FOOTER_BASELINE_GAP, _
@@ -958,11 +1075,12 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "page;pageCount;firstTrade;lastTrade", _
+        "page;pageCount;firstTrade;lastTrade;stornoReport", _
         lngPage, _
         lngPageCount, _
         lngFirstTrade, _
-        lngLastTrade
+        lngLastTrade, _
+        blnStornoReport
 
     errorManager.save
     Resume ExitFunction
@@ -1102,6 +1220,7 @@ Private Function BuildCellContent( _
     Const ORACLE_EIGHT_PT_BASELINE_OFFSET As Double = 0.76
     Dim dblEffectiveRightPadding As Double
     Dim dblFontSize As Double
+    Dim dblMeasurementFontSize As Double
     Dim dblTextWidth As Double
     Dim dblTextX As Double
     Dim dblTextY As Double
@@ -1134,6 +1253,7 @@ Private Function BuildCellContent( _
             lngFieldIndex)
 
         strFont = ResolveOracleDataFontResource( _
+            strText, _
             blnTopTransactionRow, _
             lngFieldIndex)
 
@@ -1171,6 +1291,7 @@ Private Function BuildCellContent( _
 
     If Not blnHeader Then
         dblEffectiveRightPadding = ResolveOracleRightPadding( _
+            strText, _
             blnTopTransactionRow, _
             lngFieldIndex)
     End If
@@ -1178,16 +1299,28 @@ Private Function BuildCellContent( _
     If blnHeader And dblFixedTextX >= 0# Then
         dblTextX = dblFixedTextX
     Else
-        dblFontSize = FitFontSize( _
+        If Not ShouldPreserveOracleDataFontSize( _
+            blnHeader, _
+            blnTopTransactionRow, _
+            lngFieldIndex) Then
+
+            dblFontSize = FitFontSize( _
+                strText, _
+                strFont, _
+                dblFontSize, _
+                dblWidth - TEXT_LEFT_PADDING - TEXT_RIGHT_PADDING)
+        End If
+
+        dblMeasurementFontSize = ResolveOracleTextMeasurementFontSize( _
             strText, _
-            strFont, _
-            dblFontSize, _
-            dblWidth - TEXT_LEFT_PADDING - TEXT_RIGHT_PADDING)
+            blnTopTransactionRow, _
+            lngFieldIndex, _
+            dblFontSize)
 
         dblTextWidth = EstimateBase14TextWidth( _
             strText, _
             strFont, _
-            dblFontSize)
+            dblMeasurementFontSize)
 
         If dblFixedTextX >= 0# Then
             ' FIX19: parser-audited Oracle data anchor. Only fields with an
@@ -2025,7 +2158,11 @@ Private Function ResolveOracleDataAlignment( _
 
     On Error GoTo ErrorHandler
 
-    If IsOracleCurrencyField( _
+    If Not blnTopTransactionRow And _
+       lngFieldIndex = BOTTOM_FIELD_WHG_ABWICKLUNG_INDEX Then
+
+        ResolveOracleDataAlignment = xlRight
+    ElseIf IsOracleCurrencyField( _
         blnTopTransactionRow, _
         lngFieldIndex) Then
 
@@ -2154,6 +2291,22 @@ Private Function ResolveOracleCurrencyTextXCorrection( _
                         ResolveOracleCurrencyTextXCorrection = 0.24
                     Case "DKK", "NOK"
                         ResolveOracleCurrencyTextXCorrection = -0.39
+                    Case "INR", "IDR"
+                        ResolveOracleCurrencyTextXCorrection = -0.15
+                    Case "PHP"
+                        ResolveOracleCurrencyTextXCorrection = -0.41
+                    Case "THB"
+                        ResolveOracleCurrencyTextXCorrection = -0.38
+                    Case "BRL"
+                        ResolveOracleCurrencyTextXCorrection = 0.09
+                End Select
+
+            Case BOTTOM_FIELD_WHG_ABWICKLUNG_INDEX
+                Select Case strCode
+                    Case "INR", "IDR"
+                        ResolveOracleCurrencyTextXCorrection = -0.14
+                    Case "PHP"
+                        ResolveOracleCurrencyTextXCorrection = 0.15
                 End Select
 
             Case BOTTOM_FIELD_WHG_SPESEN_INDEX
@@ -2162,6 +2315,14 @@ Private Function ResolveOracleCurrencyTextXCorrection( _
                         ResolveOracleCurrencyTextXCorrection = -0.25
                     Case "EUR"
                         ResolveOracleCurrencyTextXCorrection = 0#
+                    Case "PHP"
+                        ResolveOracleCurrencyTextXCorrection = -0.39
+                    Case "THB"
+                        ResolveOracleCurrencyTextXCorrection = -0.36
+                    Case "IDR"
+                        ResolveOracleCurrencyTextXCorrection = -0.13
+                    Case "BRL"
+                        ResolveOracleCurrencyTextXCorrection = 0.11
                 End Select
 
             Case BOTTOM_FIELD_WHG_ABRECH_INDEX
@@ -2221,6 +2382,14 @@ Private Function OracleEightPointWhgCorrection( _
             OracleEightPointWhgCorrection = 0.06
         Case "DKK", "NOK"
             OracleEightPointWhgCorrection = -0.32
+        Case "INR", "IDR"
+            OracleEightPointWhgCorrection = -0.25
+        Case "PHP"
+            OracleEightPointWhgCorrection = -0.92
+        Case "THB"
+            OracleEightPointWhgCorrection = -0.62
+        Case "BRL"
+            OracleEightPointWhgCorrection = 0.08
     End Select
 
 ExitFunction:
@@ -2305,6 +2474,422 @@ End Function
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
+' Creation date: 2026-08-10
+' Parameters:    blnTopTransactionRow As Boolean, lngFieldIndex As Long
+' Returns:       Boolean
+' Description:   Identifies fields whose integer part uses Oracle space grouping.
+'-------------------------------------------------------------------------------
+Private Function IsOracleGroupedNumericDisplayField( _
+    ByVal blnTopTransactionRow As Boolean, _
+    ByVal lngFieldIndex As Long) As Boolean
+
+    Const METHOD_NAME As String = "IsOracleGroupedNumericDisplayField"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    IsOracleGroupedNumericDisplayField = _
+        (blnTopTransactionRow And _
+         lngFieldIndex = TOP_FIELD_STUECKZINSEN_INDEX) Or _
+        ((Not blnTopTransactionRow) And _
+         lngFieldIndex = BOTTOM_FIELD_DEVISENKURS_INDEX)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    IsOracleGroupedNumericDisplayField = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "topTransactionRow;fieldIndex", _
+        blnTopTransactionRow, _
+        lngFieldIndex
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-10
+' Parameters:    strText As String
+' Returns:       String
+' Description:   Groups the integer part in blocks of three while preserving decimals.
+'-------------------------------------------------------------------------------
+Private Function FormatOracleGroupedNumericText( _
+    ByVal strText As String) As String
+
+    Const METHOD_NAME As String = "FormatOracleGroupedNumericText"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngComma As Long
+    Dim lngDecimalPosition As Long
+    Dim lngDot As Long
+    Dim strDecimalSeparator As String
+    Dim strFractionPart As String
+    Dim strIntegerPart As String
+    Dim strResult As String
+    Dim strSign As String
+    Dim strWorking As String
+
+    On Error GoTo ErrorHandler
+
+    FormatOracleGroupedNumericText = strText
+    strWorking = Trim$(Replace(strText, ChrW(160), " "))
+
+    If Len(strWorking) = 0 Then
+        GoTo ExitFunction
+    End If
+
+    If Left$(strWorking, 1) = "-" Or Left$(strWorking, 1) = "+" Then
+        strSign = Left$(strWorking, 1)
+        strWorking = Mid$(strWorking, 2)
+    End If
+
+    lngDot = InStrRev(strWorking, ".")
+    lngComma = InStrRev(strWorking, ",")
+
+    If lngDot > lngComma Then
+        lngDecimalPosition = lngDot
+        strDecimalSeparator = "."
+    ElseIf lngComma > 0 Then
+        lngDecimalPosition = lngComma
+        strDecimalSeparator = ","
+    End If
+
+    If lngDecimalPosition > 0 Then
+        strIntegerPart = Left$(strWorking, lngDecimalPosition - 1)
+        strFractionPart = Mid$(strWorking, lngDecimalPosition + 1)
+    Else
+        strIntegerPart = strWorking
+    End If
+
+    strIntegerPart = Replace(strIntegerPart, " ", vbNullString)
+    strIntegerPart = Replace(strIntegerPart, "'", vbNullString)
+
+    If strDecimalSeparator = "." Then
+        strIntegerPart = Replace(strIntegerPart, ",", vbNullString)
+    ElseIf strDecimalSeparator = "," Then
+        strIntegerPart = Replace(strIntegerPart, ".", vbNullString)
+    End If
+
+    strFractionPart = Replace(strFractionPart, " ", vbNullString)
+
+    If Not IsOracleDigitString(strIntegerPart) Then
+        GoTo ExitFunction
+    End If
+
+    If Len(strFractionPart) > 0 Then
+        If Not IsOracleDigitString(strFractionPart) Then
+            GoTo ExitFunction
+        End If
+    End If
+
+    strResult = strSign & GroupOracleIntegerDigits(strIntegerPart)
+
+    If Len(strFractionPart) > 0 Then
+        strResult = strResult & strDecimalSeparator & strFractionPart
+    End If
+
+    FormatOracleGroupedNumericText = strResult
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    FormatOracleGroupedNumericText = strText
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "text", _
+        strText
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-10
+' Parameters:    strDigits As String
+' Returns:       String
+' Description:   Inserts regular spaces between three-digit integer groups.
+'-------------------------------------------------------------------------------
+Private Function GroupOracleIntegerDigits( _
+    ByVal strDigits As String) As String
+
+    Const METHOD_NAME As String = "GroupOracleIntegerDigits"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngFirstGroupLength As Long
+    Dim lngIndex As Long
+    Dim strResult As String
+
+    On Error GoTo ErrorHandler
+
+    GroupOracleIntegerDigits = strDigits
+
+    If Len(strDigits) <= 3 Then
+        GoTo ExitFunction
+    End If
+
+    lngFirstGroupLength = Len(strDigits) Mod 3
+
+    If lngFirstGroupLength = 0 Then
+        lngFirstGroupLength = 3
+    End If
+
+    strResult = Left$(strDigits, lngFirstGroupLength)
+    lngIndex = lngFirstGroupLength + 1
+
+    Do While lngIndex <= Len(strDigits)
+        strResult = strResult & " " & Mid$(strDigits, lngIndex, 3)
+        lngIndex = lngIndex + 3
+    Loop
+
+    GroupOracleIntegerDigits = strResult
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GroupOracleIntegerDigits = strDigits
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "digits", _
+        strDigits
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-10
+' Parameters:    strText As String
+' Returns:       Boolean
+' Description:   Returns whether the supplied string contains decimal digits only.
+'-------------------------------------------------------------------------------
+Private Function IsOracleDigitString( _
+    ByVal strText As String) As Boolean
+
+    Const METHOD_NAME As String = "IsOracleDigitString"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim strCharacter As String
+
+    On Error GoTo ErrorHandler
+
+    IsOracleDigitString = False
+
+    If Len(strText) = 0 Then
+        GoTo ExitFunction
+    End If
+
+    For lngIndex = 1 To Len(strText)
+        strCharacter = Mid$(strText, lngIndex, 1)
+
+        If strCharacter < "0" Or strCharacter > "9" Then
+            GoTo ExitFunction
+        End If
+    Next lngIndex
+
+    IsOracleDigitString = True
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    IsOracleDigitString = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "text", _
+        strText
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-10
+' Parameters:    strText As String
+' Returns:       Boolean
+' Description:   Returns whether a formatted numeric value equals one.
+'-------------------------------------------------------------------------------
+Private Function IsOracleUnitNumericText( _
+    ByVal strText As String) As Boolean
+
+    Const METHOD_NAME As String = "IsOracleUnitNumericText"
+    Dim dblValue As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strCore As String
+
+    On Error GoTo ErrorHandler
+
+    IsOracleUnitNumericText = False
+    strCore = Replace(Trim$(strText), " ", vbNullString)
+    strCore = Replace(strCore, ChrW(160), vbNullString)
+    strCore = Replace(strCore, ",", ".")
+
+    If Len(strCore) = 0 Then
+        GoTo ExitFunction
+    End If
+
+    dblValue = Val(strCore)
+    IsOracleUnitNumericText = (Abs(dblValue - 1#) < 0.000000000001)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    IsOracleUnitNumericText = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "text", _
+        strText
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-10
+' Parameters:    blnHeader As Boolean, blnTopTransactionRow As Boolean, lngFieldIndex As Long
+' Returns:       Boolean
+' Description:   Preserves Oracle's fixed 9 pt font for ISIN values.
+'-------------------------------------------------------------------------------
+Private Function ShouldPreserveOracleDataFontSize( _
+    ByVal blnHeader As Boolean, _
+    ByVal blnTopTransactionRow As Boolean, _
+    ByVal lngFieldIndex As Long) As Boolean
+
+    Const METHOD_NAME As String = "ShouldPreserveOracleDataFontSize"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    ShouldPreserveOracleDataFontSize = _
+        (Not blnHeader) And _
+        blnTopTransactionRow And _
+        lngFieldIndex = TOP_FIELD_ISIN_INDEX
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ShouldPreserveOracleDataFontSize = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "header;topTransactionRow;fieldIndex", _
+        blnHeader, _
+        blnTopTransactionRow, _
+        lngFieldIndex
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-10
+' Parameters:    strText As String, blnTopTransactionRow As Boolean, lngFieldIndex As Long, dblActualFontSize As Double
+' Returns:       Double
+' Description:   Reproduces Oracle's 9 pt width calculation for non-unit Devisenkurs values rendered at 8 pt.
+'-------------------------------------------------------------------------------
+Private Function ResolveOracleTextMeasurementFontSize( _
+    ByVal strText As String, _
+    ByVal blnTopTransactionRow As Boolean, _
+    ByVal lngFieldIndex As Long, _
+    ByVal dblActualFontSize As Double) As Double
+
+    Const METHOD_NAME As String = "ResolveOracleTextMeasurementFontSize"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    ResolveOracleTextMeasurementFontSize = dblActualFontSize
+
+    If Not blnTopTransactionRow And _
+       lngFieldIndex = BOTTOM_FIELD_DEVISENKURS_INDEX And _
+       Not IsOracleUnitNumericText(strText) Then
+
+        ResolveOracleTextMeasurementFontSize = DATA_FONT_SIZE
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ResolveOracleTextMeasurementFontSize = dblActualFontSize
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "text;topTransactionRow;fieldIndex;actualFontSize", _
+        strText, _
+        blnTopTransactionRow, _
+        lngFieldIndex, _
+        dblActualFontSize
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
 ' Creation date: 2026-08-07
 ' Parameters:    rngSource As Excel.Range, strText As String, blnTopTransactionRow As Boolean, lngFieldIndex As Long
 ' Returns:       String
@@ -2373,6 +2958,13 @@ Private Function NormalizeOracleFieldDisplayText( _
         End If
     End If
 
+    If IsOracleGroupedNumericDisplayField( _
+        blnTopTransactionRow, _
+        lngFieldIndex) Then
+
+        strResult = FormatOracleGroupedNumericText(strResult)
+    End If
+
     NormalizeOracleFieldDisplayText = strResult
 
 ExitFunction:
@@ -2402,16 +2994,11 @@ End Function
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-07
 ' Parameters:    strText As String, blnTopTransactionRow As Boolean, lngFieldIndex As Long
-' Returns:       Double
-' Description:   Resolves Oracle data font size, including the Wertpapierbezeichnung 8 pt role.
-'-------------------------------------------------------------------------------
-' Author:        Pawel Ligezka
-' Creation date: 2026-08-07
-' Parameters:    blnTopTransactionRow As Boolean, lngFieldIndex As Long
 ' Returns:       String
-' Description:   Resolves the OLD Oracle font resource for parser-sensitive data fields.
+' Description:   Resolves the Oracle data font, including the Storno Kauf F2 role.
 '-------------------------------------------------------------------------------
 Private Function ResolveOracleDataFontResource( _
+    ByVal strText As String, _
     ByVal blnTopTransactionRow As Boolean, _
     ByVal lngFieldIndex As Long) As String
 
@@ -2419,15 +3006,21 @@ Private Function ResolveOracleDataFontResource( _
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
+    Dim strNormalizedText As String
 
     On Error GoTo ErrorHandler
 
-    ' V10 FONT_RESOURCE_FORENSICS decoded the OLD Oracle page resources:
-    '   /F0 = Times-Bold
-    '   /F1 = Times-Roman
-    '   /F2 = absent on the audited data page
-    ' Therefore all normal data text uses /F1. Font size remains field-specific (FIX28 includes OLD 8 pt Whg-Abrech role).
     ResolveOracleDataFontResource = "/F1"
+
+    If blnTopTransactionRow And _
+       lngFieldIndex = TOP_FIELD_GESCHAEFTSART_INDEX Then
+
+        strNormalizedText = UCase$(Trim$(strText))
+
+        If strNormalizedText = "STORNO KAUF" Then
+            ResolveOracleDataFontResource = "/F2"
+        End If
+    End If
 
 ExitFunction:
     Exit Function
@@ -2442,14 +3035,14 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "topTransactionRow;fieldIndex", _
+        "text;topTransactionRow;fieldIndex", _
+        strText, _
         blnTopTransactionRow, _
         lngFieldIndex
 
     errorManager.save
     Resume ExitFunction
 End Function
-
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-07
@@ -2487,14 +3080,19 @@ Private Function ResolveOracleNumericLeadingSpaces( _
                         4, _
                         1)
 
-            Case TOP_FIELD_KURS_INDEX, _
-                 TOP_FIELD_STUECKZINSEN_INDEX
-                ' V12: Kurs 1-3 digits -> 3 spaces; 4-6 -> 2.
+            Case TOP_FIELD_KURS_INDEX
                 ResolveOracleNumericLeadingSpaces = _
                     ResolveOraclePictureLeadingSpaces( _
                         lngIntegerDigits, _
                         3, _
                         0)
+
+            Case TOP_FIELD_STUECKZINSEN_INDEX
+                ResolveOracleNumericLeadingSpaces = _
+                    ResolveOraclePictureLeadingSpaces( _
+                        lngIntegerDigits, _
+                        5, _
+                        1)
         End Select
     Else
         Select Case lngFieldIndex
@@ -2517,7 +3115,11 @@ Private Function ResolveOracleNumericLeadingSpaces( _
                         1)
 
             Case BOTTOM_FIELD_DEVISENKURS_INDEX
-                ResolveOracleNumericLeadingSpaces = 2
+                ResolveOracleNumericLeadingSpaces = _
+                    ResolveOraclePictureLeadingSpaces( _
+                        lngIntegerDigits, _
+                        2, _
+                        0)
         End Select
     End If
 
@@ -2680,11 +3282,12 @@ End Function
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-07
-' Parameters:    blnTopTransactionRow As Boolean, lngFieldIndex As Long
+' Parameters:    strText As String, blnTopTransactionRow As Boolean, lngFieldIndex As Long
 ' Returns:       Double
-' Description:   Resolves OLD Oracle right padding for parser-sensitive numeric fields.
+' Description:   Resolves field-specific Oracle right padding.
 '-------------------------------------------------------------------------------
 Private Function ResolveOracleRightPadding( _
+    ByVal strText As String, _
     ByVal blnTopTransactionRow As Boolean, _
     ByVal lngFieldIndex As Long) As Double
 
@@ -2697,12 +3300,27 @@ Private Function ResolveOracleRightPadding( _
 
     ResolveOracleRightPadding = TEXT_RIGHT_PADDING
 
-    If Not blnTopTransactionRow Then
+    If blnTopTransactionRow Then
+        If lngFieldIndex = TOP_FIELD_STUECKZINSEN_INDEX Then
+            ResolveOracleRightPadding = ORACLE_STUECKZINSEN_RIGHT_PADDING
+        End If
+    Else
         Select Case lngFieldIndex
+            Case BOTTOM_FIELD_WHG_ABWICKLUNG_INDEX
+                ResolveOracleRightPadding = _
+                    ORACLE_WHG_ABWICKLUNG_RIGHT_PADDING
+
             Case BOTTOM_FIELD_SPESEN_INDEX
                 ResolveOracleRightPadding = ORACLE_SPESEN_RIGHT_PADDING
+
             Case BOTTOM_FIELD_DEVISENKURS_INDEX
-                ResolveOracleRightPadding = ORACLE_DEVISENKURS_RIGHT_PADDING
+                If IsOracleUnitNumericText(strText) Then
+                    ResolveOracleRightPadding = _
+                        ORACLE_DEVISENKURS_RIGHT_PADDING
+                Else
+                    ResolveOracleRightPadding = _
+                        ORACLE_NON_UNIT_DEVISENKURS_RIGHT_PADDING
+                End If
         End Select
     End If
 
@@ -2719,7 +3337,8 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "topTransactionRow;fieldIndex", _
+        "text;topTransactionRow;fieldIndex", _
+        strText, _
         blnTopTransactionRow, _
         lngFieldIndex
 
@@ -2727,6 +3346,12 @@ ErrorHandler:
     Resume ExitFunction
 End Function
 
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-07
+' Parameters:    strText As String, blnTopTransactionRow As Boolean, lngFieldIndex As Long
+' Returns:       Double
+' Description:   Resolves Oracle data font size, including fixed 9 pt ISIN values.
 '-------------------------------------------------------------------------------
 Private Function ResolveOracleDataFontSize( _
     ByVal strText As String, _
@@ -2743,8 +3368,10 @@ Private Function ResolveOracleDataFontSize( _
     ResolveOracleDataFontSize = GetDataFontSize(strText)
 
     If blnTopTransactionRow Then
-        If lngFieldIndex = TOP_FIELD_SECURITY_DESCRIPTION_INDEX Or _
-           lngFieldIndex = TOP_FIELD_WHG_INDEX Then
+        If lngFieldIndex = TOP_FIELD_ISIN_INDEX Then
+            ResolveOracleDataFontSize = DATA_FONT_SIZE
+        ElseIf lngFieldIndex = TOP_FIELD_SECURITY_DESCRIPTION_INDEX Or _
+               lngFieldIndex = TOP_FIELD_WHG_INDEX Then
 
             ResolveOracleDataFontSize = LONG_TEXT_FONT_SIZE
         End If
@@ -2821,6 +3448,10 @@ Private Function ResolveOracleFixedDataTextX( _
             ResolveOracleFixedDataTextX = ORACLE_KAUF_TEXT_X
         Case "VERKAUF"
             ResolveOracleFixedDataTextX = ORACLE_VERKAUF_TEXT_X
+        Case "STORNO KAUF"
+            ResolveOracleFixedDataTextX = ORACLE_STORNO_KAUF_TEXT_X
+        Case "STORNO VERKAUF"
+            ResolveOracleFixedDataTextX = ORACLE_STORNO_VERKAUF_TEXT_X
     End Select
 
 ExitFunction:
@@ -4621,6 +5252,50 @@ End Function
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
+' Creation date: 2026-08-10
+' Parameters:    strPageContent As String, strFontResource As String
+' Returns:       Boolean
+' Description:   Returns whether a page content stream references a font resource.
+'-------------------------------------------------------------------------------
+Private Function PageContentUsesFontResource( _
+    ByVal strPageContent As String, _
+    ByVal strFontResource As String) As Boolean
+
+    Const METHOD_NAME As String = "PageContentUsesFontResource"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    PageContentUsesFontResource = _
+        (InStr(1, _
+            strPageContent, _
+            strFontResource & " ", _
+            vbBinaryCompare) > 0)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    PageContentUsesFontResource = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "fontResource", _
+        strFontResource
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
 ' Creation date: 2026-08-07
 ' Parameters:    colPageContents As Collection, strLogoHex As String, lngLogoWidth As Long, lngLogoHeight As Long, lngLogoComponents As Long, strDocument As String
 ' Returns:       Boolean
@@ -4718,10 +5393,15 @@ Private Function BuildPdfDocument( _
         End If
         strKids = strKids & CStr(lngPageObject) & " 0 R"
 
-        If lngPage = colPageContents.Count Then
-            strPageResources = "<< /Font << /F0 3 0 R /F1 4 0 R /F2 5 0 R >>"
+        If PageContentUsesFontResource( _
+            CStr(colPageContents(lngPage)), _
+            "/F2") Then
+
+            strPageResources = _
+                "<< /Font << /F0 3 0 R /F1 4 0 R /F2 5 0 R >>"
         Else
-            strPageResources = "<< /Font << /F0 3 0 R /F1 4 0 R >>"
+            strPageResources = _
+                "<< /Font << /F0 3 0 R /F1 4 0 R >>"
         End If
 
         If lngPage = 1 Then
@@ -4889,4 +5569,5 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
+
 
