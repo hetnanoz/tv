@@ -1,6 +1,7 @@
 Option Explicit
 
 Private Const CLASS_NAME As String = "modRawOraclePdfExport"
+' FIX33: semantic footer/Storno fonts, BRL top-Whg correction; all FIX32 extended-field logic retained.
 Private Const CONFIG_RANGE_NAME As String = "cfg_OraclePdfFormat"
 Private Const PDF_HEADER As String = "%PDF-1.4"
 Private Const PDF_PAGE_WIDTH As Double = 1368#
@@ -829,11 +830,10 @@ Private Function ResolveOracleFooterFont( _
 
     On Error GoTo ErrorHandler
 
-    If blnStornoReport Then
-        ResolveOracleFooterFont = "/F1"
-    Else
-        ResolveOracleFooterFont = "/F2"
-    End If
+    ' FIX33: the latest semantic-font audit proved that the footer is
+    ' Arial,Bold at 8 pt in both standard and Storno reports. The OLD alias
+    ' may be /F1 or /F2, so alias selection must not drive the font family.
+    ResolveOracleFooterFont = "/F2"
 
 ExitFunction:
     Exit Function
@@ -841,7 +841,7 @@ ExitFunction:
 ErrorHandler:
     errNumber = VBA.Err.Number
     errDescription = VBA.Err.Description
-    ResolveOracleFooterFont = "/F1"
+    ResolveOracleFooterFont = "/F2"
 
     errorManager.addError _
         CLASS_NAME, _
@@ -860,7 +860,7 @@ End Function
 ' Creation date: 2026-08-05
 ' Parameters:    wksSource As Excel.Worksheet, arrTopRows() As Long, arrBottomRows() As Long, lngTradeCount As Long, lngPage As Long, lngPageCount As Long, blnHasLogo As Boolean, blnStornoReport As Boolean
 ' Returns:       String
-' Description:   Builds one page using fixed Oracle geometry and adaptive Storno font roles.
+' Description:   Builds one page using fixed Oracle geometry and semantic font roles.
 '-------------------------------------------------------------------------------
 Private Function BuildSinglePageContent( _
     ByVal wksSource As Excel.Worksheet, _
@@ -2389,7 +2389,9 @@ Private Function OracleEightPointWhgCorrection( _
         Case "THB"
             OracleEightPointWhgCorrection = -0.62
         Case "BRL"
-            OracleEightPointWhgCorrection = 0.08
+            ' FIX33: V13/FIX32 audit showed NEW remained +0.16 pt because
+            ' the previous +0.08 correction used the wrong sign.
+            OracleEightPointWhgCorrection = -0.08
     End Select
 
 ExitFunction:
@@ -2995,7 +2997,7 @@ End Function
 ' Creation date: 2026-08-07
 ' Parameters:    strText As String, blnTopTransactionRow As Boolean, lngFieldIndex As Long
 ' Returns:       String
-' Description:   Resolves the Oracle data font, including the Storno Kauf F2 role.
+' Description:   Resolves the semantic Oracle data font independently of OLD/NEW aliases.
 '-------------------------------------------------------------------------------
 Private Function ResolveOracleDataFontResource( _
     ByVal strText As String, _
@@ -3006,21 +3008,13 @@ Private Function ResolveOracleDataFontResource( _
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
-    Dim strNormalizedText As String
 
     On Error GoTo ErrorHandler
 
+    ' FIX33: Storno Kauf / Storno Verkauf use semantic Times-Roman.
+    ' OLD may expose that font under /F2 while NEW exposes it under /F1.
+    ' Resource aliases are not semantic font identities.
     ResolveOracleDataFontResource = "/F1"
-
-    If blnTopTransactionRow And _
-       lngFieldIndex = TOP_FIELD_GESCHAEFTSART_INDEX Then
-
-        strNormalizedText = UCase$(Trim$(strText))
-
-        If strNormalizedText = "STORNO KAUF" Then
-            ResolveOracleDataFontResource = "/F2"
-        End If
-    End If
 
 ExitFunction:
     Exit Function
