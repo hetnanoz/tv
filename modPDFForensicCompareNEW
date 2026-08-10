@@ -1,6 +1,7 @@
 Option Explicit
 
 Private Const CLASS_NAME As String = "modPdfForensicCompare"
+' V14: input-value-aware X classification and semantic footer-font comparison.
 Private Const TARGET_X_FIRST As Double = 468#
 Private Const TARGET_X_SECOND As Double = 639#
 Private Const COORD_TOLERANCE As Double = 0.1
@@ -7126,6 +7127,7 @@ Private Sub WriteBreaksSuperShortReport( _
     Dim lngFileOut As Long
     Dim lngIndex As Long
     Dim lngInfo As Long
+    Dim lngInputValueDependentXEvents As Long
     Dim lngOperatorSerializationPages As Long
     Dim lngPage As Long
     Dim lngPagesCompared As Long
@@ -7170,6 +7172,14 @@ Private Sub WriteBreaksSuperShortReport( _
             If BreaksSummaryField(strLine, "type") = "OPERATOR_PROFILE_COUNT_ONLY" Then
                 lngOperatorSerializationPages = lngOperatorSerializationPages + 1
             End If
+
+        ElseIf Left$( _
+            strLine, _
+            Len("TEXT_POSITION_INPUT_VALUE_INFO|")) = _
+            "TEXT_POSITION_INPUT_VALUE_INFO|" Then
+
+            lngInputValueDependentXEvents = _
+                lngInputValueDependentXEvents + 1
 
         ElseIf Left$(strLine, 15) = "BREAKS_SUMMARY|" Then
             lngCritical = CLng(Val(BreaksSummaryField(strLine, "critical")))
@@ -7225,7 +7235,7 @@ Private Sub WriteBreaksSuperShortReport( _
 
     lngFileOut = OpenNew(outputPath)
 
-    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_SUPER_SHORT_V1")
+    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_SUPER_SHORT_V2_INPUT_AWARE")
     Call EmitLine(lngFileOut, "OLD|" & oldDoc.PdfPath)
     Call EmitLine(lngFileOut, "NEW|" & newDoc.PdfPath)
     Call EmitLine(lngFileOut, _
@@ -7237,7 +7247,8 @@ Private Sub WriteBreaksSuperShortReport( _
     Call EmitLine(lngFileOut, _
         "SCOPE|Only parser-sensitive breaks are listed. Compatible operator-count serialization and input-value differences are omitted.")
     Call EmitLine(lngFileOut, _
-        "POLICY|WKN_CONTENT=EXCLUDED|positionFontStillAudited=TRUE")
+        "POLICY|WKN_CONTENT=EXCLUDED|positionFontStillAudited=TRUE" & _
+        "|INPUT_DIFFERENT_WIDTH_ALIGNED_X=EXCLUDED|baselineFontStillAudited=TRUE")
 
     If blnReady Then
         Call EmitLine(lngFileOut, "BREAKING_ISSUES|NONE")
@@ -7247,6 +7258,13 @@ Private Sub WriteBreaksSuperShortReport( _
                 "COMPATIBLE_INFO|operatorProfileCountOnlyPages=" & _
                 CStr(lngOperatorSerializationPages) & _
                 "|actionRequired=FALSE")
+        End If
+
+        If lngInputValueDependentXEvents > 0 Then
+            Call EmitLine(lngFileOut, _
+                "COMPATIBLE_INFO|inputValueDependentXEvents=" & _
+                CStr(lngInputValueDependentXEvents) & _
+                "|actionRequired=FALSE|retestWithMatchedInputForExactX=TRUE")
         End If
 
         Call EmitLine(lngFileOut, _
@@ -7309,6 +7327,14 @@ Private Sub WriteBreaksSuperShortReport( _
             End If
         Next lngSampleIndex
     Next lngIndex
+
+    If lngInputValueDependentXEvents > 0 Then
+        Call EmitLine(lngFileOut, vbNullString)
+        Call EmitLine(lngFileOut, _
+            "COMPATIBLE_INFO|inputValueDependentXEvents=" & _
+            CStr(lngInputValueDependentXEvents) & _
+            "|actionRequired=FALSE|retestWithMatchedInputForExactX=TRUE")
+    End If
 
     Call EmitLine(lngFileOut, vbNullString)
     Call EmitLine(lngFileOut, _
@@ -8011,7 +8037,7 @@ Private Sub WriteBreaksExecutiveSummary( _
     '-----------------------------------------------------------------------
     lngFileOut = OpenNew(outputPath)
 
-    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V13_FINAL_CLASSIFICATION")
+    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V14_INPUT_AWARE")
     Call EmitLine(lngFileOut, "OLD|" & oldDoc.PdfPath)
     Call EmitLine(lngFileOut, "NEW|" & newDoc.PdfPath)
     Call EmitLine(lngFileOut, _
@@ -9409,6 +9435,7 @@ Private Sub BreaksWritePaddingAndWhgDecisionMatrix( _
     Dim errDescription As String
     Dim errNumber As Long
     Dim lngIndex As Long
+    Dim lngInputValueRowsOmitted As Long
     Dim lngNewIndex As Long
     Dim lngPage As Long
     Dim lngPages As Long
@@ -9461,6 +9488,15 @@ Private Sub BreaksWritePaddingAndWhgDecisionMatrix( _
                     If lngNewIndex >= 0 Then
                         blnNewUsed(lngNewIndex) = True
 
+                        If Not BreaksAreComparableFieldValues( _
+                            oldDoc.Texts(lngIndex).TextValue, _
+                            newDoc.Texts(lngNewIndex).TextValue) Then
+
+                            lngInputValueRowsOmitted = _
+                                lngInputValueRowsOmitted + 1
+                            GoTo ContinuePaddingMatrixText
+                        End If
+
                         If BreaksIsPaddingMatrixRole(strRole) Then
                             strKey = _
                                 "role=" & strRole & _
@@ -9501,6 +9537,8 @@ Private Sub BreaksWritePaddingAndWhgDecisionMatrix( _
                     End If
                 End If
             End If
+
+ContinuePaddingMatrixText:
         Next lngIndex
     Next lngPage
 
@@ -9517,6 +9555,11 @@ Private Sub BreaksWritePaddingAndWhgDecisionMatrix( _
         fileNumber, _
         25, _
         "WHG_CELL")
+
+    Call EmitLine(fileNumber, _
+        "INPUT_VALUE_ROWS_OMITTED|count=" & _
+        CStr(lngInputValueRowsOmitted) & _
+        "|actionRequired=FALSE")
 
 ExitSub:
     Set dictNumeric = Nothing
@@ -10164,6 +10207,15 @@ Private Sub BreaksWriteFocusedFieldDiagnostics( _
                             "role=" & strRole & _
                             "|valueOld=" & BreaksShortText(Trim$(strOldText)) & _
                             "|valueNew=" & BreaksShortText(Trim$(strNewText)) & _
+                            "|valueComparable=" & BoolText( _
+                                BreaksAreComparableFieldValues( _
+                                    strOldText, _
+                                    strNewText)) & _
+                            "|xActionable=" & BoolText( _
+                                Not BreaksShouldIgnoreHorizontalPositionForInputDifference( _
+                                    strRole, _
+                                    strOldText, _
+                                    strNewText)) & _
                             "|rawOld=" & BreaksVisibleWhitespace(strOldText) & _
                             "|rawNew=" & BreaksVisibleWhitespace(strNewText) & _
                             "|x=" & NumTxt(oldDoc.Texts(lngIndex).X) & ">" & _
@@ -10414,13 +10466,15 @@ Private Sub WriteBreaksOnlyReport( _
     Set dictActions = CreateObject("Scripting.Dictionary")
     lngFileNumber = OpenNew(outputPath)
 
-    Call EmitLine(lngFileNumber, "ORACLE_COMPATIBILITY_BREAKS_ONLY_V13_FINAL_CLASSIFICATION")
+    Call EmitLine(lngFileNumber, "ORACLE_COMPATIBILITY_BREAKS_ONLY_V14_INPUT_AWARE")
     Call EmitLine(lngFileNumber, "OLD|" & oldDoc.PdfPath)
     Call EmitLine(lngFileNumber, "NEW|" & newDoc.PdfPath)
     Call EmitLine(lngFileNumber, _
         "POLICY|Geometry, text position, fonts, vector style, page structure, pagination, and target separators are actionable.")
     Call EmitLine(lngFileNumber, _
         "POLICY|Different business values caused by different input files are INFORMATIONAL and do not create a parser-critical break.")
+    Call EmitLine(lngFileNumber, _
+        "POLICY|When OLD/NEW values differ in a width-aligned field, X is input-dependent and informational; Y and font remain audited.")
     Call EmitLine(lngFileNumber, _
         "POLICY|Whitespace-only text changes are reported separately.")
     Call EmitLine(lngFileNumber, _
@@ -11248,6 +11302,284 @@ End Function
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
+' Creation date: 2026-08-10
+' Parameters:    roleName, oldText, newText
+' Returns:       Boolean
+' Description:   Suppresses only the X comparison when different input values
+'                naturally change the width of a centered/right-aligned field.
+'                Baseline Y and semantic font remain fully audited.
+'-------------------------------------------------------------------------------
+Private Function BreaksShouldIgnoreHorizontalPositionForInputDifference( _
+    ByVal roleName As String, _
+    ByVal oldText As String, _
+    ByVal newText As String) As Boolean
+
+    Const METHOD_NAME As String = "BreaksShouldIgnoreHorizontalPositionForInputDifference"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    BreaksShouldIgnoreHorizontalPositionForInputDifference = False
+
+    If Not BREAKS_IGNORE_INPUT_CONTENT_DIFFERENCES Then
+        GoTo ExitFunction
+    End If
+
+    If BreaksAreComparableFieldValues(oldText, newText) Then
+        GoTo ExitFunction
+    End If
+
+    BreaksShouldIgnoreHorizontalPositionForInputDifference = _
+        BreaksIsWidthDependentInputFieldRole(roleName)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksShouldIgnoreHorizontalPositionForInputDifference = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "roleName;oldText;newText", _
+        roleName, _
+        oldText, _
+        newText
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-10
+' Parameters:    roleName
+' Returns:       Boolean
+' Description:   Identifies data fields whose text origin depends on rendered
+'                width because Oracle centers or right-aligns the value.
+'-------------------------------------------------------------------------------
+Private Function BreaksIsWidthDependentInputFieldRole( _
+    ByVal roleName As String) As Boolean
+
+    Const METHOD_NAME As String = "BreaksIsWidthDependentInputFieldRole"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    BreaksIsWidthDependentInputFieldRole = False
+
+    Select Case UCase$(Trim$(roleName))
+        Case "TOP_GESCHAEFTSART", _
+             "TOP_SCHLUSSTAG", _
+             "TOP_VALUTATAG", _
+             "TOP_NOMINALE_STUECKE", _
+             "TOP_WHG_NOMINALE", _
+             "TOP_KURS", _
+             "TOP_STUECKZINSEN", _
+             "BOTTOM_MAKLERGEBUEHREN", _
+             "BOTTOM_WHG_MAKLER", _
+             "BOTTOM_STEUERN", _
+             "BOTTOM_WHG_STEUERN", _
+             "BOTTOM_ABWICKLUNGSPROVISION", _
+             "BOTTOM_WHG_ABWICKLUNG", _
+             "BOTTOM_SPESEN", _
+             "BOTTOM_WHG_SPESEN", _
+             "BOTTOM_AUSM_BETRAG_WHG", _
+             "BOTTOM_AUSM_BETRAG_ABRECH_WHG", _
+             "BOTTOM_WHG_ABRECH", _
+             "BOTTOM_DEVISENKURS"
+
+            BreaksIsWidthDependentInputFieldRole = True
+    End Select
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksIsWidthDependentInputFieldRole = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "roleName", _
+        roleName
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-10
+' Parameters:    oldText, newText
+' Returns:       Boolean
+' Description:   Distinguishes the same business value with different PDF
+'                formatting from genuinely different OLD/NEW input values.
+'-------------------------------------------------------------------------------
+Private Function BreaksAreComparableFieldValues( _
+    ByVal oldText As String, _
+    ByVal newText As String) As Boolean
+
+    Const METHOD_NAME As String = "BreaksAreComparableFieldValues"
+    Const NUMERIC_EQUALITY_TOLERANCE As Double = 0.000000001
+    Dim dblNewValue As Double
+    Dim dblOldValue As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim blnNewNumeric As Boolean
+    Dim blnOldNumeric As Boolean
+
+    On Error GoTo ErrorHandler
+
+    BreaksAreComparableFieldValues = False
+
+    If StrComp(oldText, newText, vbBinaryCompare) = 0 Then
+        BreaksAreComparableFieldValues = True
+        GoTo ExitFunction
+    End If
+
+    blnOldNumeric = BreaksTryParseNumericText(oldText, dblOldValue)
+    blnNewNumeric = BreaksTryParseNumericText(newText, dblNewValue)
+
+    If blnOldNumeric And blnNewNumeric Then
+        BreaksAreComparableFieldValues = _
+            Abs(dblOldValue - dblNewValue) <= NUMERIC_EQUALITY_TOLERANCE
+    Else
+        BreaksAreComparableFieldValues = _
+            StrComp( _
+                NormalizeBreaksWhitespace(oldText), _
+                NormalizeBreaksWhitespace(newText), _
+                vbBinaryCompare) = 0
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksAreComparableFieldValues = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "oldText;newText", _
+        oldText, _
+        newText
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-10
+' Parameters:    textValue, numericValue
+' Returns:       Boolean
+' Description:   Parses Oracle numeric text with space grouping and dot/comma
+'                decimal separators without depending on Windows locale.
+'-------------------------------------------------------------------------------
+Private Function BreaksTryParseNumericText( _
+    ByVal textValue As String, _
+    ByRef numericValue As Double) As Boolean
+
+    Const METHOD_NAME As String = "BreaksTryParseNumericText"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngComma As Long
+    Dim lngDot As Long
+    Dim strValue As String
+
+    On Error GoTo ErrorHandler
+
+    BreaksTryParseNumericText = False
+    numericValue = 0#
+
+    strValue = Trim$(textValue)
+    strValue = Replace(strValue, vbTab, vbNullString)
+    strValue = Replace(strValue, vbCr, vbNullString)
+    strValue = Replace(strValue, vbLf, vbNullString)
+    strValue = Replace(strValue, Chr$(160), vbNullString)
+    strValue = Replace(strValue, " ", vbNullString)
+
+    If Len(strValue) = 0 Then
+        GoTo ExitFunction
+    End If
+
+    If Not BreaksLooksLikeNumericText(strValue) Then
+        GoTo ExitFunction
+    End If
+
+    If InStr(2, strValue, "+", vbBinaryCompare) > 0 Or _
+       InStr(2, strValue, "-", vbBinaryCompare) > 0 Then
+
+        GoTo ExitFunction
+    End If
+
+    If Not (strValue Like "*[0-9]*") Then
+        GoTo ExitFunction
+    End If
+
+    lngDot = InStrRev(strValue, ".")
+    lngComma = InStrRev(strValue, ",")
+
+    If lngDot > 0 And lngComma > 0 Then
+        If lngDot > lngComma Then
+            strValue = Replace(strValue, ",", vbNullString)
+        Else
+            strValue = Replace(strValue, ".", vbNullString)
+            strValue = Replace(strValue, ",", ".")
+        End If
+    ElseIf lngComma > 0 Then
+        strValue = Replace(strValue, ",", ".")
+    End If
+
+    If strValue = "+" Or strValue = "-" Or strValue = "." Then
+        GoTo ExitFunction
+    End If
+
+    numericValue = Val(strValue)
+    BreaksTryParseNumericText = True
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BreaksTryParseNumericText = False
+    numericValue = 0#
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "textValue", _
+        textValue
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
 ' Creation date: 2026-08-07
 ' Parameters:    oldDoc, newDoc, pageNo, fileNumber, actionDictionary, counters
 ' Returns:       ---
@@ -11265,7 +11597,9 @@ Private Sub WriteBreaksTextDifferences( _
 
     Const METHOD_NAME As String = "WriteBreaksTextDifferences"
     Dim errorManager As New ErrorManager
+    Dim blnIgnoreInputDrivenX As Boolean
     Dim blnNewUsed() As Boolean
+    Dim dblActionShiftX As Double
     Dim dblShiftX As Double
     Dim dblShiftY As Double
     Dim errDescription As String
@@ -11318,10 +11652,34 @@ Private Sub WriteBreaksTextDifferences( _
                         oldDoc.Texts(lngIndex).X)
                 End If
 
+                If InStr( _
+                    1, _
+                    UCase$(oldDoc.Texts(lngIndex).TextValue), _
+                    "DIESE ABRECHNUNG", _
+                    vbTextCompare) > 0 Then
+
+                    strFieldRole = "FOOTER"
+                End If
+
+                strOldText = oldDoc.Texts(lngIndex).TextValue
+                strNewText = newDoc.Texts(lngNewIndex).TextValue
+
+                blnIgnoreInputDrivenX = _
+                    BreaksShouldIgnoreHorizontalPositionForInputDifference( _
+                        strFieldRole, _
+                        strOldText, _
+                        strNewText)
+
                 dblShiftX = oldDoc.Texts(lngIndex).X - newDoc.Texts(lngNewIndex).X
                 dblShiftY = oldDoc.Texts(lngIndex).Y - newDoc.Texts(lngNewIndex).Y
+                dblActionShiftX = dblShiftX
 
-                If Abs(dblShiftX) > BREAKS_POSITION_TOLERANCE Or _
+                If blnIgnoreInputDrivenX Then
+                    dblActionShiftX = 0#
+                End If
+
+                If (Not blnIgnoreInputDrivenX And _
+                    Abs(dblShiftX) > BREAKS_POSITION_TOLERANCE) Or _
                    Abs(dblShiftY) > BREAKS_POSITION_TOLERANCE Then
 
                     criticalCount = criticalCount + 1
@@ -11335,13 +11693,31 @@ Private Sub WriteBreaksTextDifferences( _
                             ",y=" & NumTxt(newDoc.Texts(lngNewIndex).Y) & _
                             "|DELTA_NEW_MINUS_OLD=x=" & NumTxt(-dblShiftX) & _
                             ",y=" & NumTxt(-dblShiftY) & _
-                            "|FIX=" & BreaksMoveFix(dblShiftX, dblShiftY))
+                            "|FIX=" & BreaksMoveFix(dblActionShiftX, dblShiftY))
                         lngWritten = lngWritten + 1
                     End If
                     Call IncrementDictionaryValue(actionDictionary, _
                         "TEXT_SHIFT|text=" & BreaksShortText(oldDoc.Texts(lngIndex).TextValue) & _
-                        "|shiftX=" & NumTxt(dblShiftX) & _
+                        "|shiftX=" & NumTxt(dblActionShiftX) & _
                         "|shiftY=" & NumTxt(dblShiftY))
+
+                ElseIf blnIgnoreInputDrivenX And _
+                       Abs(dblShiftX) > BREAKS_POSITION_TOLERANCE Then
+
+                    infoCount = infoCount + 1
+
+                    If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
+                        Call EmitLine(fileNumber, _
+                            "TEXT_POSITION_INPUT_VALUE_INFO" & _
+                            "|role=" & strFieldRole & _
+                            "|OLD_TEXT=" & BreaksShortText(strOldText) & _
+                            "|NEW_TEXT=" & BreaksShortText(strNewText) & _
+                            "|OLD_X=" & NumTxt(oldDoc.Texts(lngIndex).X) & _
+                            "|NEW_X=" & NumTxt(newDoc.Texts(lngNewIndex).X) & _
+                            "|dX=" & NumTxt(-dblShiftX) & _
+                            "|ACTION=Not actionable because OLD/NEW input values differ; Y and font remain audited.")
+                        lngWritten = lngWritten + 1
+                    End If
                 End If
 
                 strOldFontSemantic = BreaksTextFontSemanticSignature( _
@@ -11361,6 +11737,7 @@ Private Sub WriteBreaksTextDifferences( _
                     If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
                         Call EmitLine(fileNumber, _
                             "TEXT_FONT|text=" & BreaksShortText(oldDoc.Texts(lngIndex).TextValue) & _
+                            "|role=" & strFieldRole & _
                             "|OLD=" & strOldFontSemantic & "@" & NumTxt(oldDoc.Texts(lngIndex).FontSize) & _
                             "|NEW=" & strNewFontSemantic & "@" & NumTxt(newDoc.Texts(lngNewIndex).FontSize) & _
                             "|OLD_ALIAS=" & oldDoc.Texts(lngIndex).FontName & _
@@ -11375,6 +11752,7 @@ Private Sub WriteBreaksTextDifferences( _
                     If lngWritten < BREAKS_MAX_DETAILS_PER_PAGE Then
                         Call EmitLine(fileNumber, _
                             "TEXT_FONT_ALIAS_ONLY|text=" & BreaksShortText(oldDoc.Texts(lngIndex).TextValue) & _
+                            "|role=" & strFieldRole & _
                             "|OLD_ALIAS=" & oldDoc.Texts(lngIndex).FontName & _
                             "|NEW_ALIAS=" & newDoc.Texts(lngNewIndex).FontName & _
                             "|semantic=" & strOldFontSemantic & _
@@ -11382,9 +11760,6 @@ Private Sub WriteBreaksTextDifferences( _
                         lngWritten = lngWritten + 1
                     End If
                 End If
-
-                strOldText = oldDoc.Texts(lngIndex).TextValue
-                strNewText = newDoc.Texts(lngNewIndex).TextValue
 
                 If Not BreaksIsContentComparisonExcludedRole(strFieldRole) Then
                     If StrComp(strOldText, strNewText, vbBinaryCompare) <> 0 Then
@@ -12398,7 +12773,7 @@ End Function
 ' Creation date: 2026-08-07
 ' Parameters:    pdfDoc, pageNo, footer fields
 ' Returns:       Boolean
-' Description:   Finds the machine-generated statement footer and returns its anchor and font signature.
+' Description:   Finds the footer and returns its anchor plus semantic font signature.
 '-------------------------------------------------------------------------------
 Private Function FindBreaksFooter( _
     ByRef pdfDoc As tPdfDocument, _
@@ -12422,7 +12797,12 @@ Private Function FindBreaksFooter( _
                 footerText = pdfDoc.Texts(lngIndex).TextValue
                 footerX = pdfDoc.Texts(lngIndex).X
                 footerY = pdfDoc.Texts(lngIndex).Y
-                footerFont = pdfDoc.Texts(lngIndex).FontName & "@" & NumTxt(pdfDoc.Texts(lngIndex).FontSize)
+                footerFont = _
+                    BreaksTextFontSemanticSignature( _
+                        pdfDoc, _
+                        pageNo, _
+                        pdfDoc.Texts(lngIndex).FontName) & _
+                    "@" & NumTxt(pdfDoc.Texts(lngIndex).FontSize)
                 FindBreaksFooter = True
                 Exit For
             End If
@@ -13535,4 +13915,5 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
+
 
