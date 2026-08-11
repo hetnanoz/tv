@@ -2147,7 +2147,7 @@ Private Sub BlueprintWriteTable( _
         Call BlueprintEmit(lngFile, "")
     Next lngPage
 
-    Close #lngFile
+    ' The caller owns the report file handle and closes it once at the end.
 
 ExitSub:
     Exit Sub
