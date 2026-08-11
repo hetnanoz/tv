@@ -1,7 +1,7 @@
 Option Explicit
 
 Private Const CLASS_NAME As String = "modPdfForensicCompare"
-' V14: input-value-aware X classification and semantic footer-font comparison.
+' V15: input-value-aware comparison plus optical cell/separator topology diagnostics.
 Private Const TARGET_X_FIRST As Double = 468#
 Private Const TARGET_X_SECOND As Double = 639#
 Private Const COORD_TOLERANCE As Double = 0.1
@@ -7108,7 +7108,7 @@ End Function
 
 '===============================================================================
 ' CROSS-MODULE BRIDGE
-' V14 is split into two standard modules to stay comfortably within VBE limits.
+' V15 is split into two standard modules to stay comfortably within VBE limits.
 ' Only the helpers required by modPdfForensicCompareBreaks are exposed here.
 '===============================================================================
 
@@ -7588,5 +7588,4 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
-
 
