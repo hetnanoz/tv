@@ -1,7 +1,7 @@
 Option Explicit
 
 Private Const CLASS_NAME As String = "modRawOraclePdfExport"
-' FIX34: Oracle fractional values omit the zero before the decimal separator; all FIX33 logic retained.
+' FIX35: X=468/X=639 are hard-locked to OLD Oracle m/l/S primitives with raw-stream self-validation; all FIX34 logic retained.
 Private Const CONFIG_RANGE_NAME As String = "cfg_OraclePdfFormat"
 Private Const PDF_HEADER As String = "%PDF-1.4"
 Private Const PDF_PAGE_WIDTH As Double = 1368#
@@ -76,6 +76,10 @@ Private Const BOTTOM_FIELD_AMOUNT_WHG_INDEX As Long = 9
 Private Const BOTTOM_FIELD_ABRECH_AMOUNT_INDEX As Long = 10
 Private Const BOTTOM_FIELD_WHG_ABRECH_INDEX As Long = 11
 Private Const BOTTOM_FIELD_DEVISENKURS_INDEX As Long = 12
+Private Const ORACLE_PARSER_TARGET_X_FIRST As Double = 468#
+Private Const ORACLE_PARSER_TARGET_X_SECOND As Double = 639#
+Private Const ORACLE_PARSER_TARGET_X_TOLERANCE As Double = 0.01
+Private Const RAW_ORACLE_BUILD_SIGNATURE As String = "FIX35_TARGET_X_ML_LOCK"
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -177,6 +181,9 @@ Public Function GenerateRawOraclePdfFromWorksheet( _
     On Error GoTo ErrorHandler
 
     GenerateRawOraclePdfFromWorksheet = False
+
+    Debug.Print "modRawOraclePdfExport " & RAW_ORACLE_BUILD_SIGNATURE & _
+        " | target=" & targetPath
 
     If wksSource Is Nothing Then
         Err.Raise 1001, METHOD_NAME, "The completed report worksheet is required."
@@ -1060,6 +1067,11 @@ Private Function BuildSinglePageContent( _
         lngPage, _
         lngPageCount)
 
+    If Not ValidateOracleParserSensitivePageContent(strContent, lngPage) Then
+        Err.Raise 1024, METHOD_NAME, _
+            "The raw page stream failed the X=468/X=639 Oracle parser-safety validation."
+    End If
+
     BuildSinglePageContent = strContent
 
 ExitFunction:
@@ -1760,7 +1772,7 @@ Private Function BuildHeaderGridStrokeContent( _
         dblHeaderTopY, _
         dblTableTopY)
 
-    strContent = strContent & BuildInteriorVerticalLines( _
+    strContent = strContent & BuildOracleParserSensitiveBottomVerticalLines( _
         arrBottomX, _
         dblHeaderBottomY, _
         dblHeaderTopY)
@@ -1840,7 +1852,7 @@ Private Function BuildTransactionGridStrokeContent( _
         dblTopRowBottomY, _
         dblTopRowTopY)
 
-    strContent = strContent & BuildInteriorVerticalLines( _
+    strContent = strContent & BuildOracleParserSensitiveBottomVerticalLines( _
         arrBottomX, _
         dblBottomRowBottomY, _
         dblTopRowBottomY)
@@ -1928,6 +1940,322 @@ ErrorHandler:
 
     errorManager.save
     Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    arrX As Variant, dblBottomY As Double, dblTopY As Double
+' Returns:       String
+' Description:   Draws lower/header-bottom vertical rules. X=468 and X=639 are
+'                parser-sensitive and are always emitted as standalone m/l/S.
+'-------------------------------------------------------------------------------
+Private Function BuildOracleParserSensitiveBottomVerticalLines( _
+    ByVal arrX As Variant, _
+    ByVal dblBottomY As Double, _
+    ByVal dblTopY As Double) As String
+
+    Const METHOD_NAME As String = "BuildOracleParserSensitiveBottomVerticalLines"
+    Dim dblX As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim strContent As String
+
+    On Error GoTo ErrorHandler
+
+    If Not IsArray(arrX) Then
+        Err.Raise 1024, METHOD_NAME, "The X-coordinate configuration is not an array."
+    End If
+
+    If dblTopY <= dblBottomY Then
+        Err.Raise 1024, METHOD_NAME, "The vertical line span is not positive."
+    End If
+
+    For lngIndex = LBound(arrX) + 1 To UBound(arrX)
+        dblX = CDbl(arrX(lngIndex))
+
+        If IsOracleParserTargetX(dblX) Then
+            strContent = strContent & BuildOracleTargetSeparatorLineCommand( _
+                dblX, _
+                dblBottomY, _
+                dblTopY)
+        Else
+            strContent = strContent & BuildLineCommand( _
+                dblX, _
+                dblBottomY, _
+                dblX, _
+                dblTopY)
+        End If
+    Next lngIndex
+
+    BuildOracleParserSensitiveBottomVerticalLines = strContent
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildOracleParserSensitiveBottomVerticalLines = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "bottomY;topY", _
+        dblBottomY, _
+        dblTopY
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    dblX As Double
+' Returns:       Boolean
+' Description:   Identifies the two parser-sensitive lower-grid X coordinates.
+'-------------------------------------------------------------------------------
+Private Function IsOracleParserTargetX(ByVal dblX As Double) As Boolean
+    IsOracleParserTargetX = _
+        (Abs(dblX - ORACLE_PARSER_TARGET_X_FIRST) <= ORACLE_PARSER_TARGET_X_TOLERANCE) Or _
+        (Abs(dblX - ORACLE_PARSER_TARGET_X_SECOND) <= ORACLE_PARSER_TARGET_X_TOLERANCE)
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    dblX As Double, dblBottomY As Double, dblTopY As Double
+' Returns:       String
+' Description:   Emits the OLD Oracle primitive literally as x y m x y l S.
+'                Never replace this target path with re/S.
+'-------------------------------------------------------------------------------
+Private Function BuildOracleTargetSeparatorLineCommand( _
+    ByVal dblX As Double, _
+    ByVal dblBottomY As Double, _
+    ByVal dblTopY As Double) As String
+
+    Const METHOD_NAME As String = "BuildOracleTargetSeparatorLineCommand"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If Not IsOracleParserTargetX(dblX) Then
+        Err.Raise 1024, METHOD_NAME, "The requested X is not a parser-sensitive target separator."
+    End If
+
+    If dblTopY <= dblBottomY Then
+        Err.Raise 1024, METHOD_NAME, "The target separator span is not positive."
+    End If
+
+    BuildOracleTargetSeparatorLineCommand = _
+        PdfNumber(dblX) & " " & PdfNumber(dblBottomY) & " m " & _
+        PdfNumber(dblX) & " " & PdfNumber(dblTopY) & " l S" & vbCrLf
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildOracleTargetSeparatorLineCommand = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "x;bottomY;topY", _
+        dblX, _
+        dblBottomY, _
+        dblTopY
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    strContent As String, lngPage As Long
+' Returns:       Boolean
+' Description:   Checks the actual uncompressed page stream before compression.
+'                It rejects visible re-based edges at X=468/X=639 and requires
+'                explicit m/l/S target rules. Invisible re n remains allowed.
+'-------------------------------------------------------------------------------
+Private Function ValidateOracleParserSensitivePageContent( _
+    ByVal strContent As String, _
+    ByVal lngPage As Long) As Boolean
+
+    Const METHOD_NAME As String = "ValidateOracleParserSensitivePageContent"
+    Dim arrLines As Variant
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngFirstMlCount As Long
+    Dim lngIndex As Long
+    Dim lngSecondMlCount As Long
+    Dim strLine As String
+
+    On Error GoTo ErrorHandler
+
+    ValidateOracleParserSensitivePageContent = False
+    arrLines = Split(strContent, vbCrLf)
+
+    For lngIndex = LBound(arrLines) To UBound(arrLines)
+        strLine = Trim$(CStr(arrLines(lngIndex)))
+
+        If Len(strLine) > 0 Then
+            If IsOracleTargetMlLine(strLine, ORACLE_PARSER_TARGET_X_FIRST) Then
+                lngFirstMlCount = lngFirstMlCount + 1
+            End If
+
+            If IsOracleTargetMlLine(strLine, ORACLE_PARSER_TARGET_X_SECOND) Then
+                lngSecondMlCount = lngSecondMlCount + 1
+            End If
+
+            If VisibleRectangleTouchesOracleTargetX(strLine, ORACLE_PARSER_TARGET_X_FIRST) Then
+                Err.Raise 1024, METHOD_NAME, _
+                    "Visible re primitive touches X=468 on page " & CStr(lngPage) & "."
+            End If
+
+            If VisibleRectangleTouchesOracleTargetX(strLine, ORACLE_PARSER_TARGET_X_SECOND) Then
+                Err.Raise 1024, METHOD_NAME, _
+                    "Visible re primitive touches X=639 on page " & CStr(lngPage) & "."
+            End If
+        End If
+    Next lngIndex
+
+    If lngFirstMlCount = 0 Or lngSecondMlCount = 0 Then
+        Err.Raise 1024, METHOD_NAME, _
+            "The page does not contain both parser-sensitive m/l/S separator families."
+    End If
+
+    ValidateOracleParserSensitivePageContent = True
+
+    Debug.Print "modRawOraclePdfExport " & RAW_ORACLE_BUILD_SIGNATURE & _
+        " | page=" & CStr(lngPage) & _
+        " | x468_m/l=" & CStr(lngFirstMlCount) & _
+        " | x639_m/l=" & CStr(lngSecondMlCount) & _
+        " | visible_re_at_targets=0"
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ValidateOracleParserSensitivePageContent = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "page", _
+        lngPage
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    strLine As String, dblTargetX As Double
+' Returns:       Boolean
+' Description:   Detects one explicit vertical m/l/S rule at the requested X.
+'-------------------------------------------------------------------------------
+Private Function IsOracleTargetMlLine( _
+    ByVal strLine As String, _
+    ByVal dblTargetX As Double) As Boolean
+
+    Dim arrTokens As Variant
+    Dim dblX1 As Double
+    Dim dblX2 As Double
+
+    IsOracleTargetMlLine = False
+    arrTokens = Split(Trim$(strLine), " ")
+
+    If UBound(arrTokens) < 6 Then Exit Function
+    If CStr(arrTokens(2)) <> "m" Then Exit Function
+    If CStr(arrTokens(5)) <> "l" Then Exit Function
+    If CStr(arrTokens(6)) <> "S" Then Exit Function
+
+    dblX1 = Val(CStr(arrTokens(0)))
+    dblX2 = Val(CStr(arrTokens(3)))
+
+    IsOracleTargetMlLine = _
+        Abs(dblX1 - dblTargetX) <= ORACLE_PARSER_TARGET_X_TOLERANCE And _
+        Abs(dblX2 - dblTargetX) <= ORACLE_PARSER_TARGET_X_TOLERANCE
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    strLine As String, dblTargetX As Double
+' Returns:       Boolean
+' Description:   Detects a visible rectangle whose left/right edge lies at a
+'                target X. re n is ignored because V18.2 rejected that hypothesis.
+'-------------------------------------------------------------------------------
+Private Function VisibleRectangleTouchesOracleTargetX( _
+    ByVal strLine As String, _
+    ByVal dblTargetX As Double) As Boolean
+
+    Dim arrTokens As Variant
+    Dim dblLeftX As Double
+    Dim dblRightX As Double
+    Dim dblWidth As Double
+    Dim lngIndex As Long
+    Dim strPaintOperator As String
+
+    VisibleRectangleTouchesOracleTargetX = False
+
+    If InStr(1, strLine, " re ", vbBinaryCompare) = 0 Then Exit Function
+
+    arrTokens = Split(Trim$(strLine), " ")
+
+    For lngIndex = LBound(arrTokens) To UBound(arrTokens)
+        If CStr(arrTokens(lngIndex)) = "re" Then
+            If lngIndex >= 4 And lngIndex < UBound(arrTokens) Then
+                strPaintOperator = CStr(arrTokens(lngIndex + 1))
+
+                If IsVisibleRectanglePaintOperator(strPaintOperator) Then
+                    dblLeftX = Val(CStr(arrTokens(lngIndex - 4)))
+                    dblWidth = Val(CStr(arrTokens(lngIndex - 2)))
+                    dblRightX = dblLeftX + dblWidth
+
+                    If Abs(dblLeftX - dblTargetX) <= ORACLE_PARSER_TARGET_X_TOLERANCE Or _
+                       Abs(dblRightX - dblTargetX) <= ORACLE_PARSER_TARGET_X_TOLERANCE Then
+                        VisibleRectangleTouchesOracleTargetX = True
+                        Exit Function
+                    End If
+                End If
+            End If
+        End If
+    Next lngIndex
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    strOperator As String
+' Returns:       Boolean
+' Description:   Identifies visible PDF rectangle paint/stroke operators.
+'-------------------------------------------------------------------------------
+Private Function IsVisibleRectanglePaintOperator(ByVal strOperator As String) As Boolean
+    Select Case strOperator
+        Case "S", "s", "B", "B*", "b", "b*", "f", "f*", "F"
+            IsVisibleRectanglePaintOperator = True
+        Case Else
+            IsVisibleRectanglePaintOperator = False
+    End Select
 End Function
 
 '-------------------------------------------------------------------------------
@@ -5647,5 +5975,4 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
-
 
