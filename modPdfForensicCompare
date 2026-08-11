@@ -8455,8 +8455,7 @@ Private Function RegressionVisibleSeparatorSignature( _
     For lngIndex = lngStart To lngEnd
         If IsVerticalAtX( _
             pdfDoc.Lines(lngIndex), _
-            targetX, _
-            TARGET_TOLERANCE) Then
+            targetX) Then
 
             strKey = _
                 "y=" & NumTxt(WorksheetFunction.Min( _
