@@ -23,6 +23,12 @@ Private Const BREAKS_NEAR_RULE_Y_TOLERANCE As Double = 0.75
 Private Const BREAKS_EXCLUDE_WKN_CONTENT As Boolean = True
 Private Const BREAKS_SUPER_SHORT_MAX_FAMILIES As Long = 12
 Private Const BREAKS_SUPER_SHORT_SAMPLES_PER_FAMILY As Long = 2
+Private Const BREAKS_OPTICAL_X_INTERIOR_MARGIN As Double = 0.35
+Private Const BREAKS_OPTICAL_LINE_MATCH_X_TOLERANCE As Double = 0.3
+Private Const BREAKS_OPTICAL_LINE_MATCH_Y_TOLERANCE As Double = 0.8
+Private Const BREAKS_OPTICAL_BASELINE_TO_BOTTOM As Double = 4.52
+Private Const BREAKS_OPTICAL_BASELINE_TO_TOP As Double = 13.48
+Private Const BREAKS_OPTICAL_MIN_ROW_OVERLAP As Double = 0.2
 
 '===============================================================================
 ' PUBLIC ENTRY BRIDGES CALLED BY modPdfForensicCompare
@@ -192,7 +198,7 @@ Private Sub WriteBreaksSuperShortReport( _
 
     lngFileOut = OpenNew(outputPath)
 
-    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_SUPER_SHORT_V2_INPUT_AWARE")
+    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_SUPER_SHORT_V3_OPTICAL_TOPOLOGY")
     Call EmitLine(lngFileOut, "OLD|" & oldDoc.PdfPath)
     Call EmitLine(lngFileOut, "NEW|" & newDoc.PdfPath)
     Call EmitLine(lngFileOut, _
@@ -206,6 +212,8 @@ Private Sub WriteBreaksSuperShortReport( _
     Call EmitLine(lngFileOut, _
         "POLICY|WKN_CONTENT=EXCLUDED|positionFontStillAudited=TRUE" & _
         "|INPUT_DIFFERENT_WIDTH_ALIGNED_X=EXCLUDED|baselineFontStillAudited=TRUE")
+    Call EmitLine(lngFileOut, _
+        "POLICY|OPTICAL_CELL_TOPOLOGY=ENABLED|foreignRowSeparatorsComparedToOld=TRUE")
 
     If blnReady Then
         Call EmitLine(lngFileOut, "BREAKING_ISSUES|NONE")
@@ -354,6 +362,7 @@ Private Function BreaksIsSuperShortBreakingLine( _
         Left$(lineText, Len("TARGET_SEPARATOR_STYLE|")) = "TARGET_SEPARATOR_STYLE|" Or _
         Left$(lineText, Len("TARGET_SEPARATOR_GEOMETRY|")) = "TARGET_SEPARATOR_GEOMETRY|" Or _
         Left$(lineText, Len("TARGET_SEPARATOR_EXTRA_NEW|")) = "TARGET_SEPARATOR_EXTRA_NEW|" Or _
+        Left$(lineText, Len("OPTICAL_CELL_TOPOLOGY|")) = "OPTICAL_CELL_TOPOLOGY|" Or _
         Left$(lineText, Len("VECTOR_STYLE|")) = "VECTOR_STYLE|" Or _
         Left$(lineText, Len("VECTOR_GEOMETRY|")) = "VECTOR_GEOMETRY|" Or _
         Left$(lineText, Len("VECTOR_ONLY_OLD|")) = "VECTOR_ONLY_OLD|" Or _
@@ -441,6 +450,11 @@ Private Function BreaksSuperShortIssueFamily( _
             If Len(strX) = 0 Then strX = "UNKNOWN"
             BreaksSuperShortIssueFamily = "TARGET_SEPARATOR_X_" & _
                 Replace(strX, ".", "_")
+
+        Case "OPTICAL_CELL_TOPOLOGY"
+            strRole = BreaksSummaryField(lineText, "field")
+            If Len(strRole) = 0 Then strRole = "UNCLASSIFIED"
+            BreaksSuperShortIssueFamily = "OPTICAL_SEPARATOR_" & strRole
 
         Case "VECTOR_STYLE"
             BreaksSuperShortIssueFamily = "VECTOR_STYLE"
@@ -994,7 +1008,7 @@ Private Sub WriteBreaksExecutiveSummary( _
     '-----------------------------------------------------------------------
     lngFileOut = OpenNew(outputPath)
 
-    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V14_INPUT_AWARE")
+    Call EmitLine(lngFileOut, "ORACLE_COMPATIBILITY_ACTIONABLE_SUMMARY_V15_OPTICAL_TOPOLOGY")
     Call EmitLine(lngFileOut, "OLD|" & oldDoc.PdfPath)
     Call EmitLine(lngFileOut, "NEW|" & newDoc.PdfPath)
     Call EmitLine(lngFileOut, _
@@ -1729,6 +1743,674 @@ ErrorHandler:
 
     errorManager.save
     Resume ExitFunction
+End Function
+
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    oldDoc, newDoc, pageNo, fileNumber, actionDictionary, counters
+' Returns:       ---
+' Description:   Compares optical row topology. A vertical rule is actionable when
+'                it enters the interior of a logical TOP/BOTTOM cell in NEW but
+'                no equivalent rule enters the same cell in OLD.
+'-------------------------------------------------------------------------------
+Private Sub BreaksWriteOpticalCellTopology( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal fileNumber As Long, _
+    ByVal actionDictionary As Object, _
+    ByRef criticalCount As Long, _
+    ByRef structuralCount As Long, _
+    ByRef infoCount As Long)
+
+    Const METHOD_NAME As String = "BreaksWriteOpticalCellTopology"
+    Dim dblBottomY As Double
+    Dim dblLeftX As Double
+    Dim dblRightX As Double
+    Dim dblTopY As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngAffectedCells As Long
+    Dim lngField As Long
+    Dim lngFieldCount As Long
+    Dim lngNewCount As Long
+    Dim lngNewOnly As Long
+    Dim lngNewOnlyTotal As Long
+    Dim lngOldCount As Long
+    Dim lngRow As Long
+    Dim lngSlot As Long
+    Dim lngStyleMismatch As Long
+    Dim lngStyleMismatchTotal As Long
+    Dim strField As String
+    Dim strLineSample As String
+    Dim strRowKind As String
+    Dim strTextSample As String
+
+    On Error GoTo ErrorHandler
+
+    For lngRow = 1 To 2
+        If lngRow = 1 Then
+            strRowKind = "HEADER_TOP"
+        Else
+            strRowKind = "HEADER_BOTTOM"
+        End If
+
+        Call BreaksOpticalHeaderRowBounds( _
+            pageNo, _
+            strRowKind, _
+            dblBottomY, _
+            dblTopY)
+
+        If Right$(strRowKind, 3) = "TOP" Then
+            lngFieldCount = 12
+        Else
+            lngFieldCount = 13
+        End If
+
+        For lngField = 1 To lngFieldCount
+            If BreaksOpticalGetFieldBounds( _
+                strRowKind, _
+                lngField, _
+                strField, _
+                dblLeftX, _
+                dblRightX) Then
+
+                strLineSample = vbNullString
+                Call BreaksOpticalCompareCell( _
+                    oldDoc, _
+                    newDoc, _
+                    pageNo, _
+                    dblLeftX, _
+                    dblRightX, _
+                    dblBottomY, _
+                    dblTopY, _
+                    lngOldCount, _
+                    lngNewCount, _
+                    lngNewOnly, _
+                    lngStyleMismatch, _
+                    strLineSample)
+
+                If lngNewOnly > 0 Then
+                    lngAffectedCells = lngAffectedCells + 1
+                    lngNewOnlyTotal = lngNewOnlyTotal + lngNewOnly
+                    criticalCount = criticalCount + lngNewOnly
+                    strTextSample = BreaksOpticalCellTextSample( _
+                        newDoc, _
+                        pageNo, _
+                        dblLeftX, _
+                        dblRightX, _
+                        dblBottomY, _
+                        dblTopY)
+
+                    Call EmitLine(fileNumber, _
+                        "OPTICAL_CELL_TOPOLOGY|page=" & CStr(pageNo) & _
+                        "|slot=HEADER|row=" & strRowKind & _
+                        "|field=" & strField & _
+                        "|oldIntrusions=" & CStr(lngOldCount) & _
+                        "|newIntrusions=" & CStr(lngNewCount) & _
+                        "|newOnly=" & CStr(lngNewOnly) & _
+                        "|cellX=" & NumTxt(dblLeftX) & ".." & NumTxt(dblRightX) & _
+                        "|cellY=" & NumTxt(dblBottomY) & ".." & NumTxt(dblTopY) & _
+                        "|textSample=" & strTextSample & _
+                        "|lineSample=" & strLineSample & _
+                        "|FIX=Do not move text yet; first make NEW separator span/row ownership match OLD.")
+
+                    Call PfcCore_IncrementDictionaryValue( _
+                        actionDictionary, _
+                        "OPTICAL_SEPARATOR_TOPOLOGY|field=" & strField)
+                End If
+
+                If lngStyleMismatch > 0 Then
+                    lngStyleMismatchTotal = lngStyleMismatchTotal + lngStyleMismatch
+                    infoCount = infoCount + lngStyleMismatch
+                End If
+            End If
+        Next lngField
+    Next lngRow
+
+    For lngSlot = 1 To BreaksOracleMaxTradesForPage(pageNo)
+        For lngRow = 1 To 2
+            If lngRow = 1 Then
+                strRowKind = "TOP"
+            Else
+                strRowKind = "BOTTOM"
+            End If
+
+            Call BreaksOpticalTransactionRowBounds( _
+                pageNo, _
+                lngSlot, _
+                strRowKind, _
+                dblBottomY, _
+                dblTopY)
+
+            If strRowKind = "TOP" Then
+                lngFieldCount = 12
+            Else
+                lngFieldCount = 13
+            End If
+
+            For lngField = 1 To lngFieldCount
+                If BreaksOpticalGetFieldBounds( _
+                    strRowKind, _
+                    lngField, _
+                    strField, _
+                    dblLeftX, _
+                    dblRightX) Then
+
+                    strLineSample = vbNullString
+                    Call BreaksOpticalCompareCell( _
+                        oldDoc, _
+                        newDoc, _
+                        pageNo, _
+                        dblLeftX, _
+                        dblRightX, _
+                        dblBottomY, _
+                        dblTopY, _
+                        lngOldCount, _
+                        lngNewCount, _
+                        lngNewOnly, _
+                        lngStyleMismatch, _
+                        strLineSample)
+
+                    If lngNewOnly > 0 Then
+                        lngAffectedCells = lngAffectedCells + 1
+                        lngNewOnlyTotal = lngNewOnlyTotal + lngNewOnly
+                        criticalCount = criticalCount + lngNewOnly
+                        strTextSample = BreaksOpticalCellTextSample( _
+                            newDoc, _
+                            pageNo, _
+                            dblLeftX, _
+                            dblRightX, _
+                            dblBottomY, _
+                            dblTopY)
+
+                        Call EmitLine(fileNumber, _
+                            "OPTICAL_CELL_TOPOLOGY|page=" & CStr(pageNo) & _
+                            "|slot=" & CStr(lngSlot) & _
+                            "|row=" & strRowKind & _
+                            "|field=" & strField & _
+                            "|oldIntrusions=" & CStr(lngOldCount) & _
+                            "|newIntrusions=" & CStr(lngNewCount) & _
+                            "|newOnly=" & CStr(lngNewOnly) & _
+                            "|cellX=" & NumTxt(dblLeftX) & ".." & NumTxt(dblRightX) & _
+                            "|cellY=" & NumTxt(dblBottomY) & ".." & NumTxt(dblTopY) & _
+                            "|textSample=" & strTextSample & _
+                            "|lineSample=" & strLineSample & _
+                            "|FIX=Do not move text yet; first make NEW separator span/row ownership match OLD.")
+
+                        Call PfcCore_IncrementDictionaryValue( _
+                            actionDictionary, _
+                            "OPTICAL_SEPARATOR_TOPOLOGY|field=" & strField)
+                    End If
+
+                    If lngStyleMismatch > 0 Then
+                        lngStyleMismatchTotal = lngStyleMismatchTotal + lngStyleMismatch
+                        infoCount = infoCount + lngStyleMismatch
+                    End If
+                End If
+            Next lngField
+        Next lngRow
+    Next lngSlot
+
+    Call EmitLine(fileNumber, _
+        "OPTICAL_TOPOLOGY_SUMMARY|page=" & CStr(pageNo) & _
+        "|newOnlyIntrusions=" & CStr(lngNewOnlyTotal) & _
+        "|affectedCells=" & CStr(lngAffectedCells) & _
+        "|matchedGeometryStyleDiffs=" & CStr(lngStyleMismatchTotal) & _
+        "|status=" & IIf(lngNewOnlyTotal = 0, "PASS", "FAIL"))
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo", _
+        pageNo
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+Private Sub BreaksOpticalCompareCell( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef newDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal leftX As Double, _
+    ByVal rightX As Double, _
+    ByVal bottomY As Double, _
+    ByVal topY As Double, _
+    ByRef oldCount As Long, _
+    ByRef newCount As Long, _
+    ByRef newOnlyCount As Long, _
+    ByRef styleMismatchCount As Long, _
+    ByRef sampleText As String)
+
+    Const METHOD_NAME As String = "BreaksOpticalCompareCell"
+    Dim blnOldUsed() As Boolean
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngMatch As Long
+    Dim lngNewIndex As Long
+    Dim lngOldIndex As Long
+
+    On Error GoTo ErrorHandler
+
+    oldCount = 0
+    newCount = 0
+    newOnlyCount = 0
+    styleMismatchCount = 0
+    sampleText = vbNullString
+
+    If oldDoc.LineCount > 0 Then
+        ReDim blnOldUsed(0 To oldDoc.LineCount - 1)
+    Else
+        ReDim blnOldUsed(0 To 0)
+    End If
+
+    For lngOldIndex = 0 To oldDoc.LineCount - 1
+        If BreaksOpticalLineIsCellIntrusion( _
+            oldDoc.Lines(lngOldIndex), _
+            pageNo, _
+            leftX, _
+            rightX, _
+            bottomY, _
+            topY) Then
+
+            oldCount = oldCount + 1
+        End If
+    Next lngOldIndex
+
+    For lngNewIndex = 0 To newDoc.LineCount - 1
+        If BreaksOpticalLineIsCellIntrusion( _
+            newDoc.Lines(lngNewIndex), _
+            pageNo, _
+            leftX, _
+            rightX, _
+            bottomY, _
+            topY) Then
+
+            newCount = newCount + 1
+            lngMatch = BreaksOpticalFindMatchingOldLine( _
+                oldDoc, _
+                blnOldUsed, _
+                pageNo, _
+                leftX, _
+                rightX, _
+                bottomY, _
+                topY, _
+                newDoc.Lines(lngNewIndex))
+
+            If lngMatch >= 0 Then
+                blnOldUsed(lngMatch) = True
+
+                If Not BreaksOpticalLineVisualStyleMatches( _
+                    oldDoc.Lines(lngMatch), _
+                    newDoc.Lines(lngNewIndex)) Then
+
+                    styleMismatchCount = styleMismatchCount + 1
+                End If
+            Else
+                newOnlyCount = newOnlyCount + 1
+
+                If Len(sampleText) = 0 Then
+                    sampleText = BreaksOpticalLineSample( _
+                        newDoc.Lines(lngNewIndex), _
+                        bottomY, _
+                        topY)
+                End If
+            End If
+        End If
+    Next lngNewIndex
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;leftX;rightX;bottomY;topY", _
+        pageNo, _
+        leftX, _
+        rightX, _
+        bottomY, _
+        topY
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+Private Function BreaksOpticalFindMatchingOldLine( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef oldUsed() As Boolean, _
+    ByVal pageNo As Long, _
+    ByVal leftX As Double, _
+    ByVal rightX As Double, _
+    ByVal bottomY As Double, _
+    ByVal topY As Double, _
+    ByRef newLine As tPdfLine) As Long
+
+    Dim dblNewHigh As Double
+    Dim dblNewLow As Double
+    Dim dblNewX As Double
+    Dim dblOldHigh As Double
+    Dim dblOldLow As Double
+    Dim dblOldX As Double
+    Dim lngOldIndex As Long
+
+    BreaksOpticalFindMatchingOldLine = -1
+
+    dblNewX = (newLine.X1 + newLine.X2) / 2#
+    dblNewLow = MaxDouble(MinDouble(newLine.Y1, newLine.Y2), bottomY)
+    dblNewHigh = MinDouble(MaxDouble(newLine.Y1, newLine.Y2), topY)
+
+    For lngOldIndex = 0 To oldDoc.LineCount - 1
+        If Not oldUsed(lngOldIndex) Then
+            If BreaksOpticalLineIsCellIntrusion( _
+                oldDoc.Lines(lngOldIndex), _
+                pageNo, _
+                leftX, _
+                rightX, _
+                bottomY, _
+                topY) Then
+
+                dblOldX = (oldDoc.Lines(lngOldIndex).X1 + _
+                    oldDoc.Lines(lngOldIndex).X2) / 2#
+                dblOldLow = MaxDouble( _
+                    MinDouble(oldDoc.Lines(lngOldIndex).Y1, oldDoc.Lines(lngOldIndex).Y2), _
+                    bottomY)
+                dblOldHigh = MinDouble( _
+                    MaxDouble(oldDoc.Lines(lngOldIndex).Y1, oldDoc.Lines(lngOldIndex).Y2), _
+                    topY)
+
+                If Abs(dblOldX - dblNewX) <= _
+                    BREAKS_OPTICAL_LINE_MATCH_X_TOLERANCE And _
+                   Abs(dblOldLow - dblNewLow) <= _
+                    BREAKS_OPTICAL_LINE_MATCH_Y_TOLERANCE And _
+                   Abs(dblOldHigh - dblNewHigh) <= _
+                    BREAKS_OPTICAL_LINE_MATCH_Y_TOLERANCE Then
+
+                    BreaksOpticalFindMatchingOldLine = lngOldIndex
+                    Exit Function
+                End If
+            End If
+        End If
+    Next lngOldIndex
+End Function
+
+Private Function BreaksOpticalLineIsCellIntrusion( _
+    ByRef lineInfo As tPdfLine, _
+    ByVal pageNo As Long, _
+    ByVal leftX As Double, _
+    ByVal rightX As Double, _
+    ByVal bottomY As Double, _
+    ByVal topY As Double) As Boolean
+
+    Dim dblHigh As Double
+    Dim dblLow As Double
+    Dim dblOverlap As Double
+    Dim dblX As Double
+
+    BreaksOpticalLineIsCellIntrusion = False
+
+    If lineInfo.PageNo <> pageNo Then
+        Exit Function
+    End If
+
+    If Abs(lineInfo.X1 - lineInfo.X2) > COORD_TOLERANCE Then
+        Exit Function
+    End If
+
+    dblX = (lineInfo.X1 + lineInfo.X2) / 2#
+
+    If dblX <= leftX + BREAKS_OPTICAL_X_INTERIOR_MARGIN Or _
+       dblX >= rightX - BREAKS_OPTICAL_X_INTERIOR_MARGIN Then
+        Exit Function
+    End If
+
+    dblLow = MaxDouble(MinDouble(lineInfo.Y1, lineInfo.Y2), bottomY)
+    dblHigh = MinDouble(MaxDouble(lineInfo.Y1, lineInfo.Y2), topY)
+    dblOverlap = dblHigh - dblLow
+
+    BreaksOpticalLineIsCellIntrusion = _
+        dblOverlap >= BREAKS_OPTICAL_MIN_ROW_OVERLAP
+End Function
+
+Private Function BreaksOpticalLineVisualStyleMatches( _
+    ByRef oldLine As tPdfLine, _
+    ByRef newLine As tPdfLine) As Boolean
+
+    BreaksOpticalLineVisualStyleMatches = _
+        Abs(oldLine.LineWidth - newLine.LineWidth) <= 0.05 And _
+        oldLine.StrokeColor = newLine.StrokeColor
+End Function
+
+Private Function BreaksOpticalLineSample( _
+    ByRef lineInfo As tPdfLine, _
+    ByVal bottomY As Double, _
+    ByVal topY As Double) As String
+
+    Dim dblHigh As Double
+    Dim dblLow As Double
+    Dim dblX As Double
+
+    dblX = (lineInfo.X1 + lineInfo.X2) / 2#
+    dblLow = MaxDouble(MinDouble(lineInfo.Y1, lineInfo.Y2), bottomY)
+    dblHigh = MinDouble(MaxDouble(lineInfo.Y1, lineInfo.Y2), topY)
+
+    BreaksOpticalLineSample = _
+        "x=" & NumTxt(dblX) & _
+        ",rawY=" & NumTxt(MinDouble(lineInfo.Y1, lineInfo.Y2)) & _
+            ".." & NumTxt(MaxDouble(lineInfo.Y1, lineInfo.Y2)) & _
+        ",cellOverlapY=" & NumTxt(dblLow) & ".." & NumTxt(dblHigh) & _
+        ",w=" & NumTxt(lineInfo.LineWidth) & _
+        ",paint=" & lineInfo.PaintOperator & _
+        ",source=" & lineInfo.SourceOperator
+End Function
+
+Private Function BreaksOpticalCellTextSample( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal leftX As Double, _
+    ByVal rightX As Double, _
+    ByVal bottomY As Double, _
+    ByVal topY As Double) As String
+
+    Dim lngIndex As Long
+    Dim strText As String
+
+    BreaksOpticalCellTextSample = "(none)"
+
+    For lngIndex = 0 To pdfDoc.TextCount - 1
+        If pdfDoc.Texts(lngIndex).PageNo = pageNo Then
+            If pdfDoc.Texts(lngIndex).X >= leftX - BREAKS_FIELD_X_TOLERANCE And _
+               pdfDoc.Texts(lngIndex).X <= rightX + BREAKS_FIELD_X_TOLERANCE And _
+               pdfDoc.Texts(lngIndex).Y >= bottomY - BREAKS_BASELINE_TOLERANCE And _
+               pdfDoc.Texts(lngIndex).Y <= topY + BREAKS_BASELINE_TOLERANCE Then
+
+                strText = Trim$(pdfDoc.Texts(lngIndex).TextValue)
+
+                If Len(strText) > 0 Then
+                    BreaksOpticalCellTextSample = _
+                        SanitizeReportText(BreaksShortText(strText)) & _
+                        "@x=" & NumTxt(pdfDoc.Texts(lngIndex).X) & _
+                        ",y=" & NumTxt(pdfDoc.Texts(lngIndex).Y) & _
+                        ",font=" & pdfDoc.Texts(lngIndex).FontName & _
+                        "@" & NumTxt(pdfDoc.Texts(lngIndex).FontSize)
+                    Exit Function
+                End If
+            End If
+        End If
+    Next lngIndex
+End Function
+
+Private Sub BreaksOpticalHeaderRowBounds( _
+    ByVal pageNo As Long, _
+    ByVal rowKind As String, _
+    ByRef bottomY As Double, _
+    ByRef topY As Double)
+
+    If pageNo = 1 Then
+        If rowKind = "HEADER_TOP" Then
+            bottomY = 535.48
+            topY = 553.48
+        Else
+            bottomY = 517.48
+            topY = 535.48
+        End If
+    Else
+        If rowKind = "HEADER_TOP" Then
+            bottomY = 589.48
+            topY = 607.48
+        Else
+            bottomY = 571.48
+            topY = 589.48
+        End If
+    End If
+End Sub
+
+Private Sub BreaksOpticalTransactionRowBounds( _
+    ByVal pageNo As Long, _
+    ByVal slotNo As Long, _
+    ByVal rowKind As String, _
+    ByRef bottomY As Double, _
+    ByRef topY As Double)
+
+    Dim dblBottomBaseline As Double
+    Dim dblTopBaseline As Double
+
+    dblTopBaseline = BreaksOpticalTopBaseline(pageNo, slotNo)
+    dblBottomBaseline = dblTopBaseline - 18#
+
+    If rowKind = "TOP" Then
+        bottomY = dblTopBaseline - BREAKS_OPTICAL_BASELINE_TO_BOTTOM
+        topY = dblTopBaseline + BREAKS_OPTICAL_BASELINE_TO_TOP
+    Else
+        bottomY = dblBottomBaseline - BREAKS_OPTICAL_BASELINE_TO_BOTTOM
+        topY = dblBottomBaseline + BREAKS_OPTICAL_BASELINE_TO_TOP
+    End If
+End Sub
+
+Private Function BreaksOpticalTopBaseline( _
+    ByVal pageNo As Long, _
+    ByVal slotNo As Long) As Double
+
+    Dim arrBaselines As Variant
+
+    If pageNo = 1 Then
+        arrBaselines = Array( _
+            504#, 463.48, 423#, 382.48, 342#, 301.48, _
+            261#, 220.48, 180#, 139.48, 99#)
+    Else
+        arrBaselines = Array( _
+            558#, 517.48, 477#, 436.48, 396#, 355.48, _
+            315#, 274.48, 234#, 193.48, 153#, 112.48)
+    End If
+
+    If slotNo >= 1 And slotNo <= UBound(arrBaselines) + 1 Then
+        BreaksOpticalTopBaseline = CDbl(arrBaselines(slotNo - 1))
+    End If
+End Function
+
+Private Function BreaksOpticalGetFieldBounds( _
+    ByVal rowKind As String, _
+    ByVal fieldIndex As Long, _
+    ByRef fieldName As String, _
+    ByRef leftX As Double, _
+    ByRef rightX As Double) As Boolean
+
+    Dim blnTop As Boolean
+
+    BreaksOpticalGetFieldBounds = False
+    fieldName = vbNullString
+    leftX = 0#
+    rightX = 0#
+
+    blnTop = (rowKind = "TOP" Or rowKind = "HEADER_TOP")
+
+    If blnTop Then
+        Select Case fieldIndex
+            Case 1
+                fieldName = "TOP_DEPOTNR": leftX = 40.52: rightX = 126#
+            Case 2
+                fieldName = "TOP_FONDSBEZEICHNUNG": leftX = 126#: rightX = 328.52
+            Case 3
+                fieldName = "TOP_GESCHAEFTSART": leftX = 328.52: rightX = 414#
+            Case 4
+                fieldName = "TOP_SCHLUSSTAG": leftX = 414#: rightX = 504#
+            Case 5
+                fieldName = "TOP_VALUTATAG": leftX = 504#: rightX = 553.52
+            Case 6
+                fieldName = "TOP_WKN": leftX = 553.52: rightX = 594#
+            Case 7
+                fieldName = "TOP_ISIN": leftX = 594#: rightX = 675#
+            Case 8
+                fieldName = "TOP_WERTPAPIERBEZEICHNUNG": leftX = 675#: rightX = 891#
+            Case 9
+                fieldName = "TOP_NOMINALE_STUECKE": leftX = 891#: rightX = 1026#
+            Case 10
+                fieldName = "TOP_WHG_NOMINALE": leftX = 1026#: rightX = 1053#
+            Case 11
+                fieldName = "TOP_KURS": leftX = 1053#: rightX = 1179#
+            Case 12
+                fieldName = "TOP_STUECKZINSEN": leftX = 1179#: rightX = 1323.04
+            Case Else
+                Exit Function
+        End Select
+    Else
+        Select Case fieldIndex
+            Case 1
+                fieldName = "BOTTOM_TRANSAKTIONSNR": leftX = 40.52: rightX = 126#
+            Case 2
+                fieldName = "BOTTOM_MAKLERGEBUEHREN": leftX = 126#: rightX = 283.52
+            Case 3
+                fieldName = "BOTTOM_WHG_MAKLER": leftX = 283.52: rightX = 328.52
+            Case 4
+                fieldName = "BOTTOM_STEUERN": leftX = 328.52: rightX = 468#
+            Case 5
+                fieldName = "BOTTOM_WHG_STEUERN": leftX = 468#: rightX = 504#
+            Case 6
+                fieldName = "BOTTOM_ABWICKLUNGSPROVISION": leftX = 504#: rightX = 639#
+            Case 7
+                fieldName = "BOTTOM_WHG_ABWICKLUNG": leftX = 639#: rightX = 675#
+            Case 8
+                fieldName = "BOTTOM_SPESEN": leftX = 675#: rightX = 855#
+            Case 9
+                fieldName = "BOTTOM_WHG_SPESEN": leftX = 855#: rightX = 891#
+            Case 10
+                fieldName = "BOTTOM_AUSM_BETRAG_WHG": leftX = 891#: rightX = 1053#
+            Case 11
+                fieldName = "BOTTOM_AUSM_BETRAG_ABRECH_WHG": leftX = 1053#: rightX = 1179#
+            Case 12
+                fieldName = "BOTTOM_WHG_ABRECH": leftX = 1179#: rightX = 1206#
+            Case 13
+                fieldName = "BOTTOM_DEVISENKURS": leftX = 1206#: rightX = 1323.04
+            Case Else
+                Exit Function
+        End Select
+    End If
+
+    If Left$(rowKind, 7) = "HEADER_" Then
+        fieldName = rowKind & "_" & Mid$(fieldName, InStr(fieldName, "_") + 1)
+    End If
+
+    BreaksOpticalGetFieldBounds = True
 End Function
 
 '-------------------------------------------------------------------------------
@@ -3431,7 +4113,7 @@ Private Sub WriteBreaksOnlyReport( _
     Set dictActions = CreateObject("Scripting.Dictionary")
     lngFileNumber = OpenNew(outputPath)
 
-    Call EmitLine(lngFileNumber, "ORACLE_COMPATIBILITY_BREAKS_ONLY_V14_INPUT_AWARE")
+    Call EmitLine(lngFileNumber, "ORACLE_COMPATIBILITY_BREAKS_ONLY_V15_OPTICAL_TOPOLOGY")
     Call EmitLine(lngFileNumber, "OLD|" & oldDoc.PdfPath)
     Call EmitLine(lngFileNumber, "NEW|" & newDoc.PdfPath)
     Call EmitLine(lngFileNumber, _
@@ -3446,6 +4128,8 @@ Private Sub WriteBreaksOnlyReport( _
         "POLICY|WKN_CONTENT=EXCLUDED_FROM_COMPARISON; WKN position/font are still audited when text exists.")
     Call EmitLine(lngFileNumber, _
         "POLICY|Operator-profile count-only differences with oldOnly=0 and newOnly=0 are compatible serialization information, not structural breaks.")
+    Call EmitLine(lngFileNumber, _
+        "POLICY|OPTICAL_CELL_TOPOLOGY=ENABLED; foreign vertical rules inside TOP/BOTTOM logical cells are compared against OLD.")
     Call EmitLine(lngFileNumber, _
         "TOLERANCE|textPosition=" & NumTxt(BREAKS_POSITION_TOLERANCE) & _
         "|lineMatch=" & NumTxt(BREAKS_LINE_MATCH_TOLERANCE) & _
@@ -3837,6 +4521,16 @@ Private Sub WriteBreaksPageReport( _
         fileNumber, _
         actionDictionary, _
         criticalCount)
+
+    Call BreaksWriteOpticalCellTopology( _
+        oldDoc, _
+        newDoc, _
+        pageNo, _
+        fileNumber, _
+        actionDictionary, _
+        criticalCount, _
+        structuralCount, _
+        infoCount)
 
     Call WriteBreaksTextDifferences( _
         oldDoc, _
@@ -6880,3 +7574,4 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
+
