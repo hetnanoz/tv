@@ -1,7 +1,7 @@
 Option Explicit
 
 Private Const CLASS_NAME As String = "modPdfForensicCompare"
-' V17: retains V16 and adds DOXIS-oriented three-way topology forensic (OLD Oracle / BETTER-PARSING / CURRENT).
+' V18.1: V18 plus global-X projection and invisible re n path diagnostics for DOXIS-style parser hypotheses.
 Private Const TARGET_X_FIRST As Double = 468#
 Private Const TARGET_X_SECOND As Double = 639#
 Private Const COORD_TOLERANCE As Double = 0.1
@@ -37,6 +37,7 @@ Private Const DOXIS_FONT_SIZE_CHANGE_TOLERANCE As Double = 0.05
 Private Const DOXIS_MAX_SAMPLES_PER_FAMILY As Long = 3
 Private Const DOXIS_RASTER_PROXY_DPI_LOW As Double = 300#
 Private Const DOXIS_RASTER_PROXY_DPI_HIGH As Double = 600#
+Private Const DOXIS_GLOBAL_PROJECTION_EDGE_MARGIN As Double = 0.05
 
 Public Type tPdfLine
     PageNo As Long
@@ -87,6 +88,8 @@ Public Type tPdfPage
     ImageCount As Long
     LineStart As Long
     LineCount As Long
+    NoPaintLineStart As Long
+    NoPaintLineCount As Long
     TextStart As Long
     TextCount As Long
 End Type
@@ -101,6 +104,8 @@ Public Type tPdfDocument
     Pages() As tPdfPage
     Lines() As tPdfLine
     LineCount As Long
+    NoPaintLines() As tPdfLine
+    NoPaintLineCount As Long
     Images() As tPdfImage
     ImageCount As Long
     Texts() As tPdfText
@@ -578,6 +583,7 @@ Private Sub LoadPdfDocument( _
     pdfDoc.XrefKind = DetectXrefKind
     ReDim pdfDoc.Pages(1 To 8)
     ReDim pdfDoc.Lines(0 To 2047)
+    ReDim pdfDoc.NoPaintLines(0 To 2047)
     ReDim pdfDoc.Images(0 To 255)
     ReDim pdfDoc.Texts(0 To 2047)
 
@@ -2437,6 +2443,7 @@ Private Sub ParsePage( _
         .ContentLength = Len(strContent)
         .ImageStart = pdfDoc.ImageCount
         .LineStart = pdfDoc.LineCount
+        .NoPaintLineStart = pdfDoc.NoPaintLineCount
         .TextStart = pdfDoc.TextCount
     End With
 
@@ -2444,6 +2451,7 @@ Private Sub ParsePage( _
 
     pdfDoc.Pages(pdfDoc.PageCount).ImageCount = pdfDoc.ImageCount - pdfDoc.Pages(pdfDoc.PageCount).ImageStart
     pdfDoc.Pages(pdfDoc.PageCount).LineCount = pdfDoc.LineCount - pdfDoc.Pages(pdfDoc.PageCount).LineStart
+    pdfDoc.Pages(pdfDoc.PageCount).NoPaintLineCount = pdfDoc.NoPaintLineCount - pdfDoc.Pages(pdfDoc.PageCount).NoPaintLineStart
     pdfDoc.Pages(pdfDoc.PageCount).TextCount = pdfDoc.TextCount - pdfDoc.Pages(pdfDoc.PageCount).TextStart
 
 ExitSub:
@@ -2572,7 +2580,10 @@ Private Sub AnalysePageContent( _
             Case "B", "B*", "b", "b*"
                 Call FlushPendingPath(pageNo, strToken, pdfDoc)
 
-            Case "f", "f*", "F", "n"
+            Case "n"
+                Call FlushPendingNoPaintPath(pageNo, "n", pdfDoc)
+
+            Case "f", "f*", "F"
                 Call ClearPendingPath
 
             Case "Do"
@@ -3073,6 +3084,126 @@ ErrorHandler:
         pageNo, _
         paintOperator, _
         m_pendingCount
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    pageNo As Long, paintOperator As String, pdfDoc As tPdfDocument
+' Returns:       ---
+' Description:   Captures a path terminated by n. These paths are visually
+'                invisible but can still matter to a primitive layout parser.
+'-------------------------------------------------------------------------------
+Private Sub FlushPendingNoPaintPath( _
+    ByVal pageNo As Long, _
+    ByVal paintOperator As String, _
+    ByRef pdfDoc As tPdfDocument)
+
+    Const METHOD_NAME As String = "FlushPendingNoPaintPath"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+
+    On Error GoTo ErrorHandler
+
+    For lngIndex = 0 To m_pendingCount - 1
+        Call AppendDocumentNoPaintLine( _
+            pageNo, _
+            m_pendingX1(lngIndex), _
+            m_pendingY1(lngIndex), _
+            m_pendingX2(lngIndex), _
+            m_pendingY2(lngIndex), _
+            m_currentLineWidth, _
+            paintOperator, _
+            m_pendingSource(lngIndex), _
+            m_currentStrokeColor, _
+            pdfDoc)
+    Next lngIndex
+
+    Call ClearPendingPath
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;paintOperator;pendingCount", _
+        pageNo, _
+        paintOperator, _
+        m_pendingCount
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+Private Sub AppendDocumentNoPaintLine( _
+    ByVal pageNo As Long, _
+    ByVal x1 As Double, _
+    ByVal y1 As Double, _
+    ByVal x2 As Double, _
+    ByVal y2 As Double, _
+    ByVal lineWidth As Double, _
+    ByVal paintOperator As String, _
+    ByVal sourceOperator As String, _
+    ByVal strokeColor As String, _
+    ByRef pdfDoc As tPdfDocument)
+
+    Const METHOD_NAME As String = "AppendDocumentNoPaintLine"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If Abs(x1 - x2) > COORD_TOLERANCE And Abs(y1 - y2) > COORD_TOLERANCE Then
+        GoTo ExitSub
+    End If
+
+    If pdfDoc.NoPaintLineCount > UBound(pdfDoc.NoPaintLines) Then
+        ReDim Preserve pdfDoc.NoPaintLines(0 To pdfDoc.NoPaintLineCount * 2)
+    End If
+
+    With pdfDoc.NoPaintLines(pdfDoc.NoPaintLineCount)
+        .PageNo = pageNo
+        .X1 = x1
+        .Y1 = y1
+        .X2 = x2
+        .Y2 = y2
+        .LineWidth = lineWidth
+        .PaintOperator = paintOperator
+        .SourceOperator = sourceOperator
+        .StrokeColor = strokeColor
+    End With
+
+    pdfDoc.NoPaintLineCount = pdfDoc.NoPaintLineCount + 1
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;sourceOperator;paintOperator", _
+        pageNo, _
+        sourceOperator, _
+        paintOperator
 
     errorManager.save
     Resume ExitSub
@@ -10442,7 +10573,7 @@ Private Function RegressionDictionaryHasPrefix( _
 End Function
 
 '===============================================================================
-' V17 DOXIS-ORIENTED TOPOLOGY FORENSIC
+' V18 DOXIS TRANSACTION-ANCHORED FORENSIC
 '===============================================================================
 ' IMPORTANT:
 ' - This is a heuristic forensic mode. It does NOT claim to reproduce an
@@ -10450,6 +10581,8 @@ End Function
 ' - The middle PDF is deliberately called BETTER_PARSING, not GOOD. It is
 '   evidence of parser behaviour and may still contain defects.
 ' - OLD Oracle remains the semantic/layout reference.
+' - V18 removes the main V17 false-positive source: target occurrences are
+'   matched by transaction number, not by page number plus Y coordinate.
 '===============================================================================
 
 '-------------------------------------------------------------------------------
@@ -10458,7 +10591,7 @@ End Function
 ' Parameters:    ---
 ' Returns:       ---
 ' Description:   Selects OLD Oracle, BETTER-PARSING and CURRENT PDFs and writes
-'                a DOXIS-oriented topology regression report.
+'                a transaction-anchored DOXIS regression report.
 '-------------------------------------------------------------------------------
 Public Sub RunPdfDoxisTopologyBrowse()
     Const METHOD_NAME As String = "RunPdfDoxisTopologyBrowse"
@@ -10474,15 +10607,15 @@ Public Sub RunPdfDoxisTopologyBrowse()
     On Error GoTo ErrorHandler
 
     strOldPdfPath = SelectPdfFile( _
-        "V17 DOXIS - Select OLD Oracle reference PDF")
+        "V18 DOXIS - Select OLD Oracle reference PDF")
     If Len(strOldPdfPath) = 0 Then GoTo ExitSub
 
     strBetterPdfPath = SelectPdfFile( _
-        "V17 DOXIS - Select BETTER-PARSING intermediate PDF (not assumed perfect)")
+        "V18 DOXIS - Select BETTER-PARSING intermediate PDF (not assumed perfect)")
     If Len(strBetterPdfPath) = 0 Then GoTo ExitSub
 
     strCurrentPdfPath = SelectPdfFile( _
-        "V17 DOXIS - Select CURRENT PDF (client parses this version worse)")
+        "V18 DOXIS - Select CURRENT PDF (client parses this version worse)")
     If Len(strCurrentPdfPath) = 0 Then GoTo ExitSub
 
     strDetailPath = BuildDoxisTopologyDetailOutputPath( _
@@ -10501,17 +10634,17 @@ Public Sub RunPdfDoxisTopologyBrowse()
         strSuperShortPath) Then
 
         Err.Raise ERR_BASE + 40, METHOD_NAME, _
-            "The V17 DOXIS topology forensic could not be completed."
+            "The V18 DOXIS transaction-anchored forensic could not be completed."
     End If
 
     MsgBox _
-        "V17 DOXIS topology forensic completed." & vbCrLf & vbCrLf & _
+        "V18 DOXIS transaction-anchored forensic completed." & vbCrLf & vbCrLf & _
         "SEND THIS FILE FIRST:" & vbCrLf & strSuperShortPath & vbCrLf & vbCrLf & _
-        "Detailed topology forensic:" & vbCrLf & strDetailPath & vbCrLf & vbCrLf & _
+        "Detailed transaction forensic:" & vbCrLf & strDetailPath & vbCrLf & vbCrLf & _
         "Input order: OLD Oracle -> BETTER-PARSING intermediate -> CURRENT." & vbCrLf & _
         "BETTER-PARSING is evidence only and is NOT assumed to be correct.", _
         vbInformation, _
-        "Oracle / DOXIS topology V17"
+        "Oracle / DOXIS forensic V18"
 
 ExitSub:
     Exit Sub
@@ -10533,7 +10666,7 @@ ErrorHandler:
         strSuperShortPath
 
     errorManager.save
-    errorManager.display "The V17 DOXIS topology forensic failed."
+    errorManager.display "The V18 DOXIS forensic failed."
     Resume ExitSub
 End Sub
 
@@ -10542,7 +10675,7 @@ End Sub
 ' Creation date: 2026-08-11
 ' Parameters:    PDF paths and output paths
 ' Returns:       Boolean
-' Description:   Loads the three PDFs and writes V17 DOXIS reports.
+' Description:   Loads the three PDFs and writes V18 DOXIS reports.
 '-------------------------------------------------------------------------------
 Public Function PdfDoxisTopologyAudit( _
     ByVal oldPdfPath As String, _
@@ -10621,6 +10754,8 @@ Private Sub WriteDoxisTopologyReports( _
     ByVal superShortOutputPath As String)
 
     Const METHOD_NAME As String = "WriteDoxisTopologyReports"
+    Dim betterAnchors As Object
+    Dim currentAnchors As Object
     Dim dictIssueCounts As Object
     Dim dictIssuePriorities As Object
     Dim dictIssueSamples As Object
@@ -10628,8 +10763,7 @@ Private Sub WriteDoxisTopologyReports( _
     Dim errDescription As String
     Dim errNumber As Long
     Dim lngDetailFile As Long
-    Dim lngMaxPages As Long
-    Dim lngPage As Long
+    Dim oldAnchors As Object
 
     On Error GoTo ErrorHandler
 
@@ -10637,46 +10771,54 @@ Private Sub WriteDoxisTopologyReports( _
     Set dictIssuePriorities = CreateObject("Scripting.Dictionary")
     Set dictIssueSamples = CreateObject("Scripting.Dictionary")
 
-    lngMaxPages = oldDoc.PageCount
-    If betterDoc.PageCount > lngMaxPages Then lngMaxPages = betterDoc.PageCount
-    If currentDoc.PageCount > lngMaxPages Then lngMaxPages = currentDoc.PageCount
-
     lngDetailFile = FreeFile
     Open detailOutputPath For Output Access Write As #lngDetailFile
 
-    Print #lngDetailFile, "ORACLE_DOXIS_TOPOLOGY_FORENSIC_V17"
+    Print #lngDetailFile, "ORACLE_DOXIS_TRANSACTION_ANCHORED_FORENSIC_V18_1"
     Print #lngDetailFile, "OLD_ORACLE|" & oldDoc.PdfPath
     Print #lngDetailFile, "BETTER_PARSING|" & betterDoc.PdfPath
     Print #lngDetailFile, "CURRENT|" & currentDoc.PdfPath
     Print #lngDetailFile, _
-        "PURPOSE|Test whether the CURRENT PDF introduced parser-facing cell/topology changes relative to the BETTER-PARSING intermediate, while OLD Oracle remains the reference."
+        "PURPOSE|Compare the same logical transaction across OLD, BETTER and CURRENT by transaction number, independent of page/row-slot movement."
     Print #lngDetailFile, _
-        "IMPORTANT|BETTER_PARSING_IS_NOT_ASSUMED_CORRECT=TRUE|It is only behavioural evidence because the client said it extracted ISIN/currency better."
+        "IMPORTANT|BETTER_PARSING_IS_NOT_ASSUMED_CORRECT=TRUE|It is behavioural evidence because the client said it extracted ISIN/currency better."
     Print #lngDetailFile, _
-        "HEURISTIC|This report does not claim to implement a proprietary DOXISLoader algorithm. It measures text-to-separator topology, vector primitive/style, font/position and raster-distance proxies."
+        "V18_CHANGE|Target pairing no longer uses page+Y. It is anchored by BOTTOM_TRANSAKTIONSNR and each document uses its own page/top/bottom row coordinates."
     Print #lngDetailFile, _
-        "TARGETS|TOP_ISIN;TOP_SCHLUSSTAG;TOP_VALUTATAG;all WHG roles;special separators x=468 and x=639"
+        "FONT_MODEL|Semantic BaseFont names are decoded from PDF #xx name escapes; raw alias/BaseFont/object/resource serialization is reported separately."
     Print #lngDetailFile, _
-        "RASTER_PROXY|Distances are also shown as equivalent pixels at 300 and 600 DPI. No PDF rasterizer is invoked."
+        "ISIN_MODEL|TOP_ISIN gets a fixed x=639 predicted-cut count plus nearest-separator risk. A CURRENT cut count lower than BETTER is treated as a regression."
+    Print #lngDetailFile, _
+        "SEPARATOR_MODEL|x=468 and x=639 are compared relative to the matched transaction row, so pagination and slot changes do not create false differences."
+    Print #lngDetailFile, _
+        "GLOBAL_X_HYPOTHESIS|Also tests a deliberately naive parser model that projects vertical paths onto X and ignores row ownership. This is a diagnostic hypothesis, not an asserted DOXISLoader specification."
+    Print #lngDetailFile, _
+        "INVISIBLE_RE_N|Paths created by re and terminated by n are now captured separately. They are not painted, but their vertical edges are checked as possible parser-facing boundaries."
+    Print #lngDetailFile, _
+        "TARGETS|TOP_ISIN;TOP_SCHLUSSTAG;TOP_VALUTATAG;TOP_FONDSBEZEICHNUNG;TOP_WERTPAPIERBEZEICHNUNG;TOP_NOMINALE_STUECKE;TOP_STUECKZINSEN;TOP_WHG_NOMINALE;BOTTOM_ABWICKLUNGSPROVISION;BOTTOM_WHG_MAKLER;BOTTOM_WHG_STEUERN;BOTTOM_WHG_ABWICKLUNG;BOTTOM_WHG_SPESEN;BOTTOM_WHG_ABRECH"
     Print #lngDetailFile, ""
 
-    Call DoxisWriteDocumentHeader( _
+    Call DoxisV18WriteDocumentHeader( _
         lngDetailFile, _
         oldDoc, _
         betterDoc, _
         currentDoc)
 
-    For lngPage = 1 To lngMaxPages
-        Call DoxisWritePageAnalysis( _
-            lngDetailFile, _
-            oldDoc, _
-            betterDoc, _
-            currentDoc, _
-            lngPage, _
-            dictIssueCounts, _
-            dictIssuePriorities, _
-            dictIssueSamples)
-    Next lngPage
+    Set oldAnchors = DoxisV18BuildAnchorMap(oldDoc, "OLD", lngDetailFile)
+    Set betterAnchors = DoxisV18BuildAnchorMap(betterDoc, "BETTER", lngDetailFile)
+    Set currentAnchors = DoxisV18BuildAnchorMap(currentDoc, "CURRENT", lngDetailFile)
+
+    Call DoxisV18CompareTransactionSet( _
+        lngDetailFile, _
+        oldDoc, _
+        betterDoc, _
+        currentDoc, _
+        oldAnchors, _
+        betterAnchors, _
+        currentAnchors, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
 
     Close #lngDetailFile
     lngDetailFile = 0
@@ -10685,6 +10827,9 @@ Private Sub WriteDoxisTopologyReports( _
         oldDoc, _
         betterDoc, _
         currentDoc, _
+        oldAnchors, _
+        betterAnchors, _
+        currentAnchors, _
         dictIssueCounts, _
         dictIssuePriorities, _
         dictIssueSamples, _
@@ -10692,6 +10837,9 @@ Private Sub WriteDoxisTopologyReports( _
 
 ExitSub:
     If lngDetailFile <> 0 Then Close #lngDetailFile
+    Set oldAnchors = Nothing
+    Set betterAnchors = Nothing
+    Set currentAnchors = Nothing
     Set dictIssueCounts = Nothing
     Set dictIssuePriorities = Nothing
     Set dictIssueSamples = Nothing
@@ -10714,7 +10862,7 @@ ErrorHandler:
     Resume ExitSub
 End Sub
 
-Private Sub DoxisWriteDocumentHeader( _
+Private Sub DoxisV18WriteDocumentHeader( _
     ByVal fileNo As Long, _
     ByRef oldDoc As tPdfDocument, _
     ByRef betterDoc As tPdfDocument, _
@@ -10735,128 +10883,109 @@ Private Sub DoxisWriteDocumentHeader( _
         "XREF|OLD=" & oldDoc.XrefKind & _
         "|BETTER=" & betterDoc.XrefKind & _
         "|CURRENT=" & currentDoc.XrefKind
+    Print #fileNo, _
+        "NO_PAINT_PATHS|OLD=" & CStr(oldDoc.NoPaintLineCount) & _
+        "|BETTER=" & CStr(betterDoc.NoPaintLineCount) & _
+        "|CURRENT=" & CStr(currentDoc.NoPaintLineCount) & _
+        "|meaning=segments from paths terminated by n; re edges are classified separately below"
+    Print #fileNo, _
+        "RE_N_VERTICAL_TARGETS|x468 OLD=" & CStr(DoxisV181CountNoPaintReVerticalAtX(oldDoc, 468#)) & _
+        " BETTER=" & CStr(DoxisV181CountNoPaintReVerticalAtX(betterDoc, 468#)) & _
+        " CURRENT=" & CStr(DoxisV181CountNoPaintReVerticalAtX(currentDoc, 468#)) & _
+        "|x639 OLD=" & CStr(DoxisV181CountNoPaintReVerticalAtX(oldDoc, 639#)) & _
+        " BETTER=" & CStr(DoxisV181CountNoPaintReVerticalAtX(betterDoc, 639#)) & _
+        " CURRENT=" & CStr(DoxisV181CountNoPaintReVerticalAtX(currentDoc, 639#))
     Print #fileNo, ""
 End Sub
 
-Private Sub DoxisWritePageAnalysis( _
-    ByVal fileNo As Long, _
-    ByRef oldDoc As tPdfDocument, _
-    ByRef betterDoc As tPdfDocument, _
-    ByRef currentDoc As tPdfDocument, _
-    ByVal pageNo As Long, _
-    ByVal dictIssueCounts As Object, _
-    ByVal dictIssuePriorities As Object, _
-    ByVal dictIssueSamples As Object)
+Private Function DoxisV18BuildAnchorMap( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal documentLabel As String, _
+    ByVal fileNo As Long) As Object
 
-    Const METHOD_NAME As String = "DoxisWritePageAnalysis"
+    Const METHOD_NAME As String = "DoxisV18BuildAnchorMap"
+    Dim dictAnchors As Object
+    Dim dictOccurrences As Object
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
-    Dim lngBetterEnd As Long
-    Dim lngBetterIndex As Long
-    Dim lngBetterStart As Long
+    Dim lngEnd As Long
+    Dim lngIndex As Long
+    Dim lngOccurrence As Long
+    Dim lngPage As Long
+    Dim lngStart As Long
+    Dim strAnchorId As String
+    Dim strBaseKey As String
+    Dim strDisplay As String
     Dim strRole As String
 
     On Error GoTo ErrorHandler
 
-    Print #fileNo, "================================================================"
-    Print #fileNo, "PAGE|" & CStr(pageNo)
-    Print #fileNo, "================================================================"
+    Set dictAnchors = CreateObject("Scripting.Dictionary")
+    Set dictOccurrences = CreateObject("Scripting.Dictionary")
 
-    If pageNo > oldDoc.PageCount Or _
-       pageNo > betterDoc.PageCount Or _
-       pageNo > currentDoc.PageCount Then
+    For lngPage = 1 To pdfDoc.PageCount
+        lngStart = pdfDoc.Pages(lngPage).TextStart
+        lngEnd = lngStart + pdfDoc.Pages(lngPage).TextCount - 1
 
-        Print #fileNo, _
-            "PAGE_PRESENCE" & _
-            "|OLD=" & BoolText(pageNo <= oldDoc.PageCount) & _
-            "|BETTER=" & BoolText(pageNo <= betterDoc.PageCount) & _
-            "|CURRENT=" & BoolText(pageNo <= currentDoc.PageCount)
+        For lngIndex = lngStart To lngEnd
+            strRole = RegressionInferStructuralFieldRole( _
+                lngPage, _
+                pdfDoc.Texts(lngIndex).X, _
+                pdfDoc.Texts(lngIndex).Y)
 
-        Call DoxisAddIssue( _
-            dictIssueCounts, _
-            dictIssuePriorities, _
-            dictIssueSamples, _
-            "PAGE_MISSING_IN_TRIAD", _
-            3, _
-            "page=" & CStr(pageNo))
+            If strRole = "BOTTOM_TRANSAKTIONSNR" Then
+                strDisplay = Trim$(pdfDoc.Texts(lngIndex).TextValue)
+                strBaseKey = DoxisV18NormalizeAnchorKey(strDisplay)
 
-        GoTo ExitSub
-    End If
+                If Len(strBaseKey) > 0 Then
+                    If dictOccurrences.Exists(strBaseKey) Then
+                        lngOccurrence = CLng(dictOccurrences(strBaseKey)) + 1
+                        dictOccurrences(strBaseKey) = lngOccurrence
+                    Else
+                        lngOccurrence = 1
+                        dictOccurrences.Add strBaseKey, lngOccurrence
+                    End If
+
+                    strAnchorId = strBaseKey
+                    If lngOccurrence > 1 Then
+                        strAnchorId = strAnchorId & "#OCC" & CStr(lngOccurrence)
+                    End If
+
+                    dictAnchors.Add _
+                        strAnchorId, _
+                        DoxisV18PackAnchor( _
+                            lngPage, _
+                            pdfDoc.Texts(lngIndex).Y + 18#, _
+                            pdfDoc.Texts(lngIndex).Y, _
+                            lngIndex, _
+                            strDisplay)
+
+                    Print #fileNo, _
+                        "ANCHOR" & _
+                        "|doc=" & documentLabel & _
+                        "|id=" & strAnchorId & _
+                        "|tx=" & SanitizeReportText(strDisplay) & _
+                        "|page=" & CStr(lngPage) & _
+                        "|topY=" & NumTxt(pdfDoc.Texts(lngIndex).Y + 18#) & _
+                        "|bottomY=" & NumTxt(pdfDoc.Texts(lngIndex).Y)
+                End If
+            End If
+        Next lngIndex
+    Next lngPage
 
     Print #fileNo, _
-        "PAGE_STREAM" & _
-        "|OLD_refs=" & oldDoc.Pages(pageNo).ContentReferences & _
-        "|BETTER_refs=" & betterDoc.Pages(pageNo).ContentReferences & _
-        "|CURRENT_refs=" & currentDoc.Pages(pageNo).ContentReferences
-
-    Print #fileNo, _
-        "PAGE_FONTS" & _
-        "|OLD=" & RegressionStripFontObjectNumbers(oldDoc.Pages(pageNo).FontForensicSignature) & _
-        "|BETTER=" & RegressionStripFontObjectNumbers(betterDoc.Pages(pageNo).FontForensicSignature) & _
-        "|CURRENT=" & RegressionStripFontObjectNumbers(currentDoc.Pages(pageNo).FontForensicSignature)
-
-    Call DoxisWriteFixedSeparatorProbe( _
-        fileNo, _
-        pageNo, _
-        468#, _
-        "TOP_SCHLUSSTAG", _
-        oldDoc, _
-        betterDoc, _
-        currentDoc, _
-        dictIssueCounts, _
-        dictIssuePriorities, _
-        dictIssueSamples)
-
-    Call DoxisWriteFixedSeparatorProbe( _
-        fileNo, _
-        pageNo, _
-        639#, _
-        "TOP_ISIN", _
-        oldDoc, _
-        betterDoc, _
-        currentDoc, _
-        dictIssueCounts, _
-        dictIssuePriorities, _
-        dictIssueSamples)
-
-    lngBetterStart = betterDoc.Pages(pageNo).TextStart
-    lngBetterEnd = lngBetterStart + betterDoc.Pages(pageNo).TextCount - 1
-
-    For lngBetterIndex = lngBetterStart To lngBetterEnd
-        strRole = RegressionInferStructuralFieldRole( _
-            pageNo, _
-            betterDoc.Texts(lngBetterIndex).X, _
-            betterDoc.Texts(lngBetterIndex).Y)
-
-        If DoxisIsTargetRole(strRole) Then
-            Call DoxisCompareTextOccurrence( _
-                fileNo, _
-                pageNo, _
-                strRole, _
-                lngBetterIndex, _
-                oldDoc, _
-                betterDoc, _
-                currentDoc, _
-                dictIssueCounts, _
-                dictIssuePriorities, _
-                dictIssueSamples)
-        End If
-    Next lngBetterIndex
-
-    Call DoxisFindCurrentOnlyTargets( _
-        fileNo, _
-        pageNo, _
-        betterDoc, _
-        currentDoc, _
-        dictIssueCounts, _
-        dictIssuePriorities, _
-        dictIssueSamples)
-
+        "ANCHOR_SUMMARY" & _
+        "|doc=" & documentLabel & _
+        "|count=" & CStr(dictAnchors.Count) & _
+        "|distinctTransactionNumbers=" & CStr(dictOccurrences.Count)
     Print #fileNo, ""
 
-ExitSub:
-    Exit Sub
+    Set DoxisV18BuildAnchorMap = dictAnchors
+
+ExitFunction:
+    Set dictOccurrences = Nothing
+    Exit Function
 
 ErrorHandler:
     errNumber = VBA.Err.Number
@@ -10867,113 +10996,471 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "pageNo", _
-        pageNo
+        "documentLabel", _
+        documentLabel
 
     errorManager.save
-    Resume ExitSub
-End Sub
 
-Private Sub DoxisCompareTextOccurrence( _
-    ByVal fileNo As Long, _
+    If dictAnchors Is Nothing Then
+        Set dictAnchors = CreateObject("Scripting.Dictionary")
+    End If
+
+    Set DoxisV18BuildAnchorMap = dictAnchors
+    Resume ExitFunction
+End Function
+
+Private Function DoxisV18NormalizeAnchorKey(ByVal textValue As String) As String
+    Dim strValue As String
+
+    strValue = UCase$(Trim$(textValue))
+    strValue = Replace(strValue, Chr$(160), " ")
+    strValue = Replace(strValue, vbTab, " ")
+    strValue = Replace(strValue, " ", "")
+
+    DoxisV18NormalizeAnchorKey = strValue
+End Function
+
+Private Function DoxisV18PackAnchor( _
     ByVal pageNo As Long, _
-    ByVal role As String, _
-    ByVal betterTextIndex As Long, _
+    ByVal topY As Double, _
+    ByVal bottomY As Double, _
+    ByVal textIndex As Long, _
+    ByVal displayValue As String) As String
+
+    DoxisV18PackAnchor = _
+        CStr(pageNo) & "|" & _
+        NumTxt(topY) & "|" & _
+        NumTxt(bottomY) & "|" & _
+        CStr(textIndex) & "|" & _
+        SanitizeReportText(displayValue)
+End Function
+
+Private Function DoxisV18AnchorPage(ByVal packedAnchor As String) As Long
+    Dim arrParts As Variant
+
+    arrParts = Split(packedAnchor, "|")
+    If UBound(arrParts) >= 0 Then
+        DoxisV18AnchorPage = CLng(arrParts(0))
+    End If
+End Function
+
+Private Function DoxisV18AnchorTopY(ByVal packedAnchor As String) As Double
+    Dim arrParts As Variant
+
+    arrParts = Split(packedAnchor, "|")
+    If UBound(arrParts) >= 1 Then
+        DoxisV18AnchorTopY = Val(CStr(arrParts(1)))
+    End If
+End Function
+
+Private Function DoxisV18AnchorBottomY(ByVal packedAnchor As String) As Double
+    Dim arrParts As Variant
+
+    arrParts = Split(packedAnchor, "|")
+    If UBound(arrParts) >= 2 Then
+        DoxisV18AnchorBottomY = Val(CStr(arrParts(2)))
+    End If
+End Function
+
+Private Function DoxisV18AnchorDisplay(ByVal packedAnchor As String) As String
+    Dim arrParts As Variant
+
+    arrParts = Split(packedAnchor, "|")
+    If UBound(arrParts) >= 4 Then
+        DoxisV18AnchorDisplay = CStr(arrParts(4))
+    End If
+End Function
+
+Private Sub DoxisV18CompareTransactionSet( _
+    ByVal fileNo As Long, _
     ByRef oldDoc As tPdfDocument, _
     ByRef betterDoc As tPdfDocument, _
     ByRef currentDoc As tPdfDocument, _
+    ByVal oldAnchors As Object, _
+    ByVal betterAnchors As Object, _
+    ByVal currentAnchors As Object, _
     ByVal dictIssueCounts As Object, _
     ByVal dictIssuePriorities As Object, _
     ByVal dictIssueSamples As Object)
 
-    Const METHOD_NAME As String = "DoxisCompareTextOccurrence"
+    Dim arrKeys As Variant
+    Dim lngIndex As Long
+    Dim strAnchorId As String
+    Dim strSample As String
+
+    Print #fileNo, "================================================================"
+    Print #fileNo, "TRANSACTION_ANCHORED_COMPARISON"
+    Print #fileNo, "================================================================"
+
+    If betterAnchors.Count = 0 Then
+        Call DoxisAddIssue( _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples, _
+            "DOXIS_V18_NO_BETTER_TRANSACTION_ANCHORS", _
+            3, _
+            "The BETTER-PARSING PDF contains no detectable BOTTOM_TRANSAKTIONSNR anchors.")
+        Exit Sub
+    End If
+
+    arrKeys = SortedDictionaryKeys(betterAnchors)
+
+    For lngIndex = LBound(arrKeys) To UBound(arrKeys)
+        strAnchorId = CStr(arrKeys(lngIndex))
+
+        If Not currentAnchors.Exists(strAnchorId) Then
+            strSample = _
+                "tx=" & DoxisV18AnchorDisplay(CStr(betterAnchors(strAnchorId))) & _
+                "|betterPage=" & CStr(DoxisV18AnchorPage(CStr(betterAnchors(strAnchorId))))
+
+            Call DoxisAddIssue( _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples, _
+                "DOXIS_V18_TRANSACTION_ANCHOR_MISSING_CURRENT", _
+                3, _
+                strSample)
+
+            Print #fileNo, _
+                "TRANSACTION_MISSING_CURRENT" & _
+                "|id=" & strAnchorId & _
+                "|" & strSample
+        Else
+            Call DoxisV18CompareTransaction( _
+                fileNo, _
+                strAnchorId, _
+                oldDoc, _
+                betterDoc, _
+                currentDoc, _
+                oldAnchors, _
+                betterAnchors, _
+                currentAnchors, _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples)
+        End If
+    Next lngIndex
+
+    If currentAnchors.Count > 0 Then
+        arrKeys = SortedDictionaryKeys(currentAnchors)
+
+        For lngIndex = LBound(arrKeys) To UBound(arrKeys)
+            strAnchorId = CStr(arrKeys(lngIndex))
+
+            If Not betterAnchors.Exists(strAnchorId) Then
+                Print #fileNo, _
+                    "TRANSACTION_CURRENT_ONLY" & _
+                    "|id=" & strAnchorId & _
+                    "|tx=" & DoxisV18AnchorDisplay(CStr(currentAnchors(strAnchorId))) & _
+                    "|page=" & CStr(DoxisV18AnchorPage(CStr(currentAnchors(strAnchorId))))
+
+                Call DoxisAddIssue( _
+                    dictIssueCounts, _
+                    dictIssuePriorities, _
+                    dictIssueSamples, _
+                    "DOXIS_V18_TRANSACTION_ANCHOR_CURRENT_ONLY", _
+                    1, _
+                    "tx=" & DoxisV18AnchorDisplay(CStr(currentAnchors(strAnchorId))))
+            End If
+        Next lngIndex
+    End If
+
+    Print #fileNo, ""
+End Sub
+
+Private Sub DoxisV18CompareTransaction( _
+    ByVal fileNo As Long, _
+    ByVal anchorId As String, _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef betterDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument, _
+    ByVal oldAnchors As Object, _
+    ByVal betterAnchors As Object, _
+    ByVal currentAnchors As Object, _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object)
+
+    Dim arrRoles As Variant
+    Dim betterAnchor As String
+    Dim currentAnchor As String
+    Dim lngRole As Long
+    Dim oldAnchor As String
+    Dim strRole As String
+
+    betterAnchor = CStr(betterAnchors(anchorId))
+    currentAnchor = CStr(currentAnchors(anchorId))
+
+    If oldAnchors.Exists(anchorId) Then
+        oldAnchor = CStr(oldAnchors(anchorId))
+    Else
+        oldAnchor = vbNullString
+    End If
+
+    Print #fileNo, "----------------------------------------------------------------"
+    Print #fileNo, _
+        "TRANSACTION" & _
+        "|id=" & anchorId & _
+        "|tx=" & DoxisV18AnchorDisplay(betterAnchor) & _
+        "|OLD=" & DoxisV18AnchorLocation(oldAnchor) & _
+        "|BETTER=" & DoxisV18AnchorLocation(betterAnchor) & _
+        "|CURRENT=" & DoxisV18AnchorLocation(currentAnchor)
+
+    Call DoxisV18CompareAnchorSeparator( _
+        fileNo, _
+        anchorId, _
+        468#, _
+        "TOP_SCHLUSSTAG", _
+        oldDoc, _
+        betterDoc, _
+        currentDoc, _
+        oldAnchor, _
+        betterAnchor, _
+        currentAnchor, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Call DoxisV18CompareAnchorSeparator( _
+        fileNo, _
+        anchorId, _
+        639#, _
+        "TOP_ISIN", _
+        oldDoc, _
+        betterDoc, _
+        currentDoc, _
+        oldAnchor, _
+        betterAnchor, _
+        currentAnchor, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Call DoxisV181CompareNoPaintTargetX( _
+        fileNo, anchorId, 468#, "TOP_SCHLUSSTAG", _
+        oldDoc, betterDoc, currentDoc, _
+        oldAnchor, betterAnchor, currentAnchor, _
+        dictIssueCounts, dictIssuePriorities, dictIssueSamples)
+
+    Call DoxisV181CompareNoPaintTargetX( _
+        fileNo, anchorId, 639#, "TOP_ISIN", _
+        oldDoc, betterDoc, currentDoc, _
+        oldAnchor, betterAnchor, currentAnchor, _
+        dictIssueCounts, dictIssuePriorities, dictIssueSamples)
+
+    Call DoxisV181CompareGlobalProjectionRoles( _
+        fileNo, anchorId, _
+        oldDoc, betterDoc, currentDoc, _
+        oldAnchor, betterAnchor, currentAnchor, _
+        dictIssueCounts, dictIssuePriorities, dictIssueSamples)
+
+    arrRoles = DoxisV18TargetRoles()
+
+    For lngRole = LBound(arrRoles) To UBound(arrRoles)
+        strRole = CStr(arrRoles(lngRole))
+
+        Call DoxisV18CompareTargetText( _
+            fileNo, _
+            anchorId, _
+            strRole, _
+            oldDoc, _
+            betterDoc, _
+            currentDoc, _
+            oldAnchor, _
+            betterAnchor, _
+            currentAnchor, _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples)
+    Next lngRole
+End Sub
+
+Private Function DoxisV18AnchorLocation(ByVal packedAnchor As String) As String
+    If Len(packedAnchor) = 0 Then
+        DoxisV18AnchorLocation = "MISSING"
+    Else
+        DoxisV18AnchorLocation = _
+            "p" & CStr(DoxisV18AnchorPage(packedAnchor)) & _
+            ",topY=" & NumTxt(DoxisV18AnchorTopY(packedAnchor)) & _
+            ",bottomY=" & NumTxt(DoxisV18AnchorBottomY(packedAnchor))
+    End If
+End Function
+
+Private Function DoxisV18TargetRoles() As Variant
+    DoxisV18TargetRoles = Array( _
+        "TOP_ISIN", _
+        "TOP_SCHLUSSTAG", _
+        "TOP_VALUTATAG", _
+        "TOP_WHG_NOMINALE", _
+        "BOTTOM_WHG_MAKLER", _
+        "BOTTOM_WHG_STEUERN", _
+        "BOTTOM_WHG_ABWICKLUNG", _
+        "BOTTOM_WHG_SPESEN", _
+        "BOTTOM_WHG_ABRECH")
+End Function
+
+Private Function DoxisV18FindTextInAnchor( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal packedAnchor As String, _
+    ByVal role As String) As Long
+
+    Const MAX_BASELINE_DISTANCE As Double = 3.5
+    Dim dblBestDistance As Double
+    Dim dblDistance As Double
+    Dim dblExpectedY As Double
+    Dim lngEnd As Long
+    Dim lngIndex As Long
+    Dim lngPage As Long
+    Dim lngStart As Long
+    Dim strCandidateRole As String
+
+    DoxisV18FindTextInAnchor = -1
+    dblBestDistance = 1E+30
+
+    If Len(packedAnchor) = 0 Then Exit Function
+
+    lngPage = DoxisV18AnchorPage(packedAnchor)
+    If lngPage < 1 Or lngPage > pdfDoc.PageCount Then Exit Function
+
+    dblExpectedY = DoxisV18ExpectedBaseline(packedAnchor, role)
+    lngStart = pdfDoc.Pages(lngPage).TextStart
+    lngEnd = lngStart + pdfDoc.Pages(lngPage).TextCount - 1
+
+    For lngIndex = lngStart To lngEnd
+        strCandidateRole = RegressionInferStructuralFieldRole( _
+            lngPage, _
+            pdfDoc.Texts(lngIndex).X, _
+            pdfDoc.Texts(lngIndex).Y)
+
+        If strCandidateRole = role Then
+            dblDistance = Abs(pdfDoc.Texts(lngIndex).Y - dblExpectedY)
+
+            If dblDistance <= MAX_BASELINE_DISTANCE Then
+                If dblDistance < dblBestDistance Then
+                    dblBestDistance = dblDistance
+                    DoxisV18FindTextInAnchor = lngIndex
+                End If
+            End If
+        End If
+    Next lngIndex
+End Function
+
+Private Function DoxisV18ExpectedBaseline( _
+    ByVal packedAnchor As String, _
+    ByVal role As String) As Double
+
+    If Left$(role, 4) = "TOP_" Then
+        DoxisV18ExpectedBaseline = DoxisV18AnchorTopY(packedAnchor)
+    Else
+        DoxisV18ExpectedBaseline = DoxisV18AnchorBottomY(packedAnchor)
+    End If
+End Function
+
+Private Function DoxisV18RelativeY( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal textIndex As Long, _
+    ByVal packedAnchor As String, _
+    ByVal role As String) As Double
+
+    DoxisV18RelativeY = _
+        pdfDoc.Texts(textIndex).Y - _
+        DoxisV18ExpectedBaseline(packedAnchor, role)
+End Function
+
+Private Sub DoxisV18CompareTargetText( _
+    ByVal fileNo As Long, _
+    ByVal anchorId As String, _
+    ByVal role As String, _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef betterDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument, _
+    ByVal oldAnchor As String, _
+    ByVal betterAnchor As String, _
+    ByVal currentAnchor As String, _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object)
+
+    Const METHOD_NAME As String = "DoxisV18CompareTargetText"
+    Dim dblBetterRelY As Double
     Dim dblBetterRisk As Double
+    Dim dblCurrentRelY As Double
     Dim dblCurrentRisk As Double
     Dim dblDx As Double
-    Dim dblDy As Double
-    Dim dblFontDelta As Double
+    Dim dblDyRel As Double
+    Dim dblOldRelY As Double
+    Dim dblOldRisk As Double
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
+    Dim lngBetterCut As Long
+    Dim lngBetterIndex As Long
+    Dim lngCurrentCut As Long
     Dim lngCurrentIndex As Long
+    Dim lngOldCut As Long
     Dim lngOldIndex As Long
+    Dim strBetterFontRaw As String
+    Dim strBetterFontRawFull As String
+    Dim strBetterFontSemantic As String
     Dim strBetterLine As String
     Dim strBetterSnapshot As String
+    Dim strBetterValue As String
+    Dim strCurrentFontRaw As String
+    Dim strCurrentFontRawFull As String
+    Dim strCurrentFontSemantic As String
     Dim strCurrentLine As String
     Dim strCurrentSnapshot As String
+    Dim strCurrentValue As String
     Dim strFamily As String
+    Dim strOldFontRaw As String
+    Dim strOldFontRawFull As String
+    Dim strOldFontSemantic As String
     Dim strOldLine As String
     Dim strOldSnapshot As String
+    Dim strOldValue As String
     Dim strSample As String
 
     On Error GoTo ErrorHandler
 
-    lngOldIndex = RegressionFindCounterpartText( _
-        oldDoc, _
-        pageNo, _
-        role, _
-        betterDoc.Texts(betterTextIndex).X, _
-        betterDoc.Texts(betterTextIndex).Y, _
-        betterDoc.Texts(betterTextIndex).TextValue)
-
-    lngCurrentIndex = RegressionFindCounterpartText( _
-        currentDoc, _
-        pageNo, _
-        role, _
-        betterDoc.Texts(betterTextIndex).X, _
-        betterDoc.Texts(betterTextIndex).Y, _
-        betterDoc.Texts(betterTextIndex).TextValue)
-
-    strBetterSnapshot = DoxisTextTopologySnapshot( _
+    lngBetterIndex = DoxisV18FindTextInAnchor( _
         betterDoc, _
-        pageNo, _
-        betterTextIndex, _
-        role, _
-        dblBetterRisk, _
-        strBetterLine)
+        betterAnchor, _
+        role)
 
-    If lngOldIndex >= 0 Then
-        strOldSnapshot = DoxisTextTopologySnapshot( _
+    lngCurrentIndex = DoxisV18FindTextInAnchor( _
+        currentDoc, _
+        currentAnchor, _
+        role)
+
+    lngOldIndex = -1
+    If Len(oldAnchor) > 0 Then
+        lngOldIndex = DoxisV18FindTextInAnchor( _
             oldDoc, _
-            pageNo, _
-            lngOldIndex, _
-            role, _
-            dblCurrentRisk, _
-            strOldLine)
-    Else
-        strOldSnapshot = "MISSING"
-        strOldLine = "(none)"
+            oldAnchor, _
+            role)
     End If
 
-    If lngCurrentIndex >= 0 Then
-        strCurrentSnapshot = DoxisTextTopologySnapshot( _
-            currentDoc, _
-            pageNo, _
-            lngCurrentIndex, _
-            role, _
-            dblCurrentRisk, _
-            strCurrentLine)
-    Else
-        strCurrentSnapshot = "MISSING"
-        strCurrentLine = "(none)"
-        dblCurrentRisk = 999#
+    If lngBetterIndex < 0 And lngCurrentIndex < 0 Then
+        GoTo ExitSub
     End If
 
-    Print #fileNo, _
-        "TARGET" & _
-        "|page=" & CStr(pageNo) & _
-        "|role=" & role & _
-        "|BETTER_TEXT=" & SanitizeReportText(betterDoc.Texts(betterTextIndex).TextValue) & _
-        "|OLD=" & strOldSnapshot & _
-        "|BETTER=" & strBetterSnapshot & _
-        "|CURRENT=" & strCurrentSnapshot
+    If lngBetterIndex < 0 Then
+        Print #fileNo, _
+            "FIELD_CURRENT_ONLY" & _
+            "|tx=" & anchorId & _
+            "|role=" & role & _
+            "|CURRENT=" & SanitizeReportText(currentDoc.Texts(lngCurrentIndex).TextValue)
+        GoTo ExitSub
+    End If
+
+    strBetterValue = betterDoc.Texts(lngBetterIndex).TextValue
 
     If lngCurrentIndex < 0 Then
-        strFamily = "DOXIS_TARGET_TEXT_MISSING_" & role
+        strFamily = "DOXIS_V18_TARGET_TEXT_MISSING_CURRENT_" & role
         strSample = _
-            "page=" & CStr(pageNo) & _
+            "tx=" & anchorId & _
             "|role=" & role & _
-            "|text=" & SanitizeReportText(betterDoc.Texts(betterTextIndex).TextValue)
+            "|text=" & SanitizeReportText(strBetterValue)
 
         Call DoxisAddIssue( _
             dictIssueCounts, _
@@ -10983,14 +11470,203 @@ Private Sub DoxisCompareTextOccurrence( _
             3, _
             strSample)
 
+        Print #fileNo, _
+            "FIELD_MISSING_CURRENT" & _
+            "|" & strSample
+        GoTo ExitSub
+    End If
+
+    strCurrentValue = currentDoc.Texts(lngCurrentIndex).TextValue
+    If lngOldIndex >= 0 Then
+        strOldValue = oldDoc.Texts(lngOldIndex).TextValue
+    End If
+
+    dblBetterRelY = DoxisV18RelativeY( _
+        betterDoc, _
+        lngBetterIndex, _
+        betterAnchor, _
+        role)
+
+    dblCurrentRelY = DoxisV18RelativeY( _
+        currentDoc, _
+        lngCurrentIndex, _
+        currentAnchor, _
+        role)
+
+    If lngOldIndex >= 0 Then
+        dblOldRelY = DoxisV18RelativeY( _
+            oldDoc, _
+            lngOldIndex, _
+            oldAnchor, _
+            role)
+    End If
+
+    dblDx = _
+        currentDoc.Texts(lngCurrentIndex).X - _
+        betterDoc.Texts(lngBetterIndex).X
+
+    dblDyRel = dblCurrentRelY - dblBetterRelY
+
+    strBetterSnapshot = DoxisTextTopologySnapshot( _
+        betterDoc, _
+        DoxisV18AnchorPage(betterAnchor), _
+        lngBetterIndex, _
+        role, _
+        dblBetterRisk, _
+        strBetterLine)
+
+    strCurrentSnapshot = DoxisTextTopologySnapshot( _
+        currentDoc, _
+        DoxisV18AnchorPage(currentAnchor), _
+        lngCurrentIndex, _
+        role, _
+        dblCurrentRisk, _
+        strCurrentLine)
+
+    If lngOldIndex >= 0 Then
+        strOldSnapshot = DoxisTextTopologySnapshot( _
+            oldDoc, _
+            DoxisV18AnchorPage(oldAnchor), _
+            lngOldIndex, _
+            role, _
+            dblOldRisk, _
+            strOldLine)
+    Else
+        strOldSnapshot = "MISSING"
+        strOldLine = "(none)"
+    End If
+
+    strBetterFontSemantic = DoxisV18TextSemanticFont( _
+        betterDoc, _
+        DoxisV18AnchorPage(betterAnchor), _
+        lngBetterIndex)
+
+    strCurrentFontSemantic = DoxisV18TextSemanticFont( _
+        currentDoc, _
+        DoxisV18AnchorPage(currentAnchor), _
+        lngCurrentIndex)
+
+    strBetterFontRaw = DoxisV18TextRawFontComparable( _
+        betterDoc, _
+        DoxisV18AnchorPage(betterAnchor), _
+        lngBetterIndex)
+
+    strCurrentFontRaw = DoxisV18TextRawFontComparable( _
+        currentDoc, _
+        DoxisV18AnchorPage(currentAnchor), _
+        lngCurrentIndex)
+
+    strBetterFontRawFull = DoxisV18TextRawFontDisplay( _
+        betterDoc, _
+        DoxisV18AnchorPage(betterAnchor), _
+        lngBetterIndex)
+
+    strCurrentFontRawFull = DoxisV18TextRawFontDisplay( _
+        currentDoc, _
+        DoxisV18AnchorPage(currentAnchor), _
+        lngCurrentIndex)
+
+    If lngOldIndex >= 0 Then
+        strOldFontSemantic = DoxisV18TextSemanticFont( _
+            oldDoc, _
+            DoxisV18AnchorPage(oldAnchor), _
+            lngOldIndex)
+
+        strOldFontRaw = DoxisV18TextRawFontComparable( _
+            oldDoc, _
+            DoxisV18AnchorPage(oldAnchor), _
+            lngOldIndex)
+
+        strOldFontRawFull = DoxisV18TextRawFontDisplay( _
+            oldDoc, _
+            DoxisV18AnchorPage(oldAnchor), _
+            lngOldIndex)
+    Else
+        strOldFontSemantic = "MISSING"
+        strOldFontRaw = "MISSING"
+        strOldFontRawFull = "MISSING"
+    End If
+
+    Print #fileNo, _
+        "FIELD" & _
+        "|tx=" & anchorId & _
+        "|role=" & role & _
+        "|OLD_VALUE=" & SanitizeReportText(strOldValue) & _
+        "|BETTER_VALUE=" & SanitizeReportText(strBetterValue) & _
+        "|CURRENT_VALUE=" & SanitizeReportText(strCurrentValue)
+
+    Print #fileNo, _
+        "FIELD_POSITION" & _
+        "|tx=" & anchorId & _
+        "|role=" & role & _
+        "|OLD_X=" & DoxisV18OptionalTextX(oldDoc, lngOldIndex) & _
+        "|BETTER_X=" & NumTxt(betterDoc.Texts(lngBetterIndex).X) & _
+        "|CURRENT_X=" & NumTxt(currentDoc.Texts(lngCurrentIndex).X) & _
+        "|dxCurrentMinusBetter=" & NumTxt(dblDx) & _
+        "|OLD_relY=" & DoxisV18OptionalNumberByIndex(lngOldIndex, dblOldRelY) & _
+        "|BETTER_relY=" & NumTxt(dblBetterRelY) & _
+        "|CURRENT_relY=" & NumTxt(dblCurrentRelY) & _
+        "|dRelY=" & NumTxt(dblDyRel)
+
+    Print #fileNo, _
+        "FIELD_FONT_SEMANTIC" & _
+        "|tx=" & anchorId & _
+        "|role=" & role & _
+        "|OLD=" & strOldFontSemantic & _
+        "|BETTER=" & strBetterFontSemantic & _
+        "|CURRENT=" & strCurrentFontSemantic
+
+    Print #fileNo, _
+        "FIELD_FONT_RAW" & _
+        "|tx=" & anchorId & _
+        "|role=" & role & _
+        "|OLD=" & strOldFontRaw & _
+        "|BETTER=" & strBetterFontRaw & _
+        "|CURRENT=" & strCurrentFontRaw
+
+    Print #fileNo, _
+        "FIELD_FONT_RAW_FULL" & _
+        "|tx=" & anchorId & _
+        "|role=" & role & _
+        "|OLD=" & strOldFontRawFull & _
+        "|BETTER=" & strBetterFontRawFull & _
+        "|CURRENT=" & strCurrentFontRawFull
+
+    Print #fileNo, _
+        "FIELD_TOPOLOGY" & _
+        "|tx=" & anchorId & _
+        "|role=" & role & _
+        "|OLD=" & strOldSnapshot & _
+        "|BETTER=" & strBetterSnapshot & _
+        "|CURRENT=" & strCurrentSnapshot
+
+    If DoxisV18ComparableText(role, strBetterValue) <> _
+       DoxisV18ComparableText(role, strCurrentValue) Then
+
+        Call DoxisAddIssue( _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples, _
+            "DOXIS_V18_VALUE_DIFFERENCE_" & role, _
+            1, _
+            "tx=" & anchorId & _
+            "|BETTER=" & SanitizeReportText(strBetterValue) & _
+            "|CURRENT=" & SanitizeReportText(strCurrentValue) & _
+            "|comparisonRiskSuppressed=TRUE")
+
+        Print #fileNo, _
+            "FIELD_VALUE_DIFFERENCE" & _
+            "|tx=" & anchorId & _
+            "|role=" & role & _
+            "|ACTION=Do not infer parser regression from text width/risk for this occurrence."
         GoTo ExitSub
     End If
 
     If dblCurrentRisk > dblBetterRisk + 0.01 Then
-        strFamily = "DOXIS_CUT_RISK_INCREASE_" & role
+        strFamily = "DOXIS_V18_CUT_RISK_WORSE_" & role
         strSample = _
-            "page=" & CStr(pageNo) & _
-            "|text=" & SanitizeReportText(betterDoc.Texts(betterTextIndex).TextValue) & _
+            "tx=" & anchorId & _
+            "|text=" & SanitizeReportText(strCurrentValue) & _
             "|riskBetter=" & NumTxt(dblBetterRisk) & _
             "|riskCurrent=" & NumTxt(dblCurrentRisk) & _
             "|BETTER_LINE=" & strBetterLine & _
@@ -11005,82 +11681,101 @@ Private Sub DoxisCompareTextOccurrence( _
             strSample)
     End If
 
-    dblDx = currentDoc.Texts(lngCurrentIndex).X - betterDoc.Texts(betterTextIndex).X
-    dblDy = currentDoc.Texts(lngCurrentIndex).Y - betterDoc.Texts(betterTextIndex).Y
-    dblFontDelta = currentDoc.Texts(lngCurrentIndex).FontSize - betterDoc.Texts(betterTextIndex).FontSize
+    If role = "TOP_ISIN" Then
+        lngBetterCut = DoxisV18FixedCutCount( _
+            betterDoc, _
+            lngBetterIndex, _
+            639#)
 
-    If Abs(dblDx) > DOXIS_POSITION_CHANGE_TOLERANCE Or _
-       Abs(dblDy) > DOXIS_POSITION_CHANGE_TOLERANCE Then
+        lngCurrentCut = DoxisV18FixedCutCount( _
+            currentDoc, _
+            lngCurrentIndex, _
+            639#)
 
-        strFamily = "DOXIS_TEXT_POSITION_CHANGED_" & role
-        strSample = _
-            "page=" & CStr(pageNo) & _
-            "|text=" & SanitizeReportText(betterDoc.Texts(betterTextIndex).TextValue) & _
-            "|dx=" & NumTxt(dblDx) & _
-            "|dy=" & NumTxt(dblDy)
+        If lngOldIndex >= 0 Then
+            lngOldCut = DoxisV18FixedCutCount( _
+                oldDoc, _
+                lngOldIndex, _
+                639#)
+        Else
+            lngOldCut = -1
+        End If
 
-        Call DoxisAddIssue( _
-            dictIssueCounts, _
-            dictIssuePriorities, _
-            dictIssueSamples, _
-            strFamily, _
-            DoxisRolePriority(role), _
-            strSample)
+        Print #fileNo, _
+            "ISIN_FIXED_X639_CUT" & _
+            "|tx=" & anchorId & _
+            "|text=" & SanitizeReportText(strCurrentValue) & _
+            "|OLD=" & CStr(lngOldCut) & _
+            "|BETTER=" & CStr(lngBetterCut) & _
+            "|CURRENT=" & CStr(lngCurrentCut)
+
+        If lngCurrentCut < lngBetterCut Then
+            strSample = _
+                "tx=" & anchorId & _
+                "|text=" & SanitizeReportText(strCurrentValue) & _
+                "|betterCutAfterChars=" & CStr(lngBetterCut) & _
+                "|currentCutAfterChars=" & CStr(lngCurrentCut) & _
+                "|x=639"
+
+            Call DoxisAddIssue( _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples, _
+                "DOXIS_V18_ISIN_FIXED_X639_CUT_WORSE", _
+                3, _
+                strSample)
+        End If
     End If
 
-    If Abs(dblFontDelta) > DOXIS_FONT_SIZE_CHANGE_TOLERANCE Or _
-       RegressionTextFontSemanticSignature(betterDoc, pageNo, betterTextIndex) <> _
-       RegressionTextFontSemanticSignature(currentDoc, pageNo, lngCurrentIndex) Then
-
-        strFamily = "DOXIS_TEXT_FONT_CHANGED_" & role
-        strSample = _
-            "page=" & CStr(pageNo) & _
-            "|text=" & SanitizeReportText(betterDoc.Texts(betterTextIndex).TextValue) & _
-            "|BETTER=" & RegressionTextFontSemanticSignature(betterDoc, pageNo, betterTextIndex) & _
-            "|CURRENT=" & RegressionTextFontSemanticSignature(currentDoc, pageNo, lngCurrentIndex)
-
+    If strBetterFontSemantic <> strCurrentFontSemantic Then
         Call DoxisAddIssue( _
             dictIssueCounts, _
             dictIssuePriorities, _
             dictIssueSamples, _
-            strFamily, _
-            DoxisRolePriority(role), _
-            strSample)
-    End If
-
-    If strBetterLine <> strCurrentLine Then
-        strFamily = "DOXIS_NEAR_SEPARATOR_CHANGED_" & role
-        strSample = _
-            "page=" & CStr(pageNo) & _
-            "|text=" & SanitizeReportText(betterDoc.Texts(betterTextIndex).TextValue) & _
-            "|OLD_LINE=" & strOldLine & _
-            "|BETTER_LINE=" & strBetterLine & _
-            "|CURRENT_LINE=" & strCurrentLine
-
+            "DOXIS_V18_SEMANTIC_FONT_CHANGED_" & role, _
+            2, _
+            "tx=" & anchorId & _
+            "|BETTER=" & strBetterFontSemantic & _
+            "|CURRENT=" & strCurrentFontSemantic)
+    ElseIf strBetterFontRaw <> strCurrentFontRaw Then
         Call DoxisAddIssue( _
             dictIssueCounts, _
             dictIssuePriorities, _
             dictIssueSamples, _
-            strFamily, _
-            DoxisRolePriority(role), _
-            strSample)
+            "DOXIS_V18_FONT_SERIALIZATION_CHANGED_" & role, _
+            DoxisV18FontSerializationPriority(role), _
+            "tx=" & anchorId & _
+            "|BETTER=" & strBetterFontRaw & _
+            "|CURRENT=" & strCurrentFontRaw)
     End If
 
     If lngOldIndex >= 0 Then
-        Call DoxisRecordThreeWayInterpretation( _
-            fileNo, _
-            pageNo, _
-            role, _
-            betterDoc, _
-            betterTextIndex, _
-            currentDoc, _
-            lngCurrentIndex, _
-            strOldSnapshot, _
-            strBetterSnapshot, _
-            strCurrentSnapshot, _
-            dictIssueCounts, _
-            dictIssuePriorities, _
-            dictIssueSamples)
+        If Abs(currentDoc.Texts(lngCurrentIndex).X - oldDoc.Texts(lngOldIndex).X) <= _
+           DOXIS_POSITION_CHANGE_TOLERANCE And _
+           Abs(dblCurrentRelY - dblOldRelY) <= DOXIS_POSITION_CHANGE_TOLERANCE And _
+           (Abs(betterDoc.Texts(lngBetterIndex).X - oldDoc.Texts(lngOldIndex).X) > _
+            DOXIS_POSITION_CHANGE_TOLERANCE Or _
+            Abs(dblBetterRelY - dblOldRelY) > DOXIS_POSITION_CHANGE_TOLERANCE) Then
+
+            Print #fileNo, _
+                "TRIAD_POSITION_SIGNAL" & _
+                "|tx=" & anchorId & _
+                "|role=" & role & _
+                "|classification=CURRENT_MATCHES_OLD_POSITION_BUT_CLIENT_REPORTS_WORSE" & _
+                "|interpretation=Do not move this field only because BETTER differs."
+        End If
+
+        If strOldFontSemantic = strCurrentFontSemantic And _
+           strOldFontRaw = strCurrentFontRaw And _
+           strBetterFontRaw <> strCurrentFontRaw Then
+
+            Print #fileNo, _
+                "TRIAD_FONT_SIGNAL" & _
+                "|tx=" & anchorId & _
+                "|role=" & role & _
+                "|classification=CURRENT_MATCHES_OLD_FONT_SERIALIZATION_BUT_CLIENT_REPORTS_WORSE" & _
+                "|interpretation=Font serialization alone is not sufficient; inspect separator/operator interaction."
+        End If
     End If
 
 ExitSub:
@@ -11095,47 +11790,273 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "pageNo;role;betterTextIndex", _
-        pageNo, _
-        role, _
-        betterTextIndex
+        "anchorId;role", _
+        anchorId, _
+        role
 
     errorManager.save
     Resume ExitSub
 End Sub
 
-Private Sub DoxisRecordThreeWayInterpretation( _
-    ByVal fileNo As Long, _
-    ByVal pageNo As Long, _
+Private Function DoxisV18OptionalTextX( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal textIndex As Long) As String
+
+    If textIndex < 0 Or textIndex >= pdfDoc.TextCount Then
+        DoxisV18OptionalTextX = "NA"
+    Else
+        DoxisV18OptionalTextX = NumTxt(pdfDoc.Texts(textIndex).X)
+    End If
+End Function
+
+Private Function DoxisV18OptionalNumberByIndex( _
+    ByVal textIndex As Long, _
+    ByVal numberValue As Double) As String
+
+    If textIndex < 0 Then
+        DoxisV18OptionalNumberByIndex = "NA"
+    Else
+        DoxisV18OptionalNumberByIndex = NumTxt(numberValue)
+    End If
+End Function
+
+Private Function DoxisV18ComparableText( _
     ByVal role As String, _
+    ByVal textValue As String) As String
+
+    Dim strValue As String
+
+    strValue = Trim$(textValue)
+    strValue = Replace(strValue, Chr$(160), " ")
+    strValue = Replace(strValue, vbTab, " ")
+
+    Do While InStr(1, strValue, "  ", vbBinaryCompare) > 0
+        strValue = Replace(strValue, "  ", " ")
+    Loop
+
+    If role = "TOP_ISIN" Or InStr(1, role, "WHG", vbBinaryCompare) > 0 Then
+        strValue = Replace(strValue, " ", "")
+        strValue = UCase$(strValue)
+    End If
+
+    DoxisV18ComparableText = strValue
+End Function
+
+Private Sub DoxisV18CompareAnchorSeparator( _
+    ByVal fileNo As Long, _
+    ByVal anchorId As String, _
+    ByVal targetX As Double, _
+    ByVal affectedRole As String, _
+    ByRef oldDoc As tPdfDocument, _
     ByRef betterDoc As tPdfDocument, _
-    ByVal betterTextIndex As Long, _
     ByRef currentDoc As tPdfDocument, _
-    ByVal currentTextIndex As Long, _
-    ByVal oldSnapshot As String, _
-    ByVal betterSnapshot As String, _
-    ByVal currentSnapshot As String, _
+    ByVal oldAnchor As String, _
+    ByVal betterAnchor As String, _
+    ByVal currentAnchor As String, _
     ByVal dictIssueCounts As Object, _
     ByVal dictIssuePriorities As Object, _
     ByVal dictIssueSamples As Object)
 
+    Dim lngBetterLine As Long
+    Dim lngCurrentLine As Long
+    Dim lngOldLine As Long
+    Dim strBetter As String
+    Dim strBetterPrimitive As String
+    Dim strCurrent As String
+    Dim strCurrentPrimitive As String
     Dim strFamily As String
+    Dim strOld As String
+    Dim strOldPrimitive As String
     Dim strSample As String
 
-    If oldSnapshot = currentSnapshot And _
-       oldSnapshot <> betterSnapshot Then
+    lngBetterLine = -1
+    lngCurrentLine = -1
+    lngOldLine = -1
 
-        Print #fileNo, _
-            "TRIAD_SIGNAL" & _
-            "|page=" & CStr(pageNo) & _
-            "|role=" & role & _
-            "|classification=CURRENT_MATCHES_OLD_TOPOLOGY_BUT_CLIENT_REPORTS_WORSE" & _
-            "|interpretation=Pure coordinates alone are unlikely to explain the regression; inspect primitive/source/operator/font rendering around this field."
+    strBetter = DoxisV18RelativeSeparatorSignature( _
+        betterDoc, _
+        betterAnchor, _
+        targetX, _
+        lngBetterLine)
 
-        strFamily = "DOXIS_CURRENT_MATCHES_OLD_BUT_WORSE_" & role
+    strCurrent = DoxisV18RelativeSeparatorSignature( _
+        currentDoc, _
+        currentAnchor, _
+        targetX, _
+        lngCurrentLine)
+
+    strBetterPrimitive = DoxisV18LinePrimitiveSignature( _
+        betterDoc, _
+        lngBetterLine)
+
+    strCurrentPrimitive = DoxisV18LinePrimitiveSignature( _
+        currentDoc, _
+        lngCurrentLine)
+
+    If Len(oldAnchor) > 0 Then
+        strOld = DoxisV18RelativeSeparatorSignature( _
+            oldDoc, _
+            oldAnchor, _
+            targetX, _
+            lngOldLine)
+
+        strOldPrimitive = DoxisV18LinePrimitiveSignature( _
+            oldDoc, _
+            lngOldLine)
+    Else
+        strOld = "MISSING"
+        strOldPrimitive = "MISSING"
+    End If
+
+    Print #fileNo, _
+        "SEPARATOR_RELATIVE" & _
+        "|tx=" & anchorId & _
+        "|x=" & NumTxt(targetX) & _
+        "|affectedRole=" & affectedRole & _
+        "|OLD=" & strOld & _
+        "|BETTER=" & strBetter & _
+        "|CURRENT=" & strCurrent
+
+    Print #fileNo, _
+        "SEPARATOR_PRIMITIVE" & _
+        "|tx=" & anchorId & _
+        "|x=" & NumTxt(targetX) & _
+        "|OLD=" & strOldPrimitive & _
+        "|BETTER=" & strBetterPrimitive & _
+        "|CURRENT=" & strCurrentPrimitive
+
+    If strBetter <> strCurrent Then
         strSample = _
-            "page=" & CStr(pageNo) & _
-            "|text=" & SanitizeReportText(currentDoc.Texts(currentTextIndex).TextValue)
+            "tx=" & anchorId & _
+            "|affectedRole=" & affectedRole & _
+            "|OLD=" & strOld & _
+            "|BETTER=" & strBetter & _
+            "|CURRENT=" & strCurrent
+
+        If strBetterPrimitive <> strCurrentPrimitive Then
+            strFamily = _
+                "DOXIS_V18_SEPARATOR_PRIMITIVE_CHANGED_X" & _
+                Replace(NumTxt(targetX), ".", "_")
+
+            Call DoxisAddIssue( _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples, _
+                strFamily, _
+                2, _
+                strSample)
+        Else
+            strFamily = _
+                "DOXIS_V18_SEPARATOR_GEOMETRY_CHANGED_X" & _
+                Replace(NumTxt(targetX), ".", "_")
+
+            Call DoxisAddIssue( _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples, _
+                strFamily, _
+                1, _
+                strSample)
+        End If
+    End If
+
+    If Len(oldAnchor) > 0 Then
+        If strCurrent = strOld And strBetter <> strOld Then
+            Print #fileNo, _
+                "TRIAD_SEPARATOR_SIGNAL" & _
+                "|tx=" & anchorId & _
+                "|x=" & NumTxt(targetX) & _
+                "|classification=CURRENT_MATCHES_OLD_SEPARATOR_RELATIVE_TO_TRANSACTION" & _
+                "|interpretation=If CURRENT still parses worse, exact Oracle geometry is not sufficient by itself."
+        End If
+    End If
+End Sub
+
+
+Private Function DoxisV181CountNoPaintReVerticalAtX( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal targetX As Double) As Long
+
+    Dim dblX As Double
+    Dim lngIndex As Long
+
+    For lngIndex = 0 To pdfDoc.NoPaintLineCount - 1
+        If LCase$(Trim$(pdfDoc.NoPaintLines(lngIndex).SourceOperator)) = "re" And _
+           LCase$(Trim$(pdfDoc.NoPaintLines(lngIndex).PaintOperator)) = "n" Then
+
+            If Abs(pdfDoc.NoPaintLines(lngIndex).X1 - pdfDoc.NoPaintLines(lngIndex).X2) <= _
+               DOXIS_LINE_X_TOLERANCE Then
+
+                dblX = _
+                    (pdfDoc.NoPaintLines(lngIndex).X1 + _
+                     pdfDoc.NoPaintLines(lngIndex).X2) / 2#
+
+                If Abs(dblX - targetX) <= DOXIS_LINE_X_TOLERANCE Then
+                    DoxisV181CountNoPaintReVerticalAtX = _
+                        DoxisV181CountNoPaintReVerticalAtX + 1
+                End If
+            End If
+        End If
+    Next lngIndex
+End Function
+
+Private Sub DoxisV181CompareNoPaintTargetX( _
+    ByVal fileNo As Long, _
+    ByVal anchorId As String, _
+    ByVal targetX As Double, _
+    ByVal affectedRole As String, _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef betterDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument, _
+    ByVal oldAnchor As String, _
+    ByVal betterAnchor As String, _
+    ByVal currentAnchor As String, _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object)
+
+    Dim lngBetterCount As Long
+    Dim lngCurrentCount As Long
+    Dim lngOldCount As Long
+    Dim strBetter As String
+    Dim strCurrent As String
+    Dim strFamily As String
+    Dim strOld As String
+    Dim strSample As String
+
+    strBetter = DoxisV181NoPaintTargetXSignature( _
+        betterDoc, betterAnchor, targetX, lngBetterCount)
+
+    strCurrent = DoxisV181NoPaintTargetXSignature( _
+        currentDoc, currentAnchor, targetX, lngCurrentCount)
+
+    If Len(oldAnchor) > 0 Then
+        strOld = DoxisV181NoPaintTargetXSignature( _
+            oldDoc, oldAnchor, targetX, lngOldCount)
+    Else
+        strOld = "MISSING"
+    End If
+
+    Print #fileNo, _
+        "INVISIBLE_RE_N_TARGET_X" & _
+        "|tx=" & anchorId & _
+        "|x=" & NumTxt(targetX) & _
+        "|affectedRole=" & affectedRole & _
+        "|OLD=" & strOld & _
+        "|BETTER=" & strBetter & _
+        "|CURRENT=" & strCurrent
+
+    If strBetter <> strCurrent Then
+        strFamily = _
+            "DOXIS_V18_1_INVISIBLE_RE_N_CHANGED_X" & _
+            Replace(NumTxt(targetX), ".", "_")
+
+        strSample = _
+            "tx=" & anchorId & _
+            "|affectedRole=" & affectedRole & _
+            "|OLD=" & strOld & _
+            "|BETTER=" & strBetter & _
+            "|CURRENT=" & strCurrent
 
         Call DoxisAddIssue( _
             dictIssueCounts, _
@@ -11144,24 +12065,755 @@ Private Sub DoxisRecordThreeWayInterpretation( _
             strFamily, _
             2, _
             strSample)
+    End If
 
-    ElseIf betterSnapshot = currentSnapshot Then
+    If lngCurrentCount > lngBetterCount Then
+        strFamily = _
+            "DOXIS_V18_1_INVISIBLE_RE_N_ADDED_X" & _
+            Replace(NumTxt(targetX), ".", "_")
 
-        Print #fileNo, _
-            "TRIAD_SIGNAL" & _
-            "|page=" & CStr(pageNo) & _
-            "|role=" & role & _
-            "|classification=BETTER_AND_CURRENT_TOPOLOGY_EQUAL" & _
-            "|interpretation=Look beyond simple text/line coordinates for this occurrence."
+        strSample = _
+            "tx=" & anchorId & _
+            "|affectedRole=" & affectedRole & _
+            "|BETTER_count=" & CStr(lngBetterCount) & _
+            "|CURRENT_count=" & CStr(lngCurrentCount) & _
+            "|interpretation=Current has more invisible re n vertical edges at this X on the transaction page."
 
-    Else
-        Print #fileNo, _
-            "TRIAD_SIGNAL" & _
-            "|page=" & CStr(pageNo) & _
-            "|role=" & role & _
-            "|classification=TOPOLOGY_CHANGED_BETTER_TO_CURRENT"
+        Call DoxisAddIssue( _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples, _
+            strFamily, _
+            3, _
+            strSample)
     End If
 End Sub
+
+Private Function DoxisV181NoPaintTargetXSignature( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal packedAnchor As String, _
+    ByVal targetX As Double, _
+    ByRef matchCount As Long) As String
+
+    Dim dblX As Double
+    Dim lngEnd As Long
+    Dim lngIndex As Long
+    Dim lngPage As Long
+    Dim lngStart As Long
+    Dim strResult As String
+
+    matchCount = 0
+    DoxisV181NoPaintTargetXSignature = "(none)"
+
+    If Len(packedAnchor) = 0 Then
+        DoxisV181NoPaintTargetXSignature = "MISSING_ANCHOR"
+        Exit Function
+    End If
+
+    lngPage = DoxisV18AnchorPage(packedAnchor)
+    If lngPage < 1 Or lngPage > pdfDoc.PageCount Then
+        DoxisV181NoPaintTargetXSignature = "PAGE_MISSING"
+        Exit Function
+    End If
+
+    lngStart = pdfDoc.Pages(lngPage).NoPaintLineStart
+    lngEnd = lngStart + pdfDoc.Pages(lngPage).NoPaintLineCount - 1
+
+    For lngIndex = lngStart To lngEnd
+        If LCase$(Trim$(pdfDoc.NoPaintLines(lngIndex).SourceOperator)) = "re" And _
+           LCase$(Trim$(pdfDoc.NoPaintLines(lngIndex).PaintOperator)) = "n" Then
+
+            If Abs(pdfDoc.NoPaintLines(lngIndex).X1 - pdfDoc.NoPaintLines(lngIndex).X2) <= _
+               DOXIS_LINE_X_TOLERANCE Then
+
+                dblX = _
+                    (pdfDoc.NoPaintLines(lngIndex).X1 + _
+                     pdfDoc.NoPaintLines(lngIndex).X2) / 2#
+
+                If Abs(dblX - targetX) <= DOXIS_LINE_X_TOLERANCE Then
+                    matchCount = matchCount + 1
+
+                    If matchCount <= 8 Then
+                        If Len(strResult) > 0 Then strResult = strResult & ";"
+
+                        strResult = strResult & _
+                            "x=" & NumTxt(dblX) & _
+                            ",y=" & NumTxt(MinDouble( _
+                                pdfDoc.NoPaintLines(lngIndex).Y1, _
+                                pdfDoc.NoPaintLines(lngIndex).Y2)) & _
+                            ".." & NumTxt(MaxDouble( _
+                                pdfDoc.NoPaintLines(lngIndex).Y1, _
+                                pdfDoc.NoPaintLines(lngIndex).Y2)) & _
+                            ",source=" & pdfDoc.NoPaintLines(lngIndex).SourceOperator & _
+                            ",paint=" & pdfDoc.NoPaintLines(lngIndex).PaintOperator
+                    End If
+                End If
+            End If
+        End If
+    Next lngIndex
+
+    If matchCount > 0 Then
+        DoxisV181NoPaintTargetXSignature = _
+            "count=" & CStr(matchCount) & "|sample=" & strResult
+    End If
+End Function
+
+Private Sub DoxisV181CompareGlobalProjectionRoles( _
+    ByVal fileNo As Long, _
+    ByVal anchorId As String, _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef betterDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument, _
+    ByVal oldAnchor As String, _
+    ByVal betterAnchor As String, _
+    ByVal currentAnchor As String, _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object)
+
+    Dim arrRoles As Variant
+    Dim lngIndex As Long
+    Dim strRole As String
+
+    arrRoles = Array( _
+        "TOP_ISIN", _
+        "TOP_SCHLUSSTAG", _
+        "TOP_FONDSBEZEICHNUNG", _
+        "TOP_WERTPAPIERBEZEICHNUNG", _
+        "TOP_NOMINALE_STUECKE", _
+        "TOP_STUECKZINSEN", _
+        "TOP_WHG_NOMINALE", _
+        "BOTTOM_ABWICKLUNGSPROVISION", _
+        "BOTTOM_WHG_MAKLER", _
+        "BOTTOM_WHG_STEUERN", _
+        "BOTTOM_WHG_ABWICKLUNG", _
+        "BOTTOM_WHG_SPESEN", _
+        "BOTTOM_WHG_ABRECH")
+
+    For lngIndex = LBound(arrRoles) To UBound(arrRoles)
+        strRole = CStr(arrRoles(lngIndex))
+
+        Call DoxisV181CompareGlobalProjectionRole( _
+            fileNo, anchorId, strRole, _
+            oldDoc, betterDoc, currentDoc, _
+            oldAnchor, betterAnchor, currentAnchor, _
+            dictIssueCounts, dictIssuePriorities, dictIssueSamples)
+    Next lngIndex
+End Sub
+
+Private Sub DoxisV181CompareGlobalProjectionRole( _
+    ByVal fileNo As Long, _
+    ByVal anchorId As String, _
+    ByVal role As String, _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef betterDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument, _
+    ByVal oldAnchor As String, _
+    ByVal betterAnchor As String, _
+    ByVal currentAnchor As String, _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object)
+
+    Dim lngBetterCut As Long
+    Dim lngBetterHiddenCut As Long
+    Dim lngCurrentCut As Long
+    Dim lngCurrentHiddenCut As Long
+    Dim lngOldCut As Long
+    Dim lngOldHiddenCut As Long
+    Dim strBetter As String
+    Dim strCurrent As String
+    Dim strFamily As String
+    Dim strOld As String
+    Dim strSample As String
+
+    strBetter = DoxisV181GlobalProjectionSnapshot( _
+        betterDoc, betterAnchor, role, _
+        lngBetterCut, lngBetterHiddenCut)
+
+    strCurrent = DoxisV181GlobalProjectionSnapshot( _
+        currentDoc, currentAnchor, role, _
+        lngCurrentCut, lngCurrentHiddenCut)
+
+    If Len(oldAnchor) > 0 Then
+        strOld = DoxisV181GlobalProjectionSnapshot( _
+            oldDoc, oldAnchor, role, _
+            lngOldCut, lngOldHiddenCut)
+    Else
+        strOld = "MISSING"
+    End If
+
+    If strBetter <> "NO_TEXT" Or strCurrent <> "NO_TEXT" Then
+        Print #fileNo, _
+            "GLOBAL_X_PROJECTION" & _
+            "|tx=" & anchorId & _
+            "|role=" & role & _
+            "|OLD=" & strOld & _
+            "|BETTER=" & strBetter & _
+            "|CURRENT=" & strCurrent
+    End If
+
+    If lngCurrentCut >= 0 Then
+        If lngBetterCut < 0 Or lngCurrentCut < lngBetterCut Then
+            strFamily = "DOXIS_V18_1_GLOBAL_VISIBLE_X_CUT_WORSE_" & role
+            strSample = _
+                "tx=" & anchorId & _
+                "|role=" & role & _
+                "|BETTER_cutAfter=" & CStr(lngBetterCut) & _
+                "|CURRENT_cutAfter=" & CStr(lngCurrentCut) & _
+                "|OLD_cutAfter=" & DoxisV181OptionalCut(lngOldCut) & _
+                "|hypothesis=vertical visible paths projected globally on X, row ownership ignored"
+
+            Call DoxisAddIssue( _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples, _
+                strFamily, _
+                DoxisV181ProjectionPriority(role), _
+                strSample)
+        End If
+    End If
+
+    If lngCurrentHiddenCut >= 0 Then
+        If lngBetterHiddenCut < 0 Or lngCurrentHiddenCut < lngBetterHiddenCut Then
+            strFamily = "DOXIS_V18_1_GLOBAL_INVISIBLE_RE_N_CUT_WORSE_" & role
+            strSample = _
+                "tx=" & anchorId & _
+                "|role=" & role & _
+                "|BETTER_hiddenCutAfter=" & CStr(lngBetterHiddenCut) & _
+                "|CURRENT_hiddenCutAfter=" & CStr(lngCurrentHiddenCut) & _
+                "|OLD_hiddenCutAfter=" & DoxisV181OptionalCut(lngOldHiddenCut) & _
+                "|hypothesis=invisible re n vertical edges projected globally on X"
+
+            Call DoxisAddIssue( _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples, _
+                strFamily, _
+                DoxisV181ProjectionPriority(role), _
+                strSample)
+        End If
+    End If
+End Sub
+
+Private Function DoxisV181GlobalProjectionSnapshot( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal packedAnchor As String, _
+    ByVal role As String, _
+    ByRef visibleCutAfter As Long, _
+    ByRef hiddenCutAfter As Long) As String
+
+    Dim dblEndX As Double
+    Dim dblLineX As Double
+    Dim dblTextX As Double
+    Dim dblTextWidth As Double
+    Dim lngEnd As Long
+    Dim lngHiddenHits As Long
+    Dim lngIndex As Long
+    Dim lngPage As Long
+    Dim lngStart As Long
+    Dim lngTextIndex As Long
+    Dim lngVisibleHits As Long
+    Dim lngCandidateCut As Long
+    Dim strHidden As String
+    Dim strVisible As String
+    Dim strValue As String
+
+    visibleCutAfter = -1
+    hiddenCutAfter = -1
+    DoxisV181GlobalProjectionSnapshot = "NO_TEXT"
+
+    lngTextIndex = DoxisV18FindTextInAnchor(pdfDoc, packedAnchor, role)
+    If lngTextIndex < 0 Then Exit Function
+
+    lngPage = pdfDoc.Texts(lngTextIndex).PageNo
+    strValue = pdfDoc.Texts(lngTextIndex).TextValue
+    dblTextX = pdfDoc.Texts(lngTextIndex).X
+    dblTextWidth = EstimateTextWidth( _
+        strValue, _
+        pdfDoc.Texts(lngTextIndex).FontName, _
+        pdfDoc.Texts(lngTextIndex).FontSize)
+
+    dblEndX = dblTextX + dblTextWidth
+
+    lngStart = pdfDoc.Pages(lngPage).LineStart
+    lngEnd = lngStart + pdfDoc.Pages(lngPage).LineCount - 1
+
+    For lngIndex = lngStart To lngEnd
+        If Abs(pdfDoc.Lines(lngIndex).X1 - pdfDoc.Lines(lngIndex).X2) <= _
+           DOXIS_LINE_X_TOLERANCE Then
+
+            dblLineX = _
+                (pdfDoc.Lines(lngIndex).X1 + pdfDoc.Lines(lngIndex).X2) / 2#
+
+            If DoxisV181XInsideText( _
+                dblLineX, dblTextX, dblEndX) Then
+
+                lngCandidateCut = DoxisPredictCutCharacter( _
+                    strValue, _
+                    pdfDoc.Texts(lngTextIndex).FontName, _
+                    pdfDoc.Texts(lngTextIndex).FontSize, _
+                    dblTextX, _
+                    dblLineX)
+
+                If visibleCutAfter < 0 Or lngCandidateCut < visibleCutAfter Then
+                    visibleCutAfter = lngCandidateCut
+                End If
+
+                lngVisibleHits = lngVisibleHits + 1
+                If lngVisibleHits <= 6 Then
+                    If Len(strVisible) > 0 Then strVisible = strVisible & ","
+                    strVisible = strVisible & _
+                        NumTxt(dblLineX) & ":" & CStr(lngCandidateCut) & _
+                        ":" & pdfDoc.Lines(lngIndex).SourceOperator & _
+                        "/" & pdfDoc.Lines(lngIndex).PaintOperator
+                End If
+            End If
+        End If
+    Next lngIndex
+
+    lngStart = pdfDoc.Pages(lngPage).NoPaintLineStart
+    lngEnd = lngStart + pdfDoc.Pages(lngPage).NoPaintLineCount - 1
+
+    For lngIndex = lngStart To lngEnd
+        If LCase$(Trim$(pdfDoc.NoPaintLines(lngIndex).SourceOperator)) = "re" And _
+           LCase$(Trim$(pdfDoc.NoPaintLines(lngIndex).PaintOperator)) = "n" Then
+
+            If Abs(pdfDoc.NoPaintLines(lngIndex).X1 - pdfDoc.NoPaintLines(lngIndex).X2) <= _
+               DOXIS_LINE_X_TOLERANCE Then
+
+                dblLineX = _
+                    (pdfDoc.NoPaintLines(lngIndex).X1 + _
+                     pdfDoc.NoPaintLines(lngIndex).X2) / 2#
+
+                If DoxisV181XInsideText( _
+                    dblLineX, dblTextX, dblEndX) Then
+
+                    lngCandidateCut = DoxisPredictCutCharacter( _
+                        strValue, _
+                        pdfDoc.Texts(lngTextIndex).FontName, _
+                        pdfDoc.Texts(lngTextIndex).FontSize, _
+                        dblTextX, _
+                        dblLineX)
+
+                    If hiddenCutAfter < 0 Or lngCandidateCut < hiddenCutAfter Then
+                        hiddenCutAfter = lngCandidateCut
+                    End If
+
+                    lngHiddenHits = lngHiddenHits + 1
+                    If lngHiddenHits <= 6 Then
+                        If Len(strHidden) > 0 Then strHidden = strHidden & ","
+                        strHidden = strHidden & _
+                            NumTxt(dblLineX) & ":" & CStr(lngCandidateCut) & _
+                            ":re/n"
+                    End If
+                End If
+            End If
+        End If
+    Next lngIndex
+
+    DoxisV181GlobalProjectionSnapshot = _
+        "text=" & SanitizeReportText(strValue) & _
+        "|x=" & NumTxt(dblTextX) & ".." & NumTxt(dblEndX) & _
+        "|visibleHits=" & CStr(lngVisibleHits) & _
+        "|visibleMinCut=" & DoxisV181OptionalCut(visibleCutAfter) & _
+        "|visibleX=" & IIf(Len(strVisible) = 0, "(none)", strVisible) & _
+        "|reNhiddenHits=" & CStr(lngHiddenHits) & _
+        "|reNhiddenMinCut=" & DoxisV181OptionalCut(hiddenCutAfter) & _
+        "|reNhiddenX=" & IIf(Len(strHidden) = 0, "(none)", strHidden)
+End Function
+
+Private Function DoxisV181XInsideText( _
+    ByVal candidateX As Double, _
+    ByVal textX As Double, _
+    ByVal textEndX As Double) As Boolean
+
+    DoxisV181XInsideText = _
+        candidateX > textX + DOXIS_GLOBAL_PROJECTION_EDGE_MARGIN And _
+        candidateX < textEndX - DOXIS_GLOBAL_PROJECTION_EDGE_MARGIN
+End Function
+
+Private Function DoxisV181OptionalCut(ByVal cutValue As Long) As String
+    If cutValue < 0 Then
+        DoxisV181OptionalCut = "NONE"
+    Else
+        DoxisV181OptionalCut = CStr(cutValue)
+    End If
+End Function
+
+Private Function DoxisV181ProjectionPriority(ByVal role As String) As Long
+    Select Case role
+        Case "TOP_ISIN", _
+             "TOP_SCHLUSSTAG", _
+             "TOP_WHG_NOMINALE", _
+             "BOTTOM_WHG_MAKLER", _
+             "BOTTOM_WHG_STEUERN", _
+             "BOTTOM_WHG_ABWICKLUNG", _
+             "BOTTOM_WHG_SPESEN", _
+             "BOTTOM_WHG_ABRECH"
+            DoxisV181ProjectionPriority = 3
+
+        Case Else
+            DoxisV181ProjectionPriority = 2
+    End Select
+End Function
+
+Private Function DoxisV18LinePrimitiveSignature( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal lineIndex As Long) As String
+
+    If lineIndex < 0 Or lineIndex >= pdfDoc.LineCount Then
+        DoxisV18LinePrimitiveSignature = "(none)"
+        Exit Function
+    End If
+
+    DoxisV18LinePrimitiveSignature = _
+        "w=" & NumTxt(pdfDoc.Lines(lineIndex).LineWidth) & _
+        ",source=" & pdfDoc.Lines(lineIndex).SourceOperator & _
+        ",paint=" & pdfDoc.Lines(lineIndex).PaintOperator & _
+        ",color=" & pdfDoc.Lines(lineIndex).StrokeColor
+End Function
+
+Private Function DoxisV18RelativeSeparatorSignature( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal packedAnchor As String, _
+    ByVal targetX As Double, _
+    ByRef matchedLineIndex As Long) As String
+
+    Const MAX_TRANSACTION_LINE_GAP As Double = 8#
+    Dim dblBandBottom As Double
+    Dim dblBandTop As Double
+    Dim dblBestScore As Double
+    Dim dblGap As Double
+    Dim dblLineMid As Double
+    Dim dblLineX As Double
+    Dim dblMidTarget As Double
+    Dim dblScore As Double
+    Dim dblYMax As Double
+    Dim dblYMin As Double
+    Dim lngEnd As Long
+    Dim lngIndex As Long
+    Dim lngPage As Long
+    Dim lngStart As Long
+
+    matchedLineIndex = -1
+    DoxisV18RelativeSeparatorSignature = "(none)"
+    dblBestScore = 1E+30
+
+    If Len(packedAnchor) = 0 Then
+        DoxisV18RelativeSeparatorSignature = "MISSING_ANCHOR"
+        Exit Function
+    End If
+
+    lngPage = DoxisV18AnchorPage(packedAnchor)
+    If lngPage < 1 Or lngPage > pdfDoc.PageCount Then
+        DoxisV18RelativeSeparatorSignature = "PAGE_MISSING"
+        Exit Function
+    End If
+
+    dblBandBottom = DoxisV18AnchorBottomY(packedAnchor) - 6#
+    dblBandTop = DoxisV18AnchorTopY(packedAnchor) + 2#
+    dblMidTarget = DoxisV18AnchorBottomY(packedAnchor) + 4.5
+
+    lngStart = pdfDoc.Pages(lngPage).LineStart
+    lngEnd = lngStart + pdfDoc.Pages(lngPage).LineCount - 1
+
+    For lngIndex = lngStart To lngEnd
+        If Abs(pdfDoc.Lines(lngIndex).X1 - pdfDoc.Lines(lngIndex).X2) <= _
+           DOXIS_LINE_X_TOLERANCE Then
+
+            dblLineX = _
+                (pdfDoc.Lines(lngIndex).X1 + pdfDoc.Lines(lngIndex).X2) / 2#
+
+            If Abs(dblLineX - targetX) <= DOXIS_LINE_X_TOLERANCE Then
+                dblYMin = MinDouble( _
+                    pdfDoc.Lines(lngIndex).Y1, _
+                    pdfDoc.Lines(lngIndex).Y2)
+
+                dblYMax = MaxDouble( _
+                    pdfDoc.Lines(lngIndex).Y1, _
+                    pdfDoc.Lines(lngIndex).Y2)
+
+                dblGap = DoxisVerticalGapToBand( _
+                    dblYMin, _
+                    dblYMax, _
+                    dblBandBottom, _
+                    dblBandTop)
+
+                If dblGap <= MAX_TRANSACTION_LINE_GAP Then
+                    dblLineMid = (dblYMin + dblYMax) / 2#
+                    dblScore = _
+                        dblGap * 100# + _
+                        Abs(dblLineMid - dblMidTarget)
+
+                    If dblScore < dblBestScore Then
+                        dblBestScore = dblScore
+                        matchedLineIndex = lngIndex
+                    End If
+                End If
+            End If
+        End If
+    Next lngIndex
+
+    If matchedLineIndex >= 0 Then
+        dblLineX = _
+            (pdfDoc.Lines(matchedLineIndex).X1 + _
+             pdfDoc.Lines(matchedLineIndex).X2) / 2#
+
+        dblYMin = MinDouble( _
+            pdfDoc.Lines(matchedLineIndex).Y1, _
+            pdfDoc.Lines(matchedLineIndex).Y2)
+
+        dblYMax = MaxDouble( _
+            pdfDoc.Lines(matchedLineIndex).Y1, _
+            pdfDoc.Lines(matchedLineIndex).Y2)
+
+        DoxisV18RelativeSeparatorSignature = _
+            "x=" & NumTxt(dblLineX) & _
+            ",dxTarget=" & NumTxt(dblLineX - targetX) & _
+            ",relY=" & NumTxt(dblYMin - DoxisV18AnchorBottomY(packedAnchor)) & _
+            ".." & NumTxt(dblYMax - DoxisV18AnchorBottomY(packedAnchor)) & _
+            ",w=" & NumTxt(pdfDoc.Lines(matchedLineIndex).LineWidth) & _
+            ",source=" & pdfDoc.Lines(matchedLineIndex).SourceOperator & _
+            ",paint=" & pdfDoc.Lines(matchedLineIndex).PaintOperator & _
+            ",color=" & pdfDoc.Lines(matchedLineIndex).StrokeColor
+    End If
+End Function
+
+Private Function DoxisV18FixedCutCount( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal textIndex As Long, _
+    ByVal separatorX As Double) As Long
+
+    DoxisV18FixedCutCount = DoxisPredictCutCharacter( _
+        pdfDoc.Texts(textIndex).TextValue, _
+        pdfDoc.Texts(textIndex).FontName, _
+        pdfDoc.Texts(textIndex).FontSize, _
+        pdfDoc.Texts(textIndex).X, _
+        separatorX)
+End Function
+
+Private Function DoxisV18TextSemanticFont( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal textIndex As Long) As String
+
+    Dim strAlias As String
+    Dim strBase As String
+    Dim strEncoding As String
+    Dim strEntry As String
+    Dim strSubtype As String
+
+    If textIndex < 0 Or textIndex >= pdfDoc.TextCount Then
+        DoxisV18TextSemanticFont = "MISSING"
+        Exit Function
+    End If
+
+    strAlias = pdfDoc.Texts(textIndex).FontName
+    strEntry = DoxisV18RawFontEntry(pdfDoc, pageNo, strAlias)
+
+    If Len(strEntry) = 0 Then
+        DoxisV18TextSemanticFont = _
+            "base=(unresolved)" & _
+            "|subtype=(unresolved)" & _
+            "|encoding=(unresolved)" & _
+            "|size=" & NumTxt(pdfDoc.Texts(textIndex).FontSize)
+        Exit Function
+    End If
+
+    strBase = DoxisV18DecodePdfName( _
+        DoxisV18PipeField(strEntry, "base"))
+
+    strSubtype = DoxisV18DecodePdfName( _
+        DoxisV18PipeField(strEntry, "subtype"))
+
+    strEncoding = DoxisV18DecodePdfName( _
+        DoxisV18PipeField(strEntry, "encoding"))
+
+    DoxisV18TextSemanticFont = _
+        "base=" & strBase & _
+        "|subtype=" & strSubtype & _
+        "|encoding=" & strEncoding & _
+        "|size=" & NumTxt(pdfDoc.Texts(textIndex).FontSize)
+End Function
+
+Private Function DoxisV18TextRawFontComparable( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal textIndex As Long) As String
+
+    Dim strAlias As String
+    Dim strBase As String
+    Dim strDescriptor As String
+    Dim strEncoding As String
+    Dim strEntry As String
+    Dim strSubtype As String
+    Dim strWidths As String
+
+    If textIndex < 0 Or textIndex >= pdfDoc.TextCount Then
+        DoxisV18TextRawFontComparable = "MISSING"
+        Exit Function
+    End If
+
+    strAlias = pdfDoc.Texts(textIndex).FontName
+    strEntry = DoxisV18RawFontEntry(pdfDoc, pageNo, strAlias)
+
+    If Len(strEntry) = 0 Then
+        DoxisV18TextRawFontComparable = _
+            "alias=" & strAlias & _
+            "|raw=(unresolved)" & _
+            "|size=" & NumTxt(pdfDoc.Texts(textIndex).FontSize)
+        Exit Function
+    End If
+
+    strBase = DoxisV18PipeField(strEntry, "base")
+    strSubtype = DoxisV18PipeField(strEntry, "subtype")
+    strEncoding = DoxisV18PipeField(strEntry, "encoding")
+    strWidths = DoxisV18PipeField(strEntry, "widths")
+    strDescriptor = DoxisV18PipeField(strEntry, "descriptor")
+
+    DoxisV18TextRawFontComparable = _
+        "alias=" & strAlias & _
+        "|baseRaw=" & strBase & _
+        "|subtypeRaw=" & strSubtype & _
+        "|encodingRaw=" & strEncoding & _
+        "|widths=" & strWidths & _
+        "|descriptorChecksum=" & FontTextChecksum(strDescriptor) & _
+        "|size=" & NumTxt(pdfDoc.Texts(textIndex).FontSize)
+End Function
+
+Private Function DoxisV18TextRawFontDisplay( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal textIndex As Long) As String
+
+    Dim strAlias As String
+    Dim strEntry As String
+
+    If textIndex < 0 Or textIndex >= pdfDoc.TextCount Then
+        DoxisV18TextRawFontDisplay = "MISSING"
+        Exit Function
+    End If
+
+    strAlias = pdfDoc.Texts(textIndex).FontName
+    strEntry = DoxisV18RawFontEntry(pdfDoc, pageNo, strAlias)
+
+    If Len(strEntry) = 0 Then
+        DoxisV18TextRawFontDisplay = _
+            "alias=" & strAlias & "|entry=(unresolved)"
+    Else
+        DoxisV18TextRawFontDisplay = _
+            RegressionLimitText(strEntry, 700)
+    End If
+End Function
+
+Private Function DoxisV18RawFontEntry( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal fontAlias As String) As String
+
+    Dim arrEntries As Variant
+    Dim lngIndex As Long
+    Dim strEntry As String
+    Dim strSignature As String
+
+    If pageNo < 1 Or pageNo > pdfDoc.PageCount Then Exit Function
+
+    strSignature = pdfDoc.Pages(pageNo).FontForensicSignature
+    If Len(strSignature) = 0 Then Exit Function
+    If strSignature = "(none)" Or strSignature = "(unresolved)" Then Exit Function
+
+    arrEntries = Split(strSignature, ";")
+
+    For lngIndex = LBound(arrEntries) To UBound(arrEntries)
+        strEntry = CStr(arrEntries(lngIndex))
+
+        If Left$(strEntry, Len(fontAlias) + 1) = fontAlias & "|" Then
+            DoxisV18RawFontEntry = strEntry
+            Exit Function
+        End If
+    Next lngIndex
+End Function
+
+Private Function DoxisV18PipeField( _
+    ByVal pipeText As String, _
+    ByVal fieldName As String) As String
+
+    Dim arrParts As Variant
+    Dim lngIndex As Long
+    Dim strPrefix As String
+    Dim strValue As String
+
+    strPrefix = fieldName & "="
+    arrParts = Split(pipeText, "|")
+
+    For lngIndex = LBound(arrParts) To UBound(arrParts)
+        strValue = CStr(arrParts(lngIndex))
+
+        If Left$(strValue, Len(strPrefix)) = strPrefix Then
+            DoxisV18PipeField = Mid$(strValue, Len(strPrefix) + 1)
+            Exit Function
+        End If
+    Next lngIndex
+
+    DoxisV18PipeField = "(absent)"
+End Function
+
+Private Function DoxisV18DecodePdfName(ByVal pdfName As String) As String
+    Dim lngCode As Long
+    Dim lngIndex As Long
+    Dim strHex As String
+    Dim strResult As String
+
+    lngIndex = 1
+
+    Do While lngIndex <= Len(pdfName)
+        If Mid$(pdfName, lngIndex, 1) = "#" And _
+           lngIndex + 2 <= Len(pdfName) Then
+
+            strHex = Mid$(pdfName, lngIndex + 1, 2)
+
+            If DoxisV18IsHexByte(strHex) Then
+                lngCode = CLng("&H" & strHex)
+                strResult = strResult & Chr$(lngCode)
+                lngIndex = lngIndex + 3
+            Else
+                strResult = strResult & Mid$(pdfName, lngIndex, 1)
+                lngIndex = lngIndex + 1
+            End If
+        Else
+            strResult = strResult & Mid$(pdfName, lngIndex, 1)
+            lngIndex = lngIndex + 1
+        End If
+    Loop
+
+    DoxisV18DecodePdfName = strResult
+End Function
+
+Private Function DoxisV18IsHexByte(ByVal textValue As String) As Boolean
+    Dim lngIndex As Long
+    Dim strChar As String
+
+    If Len(textValue) <> 2 Then Exit Function
+
+    For lngIndex = 1 To 2
+        strChar = UCase$(Mid$(textValue, lngIndex, 1))
+
+        If InStr(1, "0123456789ABCDEF", strChar, vbBinaryCompare) = 0 Then
+            Exit Function
+        End If
+    Next lngIndex
+
+    DoxisV18IsHexByte = True
+End Function
+
+Private Function DoxisV18FontSerializationPriority(ByVal role As String) As Long
+    If role = "TOP_ISIN" Or InStr(1, role, "WHG", vbBinaryCompare) > 0 Then
+        DoxisV18FontSerializationPriority = 2
+    Else
+        DoxisV18FontSerializationPriority = 1
+    End If
+End Function
 
 Private Function DoxisTextTopologySnapshot( _
     ByRef pdfDoc As tPdfDocument, _
@@ -11311,14 +12963,22 @@ Private Function DoxisFindMostRelevantVerticalSeparator( _
     lngEnd = lngStart + pdfDoc.Pages(pageNo).LineCount - 1
 
     For lngIndex = lngStart To lngEnd
-        If Abs(pdfDoc.Lines(lngIndex).X1 - pdfDoc.Lines(lngIndex).X2) <= DOXIS_LINE_X_TOLERANCE Then
-            dblLineX = (pdfDoc.Lines(lngIndex).X1 + pdfDoc.Lines(lngIndex).X2) / 2#
+        If Abs(pdfDoc.Lines(lngIndex).X1 - pdfDoc.Lines(lngIndex).X2) <= _
+           DOXIS_LINE_X_TOLERANCE Then
+
+            dblLineX = _
+                (pdfDoc.Lines(lngIndex).X1 + pdfDoc.Lines(lngIndex).X2) / 2#
 
             If dblLineX >= textX + DOXIS_TEXT_X_MARGIN And _
                dblLineX <= textEndX - DOXIS_TEXT_X_MARGIN Then
 
-                dblYMin = MinDouble(pdfDoc.Lines(lngIndex).Y1, pdfDoc.Lines(lngIndex).Y2)
-                dblYMax = MaxDouble(pdfDoc.Lines(lngIndex).Y1, pdfDoc.Lines(lngIndex).Y2)
+                dblYMin = MinDouble( _
+                    pdfDoc.Lines(lngIndex).Y1, _
+                    pdfDoc.Lines(lngIndex).Y2)
+
+                dblYMax = MaxDouble( _
+                    pdfDoc.Lines(lngIndex).Y1, _
+                    pdfDoc.Lines(lngIndex).Y2)
 
                 dblGap = DoxisVerticalGapToBand( _
                     dblYMin, _
@@ -11335,7 +12995,9 @@ Private Function DoxisFindMostRelevantVerticalSeparator( _
                 End If
 
                 If dblGap <= DOXIS_NEAR_SEPARATOR_GAP Then
-                    dblScore = dblGap * 100# + Abs(dblLineX - ((textX + textEndX) / 2#))
+                    dblScore = _
+                        dblGap * 100# + _
+                        Abs(dblLineX - ((textX + textEndX) / 2#))
 
                     If dblScore < dblBestScore Then
                         dblBestScore = dblScore
@@ -11514,20 +13176,6 @@ Private Function DoxisOptionalNumber(ByVal value As Double) As String
     End If
 End Function
 
-Private Function DoxisIsTargetRole(ByVal role As String) As Boolean
-    If role = "TOP_ISIN" Or _
-       role = "TOP_SCHLUSSTAG" Or _
-       role = "TOP_VALUTATAG" Then
-
-        DoxisIsTargetRole = True
-        Exit Function
-    End If
-
-    If InStr(1, role, "WHG", vbBinaryCompare) > 0 Then
-        DoxisIsTargetRole = True
-    End If
-End Function
-
 Private Function DoxisRolePriority(ByVal role As String) As Long
     If role = "TOP_ISIN" Then
         DoxisRolePriority = 3
@@ -11539,154 +13187,6 @@ Private Function DoxisRolePriority(ByVal role As String) As Long
         DoxisRolePriority = 1
     End If
 End Function
-
-Private Sub DoxisWriteFixedSeparatorProbe( _
-    ByVal fileNo As Long, _
-    ByVal pageNo As Long, _
-    ByVal targetX As Double, _
-    ByVal affectedRole As String, _
-    ByRef oldDoc As tPdfDocument, _
-    ByRef betterDoc As tPdfDocument, _
-    ByRef currentDoc As tPdfDocument, _
-    ByVal dictIssueCounts As Object, _
-    ByVal dictIssuePriorities As Object, _
-    ByVal dictIssueSamples As Object)
-
-    Dim strBetter As String
-    Dim strCurrent As String
-    Dim strFamily As String
-    Dim strOld As String
-    Dim strSample As String
-
-    strOld = DoxisFixedSeparatorSignature(oldDoc, pageNo, targetX)
-    strBetter = DoxisFixedSeparatorSignature(betterDoc, pageNo, targetX)
-    strCurrent = DoxisFixedSeparatorSignature(currentDoc, pageNo, targetX)
-
-    Print #fileNo, _
-        "FIXED_SEPARATOR" & _
-        "|page=" & CStr(pageNo) & _
-        "|x=" & NumTxt(targetX) & _
-        "|affectedRole=" & affectedRole & _
-        "|OLD=" & strOld & _
-        "|BETTER=" & strBetter & _
-        "|CURRENT=" & strCurrent
-
-    If strBetter <> strCurrent Then
-        strFamily = "DOXIS_FIXED_SEPARATOR_CHANGED_X" & Replace(NumTxt(targetX), ".", "_")
-        strSample = _
-            "page=" & CStr(pageNo) & _
-            "|affectedRole=" & affectedRole & _
-            "|OLD=" & strOld & _
-            "|BETTER=" & strBetter & _
-            "|CURRENT=" & strCurrent
-
-        Call DoxisAddIssue( _
-            dictIssueCounts, _
-            dictIssuePriorities, _
-            dictIssueSamples, _
-            strFamily, _
-            3, _
-            strSample)
-    ElseIf strOld = strCurrent And strOld <> strBetter Then
-        strFamily = "DOXIS_FIXED_SEPARATOR_CURRENT_MATCHES_OLD_X" & Replace(NumTxt(targetX), ".", "_")
-        strSample = _
-            "page=" & CStr(pageNo) & _
-            "|affectedRole=" & affectedRole & _
-            "|signal=Current matches Oracle separator serialization but client says parsing is worse; inspect surrounding operators/text/font."
-
-        Call DoxisAddIssue( _
-            dictIssueCounts, _
-            dictIssuePriorities, _
-            dictIssueSamples, _
-            strFamily, _
-            2, _
-            strSample)
-    End If
-End Sub
-
-Private Function DoxisFixedSeparatorSignature( _
-    ByRef pdfDoc As tPdfDocument, _
-    ByVal pageNo As Long, _
-    ByVal targetX As Double) As String
-
-    Dim lngEnd As Long
-    Dim lngIndex As Long
-    Dim lngStart As Long
-    Dim strResult As String
-
-    If pageNo < 1 Or pageNo > pdfDoc.PageCount Then
-        DoxisFixedSeparatorSignature = "PAGE_MISSING"
-        Exit Function
-    End If
-
-    lngStart = pdfDoc.Pages(pageNo).LineStart
-    lngEnd = lngStart + pdfDoc.Pages(pageNo).LineCount - 1
-
-    For lngIndex = lngStart To lngEnd
-        If Abs(pdfDoc.Lines(lngIndex).X1 - pdfDoc.Lines(lngIndex).X2) <= DOXIS_LINE_X_TOLERANCE Then
-            If Abs(((pdfDoc.Lines(lngIndex).X1 + pdfDoc.Lines(lngIndex).X2) / 2#) - targetX) <= DOXIS_LINE_X_TOLERANCE Then
-                If Len(strResult) > 0 Then strResult = strResult & ";"
-                strResult = strResult & DoxisLineSignature(pdfDoc.Lines(lngIndex))
-            End If
-        End If
-    Next lngIndex
-
-    If Len(strResult) = 0 Then strResult = "(none)"
-    DoxisFixedSeparatorSignature = strResult
-End Function
-
-Private Sub DoxisFindCurrentOnlyTargets( _
-    ByVal fileNo As Long, _
-    ByVal pageNo As Long, _
-    ByRef betterDoc As tPdfDocument, _
-    ByRef currentDoc As tPdfDocument, _
-    ByVal dictIssueCounts As Object, _
-    ByVal dictIssuePriorities As Object, _
-    ByVal dictIssueSamples As Object)
-
-    Dim lngBetterIndex As Long
-    Dim lngCurrentEnd As Long
-    Dim lngCurrentIndex As Long
-    Dim lngCurrentStart As Long
-    Dim strRole As String
-
-    lngCurrentStart = currentDoc.Pages(pageNo).TextStart
-    lngCurrentEnd = lngCurrentStart + currentDoc.Pages(pageNo).TextCount - 1
-
-    For lngCurrentIndex = lngCurrentStart To lngCurrentEnd
-        strRole = RegressionInferStructuralFieldRole( _
-            pageNo, _
-            currentDoc.Texts(lngCurrentIndex).X, _
-            currentDoc.Texts(lngCurrentIndex).Y)
-
-        If DoxisIsTargetRole(strRole) Then
-            lngBetterIndex = RegressionFindCounterpartText( _
-                betterDoc, _
-                pageNo, _
-                strRole, _
-                currentDoc.Texts(lngCurrentIndex).X, _
-                currentDoc.Texts(lngCurrentIndex).Y, _
-                currentDoc.Texts(lngCurrentIndex).TextValue)
-
-            If lngBetterIndex < 0 Then
-                Print #fileNo, _
-                    "CURRENT_ONLY_TARGET" & _
-                    "|page=" & CStr(pageNo) & _
-                    "|role=" & strRole & _
-                    "|text=" & SanitizeReportText(currentDoc.Texts(lngCurrentIndex).TextValue)
-
-                Call DoxisAddIssue( _
-                    dictIssueCounts, _
-                    dictIssuePriorities, _
-                    dictIssueSamples, _
-                    "DOXIS_CURRENT_ONLY_TARGET_" & strRole, _
-                    DoxisRolePriority(strRole), _
-                    "page=" & CStr(pageNo) & _
-                    "|text=" & SanitizeReportText(currentDoc.Texts(lngCurrentIndex).TextValue))
-            End If
-        End If
-    Next lngCurrentIndex
-End Sub
 
 Private Sub DoxisAddIssue( _
     ByVal dictIssueCounts As Object, _
@@ -11702,6 +13202,7 @@ Private Sub DoxisAddIssue( _
 
     If dictIssueCounts.Exists(family) Then
         dictIssueCounts(family) = CLng(dictIssueCounts(family)) + 1
+
         If priority > CLng(dictIssuePriorities(family)) Then
             dictIssuePriorities(family) = priority
         End If
@@ -11712,9 +13213,11 @@ Private Sub DoxisAddIssue( _
 
     lngCount = CLng(dictIssueCounts(family))
     lngSampleNo = lngCount
+
     If lngSampleNo > DOXIS_MAX_SAMPLES_PER_FAMILY Then Exit Sub
 
     strKey = family & "|" & CStr(lngSampleNo)
+
     If Not dictIssueSamples.Exists(strKey) Then
         dictIssueSamples.Add strKey, sampleText
     End If
@@ -11724,6 +13227,9 @@ Private Sub DoxisWriteSuperShortReport( _
     ByRef oldDoc As tPdfDocument, _
     ByRef betterDoc As tPdfDocument, _
     ByRef currentDoc As tPdfDocument, _
+    ByVal oldAnchors As Object, _
+    ByVal betterAnchors As Object, _
+    ByVal currentAnchors As Object, _
     ByVal dictIssueCounts As Object, _
     ByVal dictIssuePriorities As Object, _
     ByVal dictIssueSamples As Object, _
@@ -11736,8 +13242,10 @@ Private Sub DoxisWriteSuperShortReport( _
     Dim errNumber As Long
     Dim lngCritical As Long
     Dim lngFile As Long
+    Dim lngHigh As Long
     Dim lngIndex As Long
     Dim lngPriority As Long
+    Dim lngReview As Long
     Dim lngSample As Long
     Dim strFamily As String
     Dim strSampleKey As String
@@ -11745,26 +13253,35 @@ Private Sub DoxisWriteSuperShortReport( _
 
     On Error GoTo ErrorHandler
 
-    If dictIssueCounts.Count = 0 Then
-        strStatus = "NO_DOXIS_TOPOLOGY_REGRESSION_FOUND"
-    Else
-        strStatus = "ACTION_REQUIRED"
-    End If
-
     If dictIssueCounts.Count > 0 Then
         arrKeys = SortedDictionaryKeys(dictIssueCounts)
+
         For lngIndex = LBound(arrKeys) To UBound(arrKeys)
             strFamily = CStr(arrKeys(lngIndex))
-            If CLng(dictIssuePriorities(strFamily)) >= 3 Then
-                lngCritical = lngCritical + CLng(dictIssueCounts(strFamily))
-            End If
+
+            Select Case CLng(dictIssuePriorities(strFamily))
+                Case Is >= 3
+                    lngCritical = lngCritical + CLng(dictIssueCounts(strFamily))
+                Case 2
+                    lngHigh = lngHigh + CLng(dictIssueCounts(strFamily))
+                Case Else
+                    lngReview = lngReview + CLng(dictIssueCounts(strFamily))
+            End Select
         Next lngIndex
+    End If
+
+    If lngCritical > 0 Then
+        strStatus = "ACTION_REQUIRED_CRITICAL"
+    ElseIf lngHigh > 0 Then
+        strStatus = "ACTION_REQUIRED_HIGH"
+    Else
+        strStatus = "NO_TRANSACTION_ANCHORED_PARSER_REGRESSION_FOUND"
     End If
 
     lngFile = FreeFile
     Open outputPath For Output Access Write As #lngFile
 
-    Print #lngFile, "ORACLE_DOXIS_TOPOLOGY_SUPER_SHORT_V17"
+    Print #lngFile, "ORACLE_DOXIS_TRANSACTION_ANCHORED_SUPER_SHORT_V18_1"
     Print #lngFile, "OLD_ORACLE|" & oldDoc.PdfPath
     Print #lngFile, "BETTER_PARSING|" & betterDoc.PdfPath
     Print #lngFile, "CURRENT|" & currentDoc.PdfPath
@@ -11772,28 +13289,47 @@ Private Sub DoxisWriteSuperShortReport( _
         "RESULT|status=" & strStatus & _
         "|families=" & CStr(dictIssueCounts.Count) & _
         "|criticalEvents=" & CStr(lngCritical) & _
-        "|pagesOld=" & CStr(oldDoc.PageCount) & _
-        "|pagesBetter=" & CStr(betterDoc.PageCount) & _
-        "|pagesCurrent=" & CStr(currentDoc.PageCount)
+        "|highEvents=" & CStr(lngHigh) & _
+        "|reviewEvents=" & CStr(lngReview)
+    Print #lngFile, _
+        "ANCHORS|OLD=" & CStr(oldAnchors.Count) & _
+        "|BETTER=" & CStr(betterAnchors.Count) & _
+        "|CURRENT=" & CStr(currentAnchors.Count)
+    Print #lngFile, _
+        "MODEL|Transaction-number anchored. Page/Y slot movement is excluded. V18.1 additionally tests global-X projection with row ownership deliberately ignored and captures invisible re n paths."
+    Print #lngFile, _
+        "ISIN|Fixed x=639 predictedCutAfterChars plus global visible/invisible-X projection are compared BETTER vs CURRENT; only a worse CURRENT signal is blocking."
+    Print #lngFile, _
+        "IMPORTANT|BETTER_PARSING_IS_NOT_A_GOLD_STANDARD=TRUE|It is used only because client behaviour says it parsed ISIN/currency better."
+    Print #lngFile, _
+        "RE_N_CAPTURE|OLD_segments=" & CStr(oldDoc.NoPaintLineCount) & _
+        "|BETTER_segments=" & CStr(betterDoc.NoPaintLineCount) & _
+        "|CURRENT_segments=" & CStr(currentDoc.NoPaintLineCount) & _
+        "|x468=" & CStr(DoxisV181CountNoPaintReVerticalAtX(oldDoc, 468#)) & "/" & _
+                     CStr(DoxisV181CountNoPaintReVerticalAtX(betterDoc, 468#)) & "/" & _
+                     CStr(DoxisV181CountNoPaintReVerticalAtX(currentDoc, 468#)) & _
+        "|x639=" & CStr(DoxisV181CountNoPaintReVerticalAtX(oldDoc, 639#)) & "/" & _
+                     CStr(DoxisV181CountNoPaintReVerticalAtX(betterDoc, 639#)) & "/" & _
+                     CStr(DoxisV181CountNoPaintReVerticalAtX(currentDoc, 639#)) & _
+        "|order=OLD/BETTER/CURRENT"
 
-    Print #lngFile, _
-        "IMPORTANT|BETTER_PARSING_IS_NOT_A_GOLD_STANDARD=TRUE|It may be imperfect; it is used because client behaviour says it parsed ISIN/currency better."
-    Print #lngFile, _
-        "MODEL|Heuristic DOXIS-style topology test: text bounding-width estimate + nearest vertical separator + separator primitive/style + font/position + 300/600-DPI distance proxy."
-    Print #lngFile, _
-        "FOCUS|ISIN;currency/WHG;Schlusstag;Valutatag;x=468;x=639"
-
-    If dictIssueCounts.Count = 0 Then
+    If lngCritical = 0 And lngHigh = 0 Then
         Print #lngFile, "BREAKING_SIGNALS|NONE"
+
+        If lngReview > 0 Then
+            Print #lngFile, _
+                "REVIEW_ONLY|There are non-blocking value/anchor differences, but no V18 transaction-anchored parser regression signal."
+        End If
+
         Print #lngFile, _
-            "NEXT|The three PDFs are equivalent under the V17 topology checks. If client behaviour still differs, the next suspects are exact font rasterization, content-stream/operator ordering, or a DOXISLoader-specific extraction configuration."
+            "NEXT|No transaction-anchored geometry/font-serialization regression was found. If client behaviour still differs, inspect content-stream operator ordering and the DOXISLoader extraction profile/configuration."
         GoTo ExitSub
     End If
 
     Print #lngFile, ""
     Print #lngFile, "BREAKING_SIGNALS"
 
-    For lngPriority = 3 To 1 Step -1
+    For lngPriority = 3 To 2 Step -1
         arrKeys = SortedDictionaryKeys(dictIssueCounts)
 
         For lngIndex = LBound(arrKeys) To UBound(arrKeys)
@@ -11823,17 +13359,17 @@ Private Sub DoxisWriteSuperShortReport( _
     Print #lngFile, ""
     Print #lngFile, "INTERPRETATION_PRIORITY"
     Print #lngFile, _
-        "1|If CURRENT increases CUT_RISK for TOP_ISIN or WHG relative to BETTER, fix geometry/topology first."
+        "1|GLOBAL_VISIBLE_X_CUT_WORSE_TOP_ISIN/SCHLUSSTAG or ISIN_FIXED_X639_CUT_WORSE: supports the global-X separator hypothesis rather than row-overlap."
     Print #lngFile, _
-        "2|If coordinates match OLD but CURRENT is worse, do NOT move lines blindly; inspect separator primitive/source, font rendering and local operator serialization."
+        "2|GLOBAL_INVISIBLE_RE_N_CUT_WORSE_* or INVISIBLE_RE_N_ADDED_X468/X639: invisible rectangle edges are a concrete parser-facing difference worth fixing before fonts."
     Print #lngFile, _
-        "3|If only BETTER differs from both OLD and CURRENT, treat that difference as a possible parser-tolerance clue, not as the target layout."
+        "3|FONT_SERIALIZATION_CHANGED_TOP_ISIN/WHG with semantic font unchanged: suspect raw alias/BaseFont #xx encoding/widths/descriptor/operator interaction, not visual font choice."
     Print #lngFile, _
-        "4|The predictedCutAfterChars value is especially useful for ISIN. A result around 8 near x=639 would match the client's earlier 'first 8 characters' symptom."
+        "4|If CURRENT matches OLD geometry but BETTER has fewer global-X/re-n collisions, BETTER may reveal parser tolerance. If all three match, ask Helaba which DOXISLoader extraction profile/preprocessor is used."
 
     Print #lngFile, ""
     Print #lngFile, _
-        "NEXT|Send this SUPER_SHORT first. If it shows a TOP_ISIN/WHG/x468/x639 family, use the V17 DETAIL report for the exact line y-span, source operator, paint operator, width, font and estimated cut index."
+        "NEXT|Send this SUPER_SHORT first. If it names TOP_ISIN/WHG/x468/x639, use the V18.1 DETAIL report for the exact matched transaction, relative separator signature, decoded semantic font, raw font serialization and cut count."
 
 ExitSub:
     If lngFile <> 0 Then Close #lngFile
@@ -11872,7 +13408,7 @@ Private Function BuildDoxisTopologyDetailOutputPath( _
         FileBaseName(betterPdfPath) & _
         "_VS_" & _
         FileBaseName(currentPdfPath) & _
-        "_DOXIS_V17_DETAIL.txt"
+        "_DOXIS_V18_1_DETAIL.txt"
 End Function
 
 Private Function BuildDoxisTopologySuperShortOutputPath( _
@@ -11892,5 +13428,5 @@ Private Function BuildDoxisTopologySuperShortOutputPath( _
         FileBaseName(betterPdfPath) & _
         "_VS_" & _
         FileBaseName(currentPdfPath) & _
-        "_DOXIS_V17_SUPER_SHORT.txt"
+        "_DOXIS_V18_1_SUPER_SHORT.txt"
 End Function
