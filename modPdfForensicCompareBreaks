@@ -1,7 +1,7 @@
 Option Explicit
 
 Private Const CLASS_NAME As String = "modPdfForensicCompareBreaks"
-' V17: optical/breaks engine retained; V17 DOXIS three-way topology layer is in modPdfForensicCompare.
+' V18.1: optical/breaks engine retained; global-X and invisible re n diagnostics are in modPdfForensicCompare.
 Private Const TARGET_X_FIRST As Double = 468#
 Private Const TARGET_X_SECOND As Double = 639#
 Private Const COORD_TOLERANCE As Double = 0.1
@@ -7575,3 +7575,4 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
+
