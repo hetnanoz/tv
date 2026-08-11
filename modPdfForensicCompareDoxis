@@ -3,7 +3,7 @@ Option Explicit
 '===============================================================================
 ' modPdfForensicCompareDoxis
 ' Split companion for modPdfForensicCompare.
-' Contains V16/V18.2 three-way parser-regression and DOXIS topology logic.
+' Contains V16/V19 three-way parser-regression and DOXIS topology logic.
 ' OLD Oracle is the gold standard; BETTER is behavioural evidence only.
 '===============================================================================
 
@@ -2878,15 +2878,15 @@ Public Sub RunPdfDoxisTopologyBrowse()
     On Error GoTo ErrorHandler
 
     strOldPdfPath = SelectPdfFile( _
-        "V18.2 DOXIS - Select OLD Oracle reference PDF")
+        "V19 DOXIS - Select OLD Oracle reference PDF")
     If Len(strOldPdfPath) = 0 Then GoTo ExitSub
 
     strBetterPdfPath = SelectPdfFile( _
-        "V18.2 DOXIS - Select BETTER-PARSING intermediate PDF (not assumed perfect)")
+        "V19 DOXIS - Select BETTER-PARSING intermediate PDF (not assumed perfect)")
     If Len(strBetterPdfPath) = 0 Then GoTo ExitSub
 
     strCurrentPdfPath = SelectPdfFile( _
-        "V18.2 DOXIS - Select CURRENT PDF (client parses this version worse)")
+        "V19 DOXIS - Select CURRENT PDF (client parses this version worse)")
     If Len(strCurrentPdfPath) = 0 Then GoTo ExitSub
 
     strDetailPath = BuildDoxisTopologyDetailOutputPath( _
@@ -2905,17 +2905,17 @@ Public Sub RunPdfDoxisTopologyBrowse()
         strSuperShortPath) Then
 
         Err.Raise ERR_BASE + 40, METHOD_NAME, _
-            "The V18.2 DOXIS transaction-anchored forensic could not be completed."
+            "The V19 DOXIS transaction-anchored forensic could not be completed."
     End If
 
     MsgBox _
-        "V18.2 DOXIS transaction-anchored forensic completed." & vbCrLf & vbCrLf & _
+        "V19 DOXIS transaction-anchored forensic completed." & vbCrLf & vbCrLf & _
         "SEND THIS FILE FIRST:" & vbCrLf & strSuperShortPath & vbCrLf & vbCrLf & _
         "Detailed transaction forensic:" & vbCrLf & strDetailPath & vbCrLf & vbCrLf & _
         "Input order: OLD Oracle -> BETTER-PARSING intermediate -> CURRENT." & vbCrLf & _
         "BETTER-PARSING is evidence only and is NOT assumed to be correct.", _
         vbInformation, _
-        "Oracle / DOXIS forensic V18.2"
+        "Oracle / DOXIS forensic V19"
 
 ExitSub:
     Exit Sub
@@ -2937,7 +2937,7 @@ ErrorHandler:
         strSuperShortPath
 
     errorManager.save
-    errorManager.display "The V18.2 DOXIS forensic failed."
+    errorManager.display "The V19 DOXIS forensic failed."
     Resume ExitSub
 End Sub
 
@@ -3042,10 +3042,15 @@ Private Sub WriteDoxisTopologyReports( _
     Set dictIssuePriorities = CreateObject("Scripting.Dictionary")
     Set dictIssueSamples = CreateObject("Scripting.Dictionary")
 
+    Call PfcTextStreamV19Initialize( _
+        oldDoc, _
+        betterDoc, _
+        currentDoc)
+
     lngDetailFile = FreeFile
     Open detailOutputPath For Output Access Write As #lngDetailFile
 
-    Print #lngDetailFile, "ORACLE_DOXIS_TRANSACTION_ANCHORED_FORENSIC_V18_2"
+    Print #lngDetailFile, "ORACLE_DOXIS_TRANSACTION_ANCHORED_FORENSIC_V19_TEXT_STREAM"
     Print #lngDetailFile, "OLD_ORACLE|" & oldDoc.PdfPath
     Print #lngDetailFile, "BETTER_PARSING|" & betterDoc.PdfPath
     Print #lngDetailFile, "CURRENT|" & currentDoc.PdfPath
@@ -3054,7 +3059,7 @@ Private Sub WriteDoxisTopologyReports( _
     Print #lngDetailFile, _
         "IMPORTANT|BETTER_PARSING_IS_NOT_ASSUMED_CORRECT=TRUE|It is behavioural evidence because the client said it extracted ISIN/currency better."
     Print #lngDetailFile, _
-        "V18_2_CHANGE|Target pairing is transaction-number anchored. Blocking comparisons use OLD Oracle as gold standard; BETTER is behavioural evidence. Separator top intrusion is checked at 0.01pt."
+        "V19_CHANGE|Adds raw TEXT_STREAM_TOPOLOGY checks for Tj/TJ, Tm/Td/TD, BT grouping, Tc/Tw/Tz/Tr/Ts/TL, clipping, CTM and local operator windows. OLD Oracle remains the blocking gold standard."
     Print #lngDetailFile, _
         "FONT_MODEL|Semantic BaseFont names decode PDF #xx escapes. V18.2 also compares raw font core without alias, so /F1 versus /F2 alone cannot create a false font break."
     Print #lngDetailFile, _
@@ -3066,10 +3071,18 @@ Private Sub WriteDoxisTopologyReports( _
     Print #lngDetailFile, _
         "INVISIBLE_RE_N|re n paths are captured separately, but blocking comparisons are CURRENT versus OLD. BETTER having zero such paths no longer fires automatically."
     Print #lngDetailFile, _
+        "TEXT_STREAM_MODEL|For matched ISIN/date/WHG targets, V19 compares Tj/TJ, Tm/Td/TD/T*, BT grouping, Tc/Tw/Tz/Tr/Ts/TL, clip state, q depth, CTM and local operator order."
+    Print #lngDetailFile, _
         "TARGETS|TOP_ISIN;TOP_SCHLUSSTAG;TOP_VALUTATAG;TOP_FONDSBEZEICHNUNG;TOP_WERTPAPIERBEZEICHNUNG;TOP_NOMINALE_STUECKE;TOP_STUECKZINSEN;TOP_WHG_NOMINALE;BOTTOM_ABWICKLUNGSPROVISION;BOTTOM_WHG_MAKLER;BOTTOM_WHG_STEUERN;BOTTOM_WHG_ABWICKLUNG;BOTTOM_WHG_SPESEN;BOTTOM_WHG_ABRECH"
     Print #lngDetailFile, ""
 
     Call DoxisV18WriteDocumentHeader( _
+        lngDetailFile, _
+        oldDoc, _
+        betterDoc, _
+        currentDoc)
+
+    Call PfcTextStreamV19WriteDocumentDiagnostics( _
         lngDetailFile, _
         oldDoc, _
         betterDoc, _
@@ -3108,6 +3121,7 @@ Private Sub WriteDoxisTopologyReports( _
 
 ExitSub:
     If lngDetailFile <> 0 Then Close #lngDetailFile
+    Call PfcTextStreamV19Reset
     Set oldAnchors = Nothing
     Set betterAnchors = Nothing
     Set currentAnchors = Nothing
@@ -3799,6 +3813,20 @@ Private Sub DoxisV18CompareTargetText( _
     If lngOldIndex >= 0 Then
         strOldValue = oldDoc.Texts(lngOldIndex).TextValue
     End If
+
+    Call PfcTextStreamV19CompareTarget( _
+        fileNo, _
+        anchorId, _
+        role, _
+        oldDoc, _
+        betterDoc, _
+        currentDoc, _
+        lngOldIndex, _
+        lngBetterIndex, _
+        lngCurrentIndex, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
 
     dblBetterRelY = DoxisV18RelativeY( _
         betterDoc, _
@@ -6026,7 +6054,7 @@ Private Sub DoxisWriteSuperShortReport( _
     lngFile = FreeFile
     Open outputPath For Output Access Write As #lngFile
 
-    Print #lngFile, "ORACLE_DOXIS_TRANSACTION_ANCHORED_SUPER_SHORT_V18_2"
+    Print #lngFile, "ORACLE_DOXIS_TRANSACTION_ANCHORED_SUPER_SHORT_V19_TEXT_STREAM"
     Print #lngFile, "OLD_ORACLE|" & oldDoc.PdfPath
     Print #lngFile, "BETTER_PARSING|" & betterDoc.PdfPath
     Print #lngFile, "CURRENT|" & currentDoc.PdfPath
@@ -6041,11 +6069,13 @@ Private Sub DoxisWriteSuperShortReport( _
         "|BETTER=" & CStr(betterAnchors.Count) & _
         "|CURRENT=" & CStr(currentAnchors.Count)
     Print #lngFile, _
-        "MODEL|Transaction-number anchored. OLD Oracle is the gold standard. BETTER is behavioural evidence only. V18.2 also tests 0.01pt row overlap, primitive serialization, global-X projection and invisible re n paths."
+        "MODEL|Transaction-number anchored. OLD Oracle is the gold standard. BETTER is behavioural evidence only. V19 adds raw text-stream topology: show/position operators, BT grouping, text state, clip state, CTM and local operator windows."
     Print #lngFile, _
         "ISIN|Fixed x=639 and global visible/invisible-X cuts are blocking only when CURRENT is worse than OLD Oracle; BETTER is shown as a behavioural control."
     Print #lngFile, _
         "IMPORTANT|BETTER_PARSING_IS_NOT_A_GOLD_STANDARD=TRUE|A BETTER-only difference is not a blocker unless OLD supports the same direction."
+    Print #lngFile, _
+        "TEXT_STREAM|Blocking target checks now include show operator, positioning operator, BT grouping, text state, clip state and CTM. Local operator windows are retained as parser-tolerance evidence."
     Print #lngFile, _
         "PROVENANCE|PRODUCER_OLD=" & SanitizeReportText(oldDoc.ProducerValue) & _
         "|PRODUCER_BETTER=" & SanitizeReportText(betterDoc.ProducerValue) & _
@@ -6170,7 +6200,7 @@ Private Function BuildDoxisTopologyDetailOutputPath( _
         FileBaseName(betterPdfPath) & _
         "_VS_" & _
         FileBaseName(currentPdfPath) & _
-        "_DOXIS_V18_2_DETAIL.txt"
+        "_DOXIS_V19_TEXT_STREAM_DETAIL.txt"
 End Function
 
 Private Function BuildDoxisTopologySuperShortOutputPath( _
@@ -6190,5 +6220,5 @@ Private Function BuildDoxisTopologySuperShortOutputPath( _
         FileBaseName(betterPdfPath) & _
         "_VS_" & _
         FileBaseName(currentPdfPath) & _
-        "_DOXIS_V18_2_SUPER_SHORT.txt"
+        "_DOXIS_V19_TEXT_STREAM_SUPER_SHORT.txt"
 End Function
