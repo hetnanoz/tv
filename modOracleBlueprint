@@ -1291,7 +1291,12 @@ Private Function BlueprintPageContent( _
 
     For lngIndex = LBound(varRefs) To UBound(varRefs)
         strPart = BlueprintStreamText(CLng(varRefs(lngIndex)), lngPageOrdinal)
-        strResult = strResult & strPart & vbLf
+
+        ' Appending a separator for an empty part would report decodedChars=1
+        ' for a page that actually decoded nothing.
+        If Len(strPart) > 0 Then
+            strResult = strResult & strPart & vbLf
+        End If
     Next lngIndex
 
     Call BlueprintLogDiag("PAGE|" & CStr(lngPageOrdinal) & _
@@ -1629,28 +1634,26 @@ End Function
 Private Function BlueprintAscii85Decode(ByRef arrSource() As Byte) As Byte()
 
     Dim arrOut() As Byte
+    Dim dblTuple As Double
     Dim lngByte As Long
     Dim lngGroup As Long
     Dim lngIndex As Long
     Dim lngOutLen As Long
-    Dim lngShift As Long
-    Dim lngTuple As Double
-    Dim lngUpper As Long
+    Dim lngPad As Long
 
-    lngUpper = UBound(arrSource)
-    ReDim arrOut(0 To (lngUpper + 1) * 4 / 5 + 8)
+    ReDim arrOut(0 To 65535)
     lngIndex = 0
 
-    If lngUpper >= 1 Then
+    If UBound(arrSource) >= 1 Then
         If arrSource(0) = 60 And arrSource(1) = 126 Then
             lngIndex = 2
         End If
     End If
 
-    lngTuple = 0
+    dblTuple = 0#
     lngGroup = 0
 
-    Do While lngIndex <= lngUpper
+    Do While lngIndex <= UBound(arrSource)
         lngByte = arrSource(lngIndex)
 
         If lngByte = 126 Then
@@ -1658,22 +1661,19 @@ Private Function BlueprintAscii85Decode(ByRef arrSource() As Byte) As Byte()
         End If
 
         If lngByte = 122 And lngGroup = 0 Then
-            For lngShift = 1 To 4
-                arrOut(lngOutLen) = 0
-                lngOutLen = lngOutLen + 1
-            Next lngShift
+            ' The z shorthand stands for four zero bytes.
+            Call BlueprintAppendByte(arrOut, lngOutLen, 0)
+            Call BlueprintAppendByte(arrOut, lngOutLen, 0)
+            Call BlueprintAppendByte(arrOut, lngOutLen, 0)
+            Call BlueprintAppendByte(arrOut, lngOutLen, 0)
 
         ElseIf lngByte >= 33 And lngByte <= 117 Then
-            lngTuple = lngTuple * 85 + (lngByte - 33)
+            dblTuple = dblTuple * 85# + CDbl(lngByte - 33)
             lngGroup = lngGroup + 1
 
             If lngGroup = 5 Then
-                For lngShift = 3 To 0 Step -1
-                    arrOut(lngOutLen) = Int(lngTuple / (256 ^ lngShift)) And 255
-                    lngOutLen = lngOutLen + 1
-                Next lngShift
-
-                lngTuple = 0
+                Call BlueprintEmitTupleBytes(arrOut, lngOutLen, dblTuple, 4)
+                dblTuple = 0#
                 lngGroup = 0
             End If
         End If
@@ -1681,16 +1681,14 @@ Private Function BlueprintAscii85Decode(ByRef arrSource() As Byte) As Byte()
         lngIndex = lngIndex + 1
     Loop
 
-    ' Flush a partial final group using the standard padding rule.
+    ' A partial final group is padded with the highest digit and yields one
+    ' byte less than the number of characters it holds.
     If lngGroup > 0 Then
-        For lngIndex = lngGroup To 4
-            lngTuple = lngTuple * 85 + 84
-        Next lngIndex
+        For lngPad = lngGroup To 4
+            dblTuple = dblTuple * 85# + 84#
+        Next lngPad
 
-        For lngShift = 3 To 4 - lngGroup + 1 Step -1
-            arrOut(lngOutLen) = Int(lngTuple / (256 ^ lngShift)) And 255
-            lngOutLen = lngOutLen + 1
-        Next lngShift
+        Call BlueprintEmitTupleBytes(arrOut, lngOutLen, dblTuple, lngGroup - 1)
     End If
 
     If lngOutLen = 0 Then
@@ -1702,6 +1700,65 @@ Private Function BlueprintAscii85Decode(ByRef arrSource() As Byte) As Byte()
     BlueprintAscii85Decode = arrOut
 
 End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    arrOut() As Byte, lngOutLen As Long, dblTuple As Double, lngCount As Long
+' Returns:       ---
+' Description:   Writes the leading bytes of one ASCII85 tuple using division
+'                only. A bitwise And would coerce the tuple to Long first, and
+'                every group whose value reaches 2^31 then raises an overflow.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintEmitTupleBytes( _
+    ByRef arrOut() As Byte, _
+    ByRef lngOutLen As Long, _
+    ByVal dblTuple As Double, _
+    ByVal lngCount As Long)
+
+    Dim dblRemainder As Double
+    Dim dblScale As Double
+    Dim lngIndex As Long
+    Dim lngPart As Long
+
+    dblRemainder = dblTuple
+
+    For lngIndex = 3 To 0 Step -1
+        dblScale = 256# ^ lngIndex
+        lngPart = Int(dblRemainder / dblScale)
+        dblRemainder = dblRemainder - CDbl(lngPart) * dblScale
+
+        If (3 - lngIndex) < lngCount Then
+            ' An oversized group is tolerated rather than rejected.
+            Call BlueprintAppendByte( _
+                arrOut, _
+                lngOutLen, _
+                lngPart - Int(lngPart / 256) * 256)
+        End If
+    Next lngIndex
+
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    arrOut() As Byte, lngOutLen As Long, lngValue As Long
+' Returns:       ---
+' Description:   Appends one byte, growing the buffer when it runs out of room.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintAppendByte( _
+    ByRef arrOut() As Byte, _
+    ByRef lngOutLen As Long, _
+    ByVal lngValue As Long)
+
+    If lngOutLen > UBound(arrOut) Then
+        ReDim Preserve arrOut(0 To (UBound(arrOut) + 1) * 2 - 1)
+    End If
+
+    arrOut(lngOutLen) = CByte(lngValue)
+    lngOutLen = lngOutLen + 1
+
+End Sub
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
