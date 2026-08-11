@@ -1,0 +1,1317 @@
+Option Explicit
+
+'===============================================================================
+' modPdfForensicCompareTextStream_V19
+'
+' Parser-facing text-stream topology companion for the DOXIS forensic.
+'
+' PURPOSE:
+'   For each transaction-anchored target text, compare the raw PDF text-object
+'   construction across OLD Oracle, BETTER-PARSING and CURRENT:
+'       - Tj / TJ show operator
+'       - Tm / Td / TD / T* positioning style
+'       - BT/ET grouping (single-run vs multi-run text object)
+'       - text state: Tc, Tw, Tz, Tr, Ts, TL
+'       - q/Q depth and current CTM
+'       - active clipping state
+'       - local operator window around the text-show operator
+'
+' IMPORTANT:
+'   OLD Oracle is the blocking gold standard.
+'   BETTER-PARSING is behavioural evidence only.
+'===============================================================================
+
+Private Const CLASS_NAME As String = "modPdfForensicCompareTextStream_V19"
+Private Const MAX_SAMPLES_PER_FAMILY As Long = 3
+Private Const LOCAL_OPERATOR_RADIUS As Long = 4
+
+Private m_oldCache As Object
+Private m_betterCache As Object
+Private m_currentCache As Object
+
+'-------------------------------------------------------------------------------
+' Initializes per-document text-event caches. Call once before transaction loop.
+'-------------------------------------------------------------------------------
+Public Sub PfcTextStreamV19Initialize( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef betterDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument)
+
+    Const METHOD_NAME As String = "PfcTextStreamV19Initialize"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    Set m_oldCache = PfcTsBuildDocumentCache(oldDoc)
+    Set m_betterCache = PfcTsBuildDocumentCache(betterDoc)
+    Set m_currentCache = PfcTsBuildDocumentCache(currentDoc)
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Clears module-level caches.
+'-------------------------------------------------------------------------------
+Public Sub PfcTextStreamV19Reset()
+    Set m_oldCache = Nothing
+    Set m_betterCache = Nothing
+    Set m_currentCache = Nothing
+End Sub
+
+'-------------------------------------------------------------------------------
+' Writes page-level diagnostics. These are diagnostic only; transaction-level
+' comparisons below decide blocking issues.
+'-------------------------------------------------------------------------------
+Public Sub PfcTextStreamV19WriteDocumentDiagnostics( _
+    ByVal fileNo As Long, _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef betterDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument)
+
+    Dim lngMaxPages As Long
+    Dim lngPage As Long
+
+    lngMaxPages = oldDoc.PageCount
+    If betterDoc.PageCount > lngMaxPages Then lngMaxPages = betterDoc.PageCount
+    If currentDoc.PageCount > lngMaxPages Then lngMaxPages = currentDoc.PageCount
+
+    Print #fileNo, "================================================================"
+    Print #fileNo, "TEXT_STREAM_TOPOLOGY_V19"
+    Print #fileNo, "================================================================"
+    Print #fileNo, _
+        "MODEL|OLD Oracle is gold. BETTER is behavioural evidence only. " & _
+        "Target checks compare raw text-show/position/grouping/state/clip/CTM topology."
+    Print #fileNo, _
+        "FIELDS|show=Tj/TJ|position=Tm/Td/TD/T*|group=BT/ET run topology|" & _
+        "state=Tc,Tw,Tz,Tr,Ts,TL|clip=W/W* effective state|ctm=graphics transform|" & _
+        "localOps=operator window around text show"
+    Print #fileNo, ""
+
+    For lngPage = 1 To lngMaxPages
+        Print #fileNo, _
+            "TEXT_STREAM_PAGE" & _
+            "|page=" & CStr(lngPage) & _
+            "|OLD=" & PfcTsPageDiagnostic(oldDoc, lngPage) & _
+            "|BETTER=" & PfcTsPageDiagnostic(betterDoc, lngPage) & _
+            "|CURRENT=" & PfcTsPageDiagnostic(currentDoc, lngPage)
+    Next lngPage
+
+    Print #fileNo, ""
+End Sub
+
+'-------------------------------------------------------------------------------
+' Compares one already transaction-anchored target text.
+' Existing V18.2 logic resolves the text indices; this routine inspects how each
+' matched text is serialized inside the decoded content stream.
+'-------------------------------------------------------------------------------
+Public Sub PfcTextStreamV19CompareTarget( _
+    ByVal fileNo As Long, _
+    ByVal anchorId As String, _
+    ByVal role As String, _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef betterDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument, _
+    ByVal oldTextIndex As Long, _
+    ByVal betterTextIndex As Long, _
+    ByVal currentTextIndex As Long, _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object)
+
+    Const METHOD_NAME As String = "PfcTextStreamV19CompareTarget"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strBetter As String
+    Dim strCurrent As String
+    Dim strOld As String
+
+    On Error GoTo ErrorHandler
+
+    If betterTextIndex < 0 Or currentTextIndex < 0 Then GoTo ExitSub
+
+    strBetter = PfcTsSnapshotForIndex( _
+        m_betterCache, _
+        betterDoc, _
+        betterTextIndex)
+
+    strCurrent = PfcTsSnapshotForIndex( _
+        m_currentCache, _
+        currentDoc, _
+        currentTextIndex)
+
+    If oldTextIndex >= 0 Then
+        strOld = PfcTsSnapshotForIndex( _
+            m_oldCache, _
+            oldDoc, _
+            oldTextIndex)
+    Else
+        strOld = "MISSING"
+    End If
+
+    Print #fileNo, _
+        "TEXT_STREAM_EVENT" & _
+        "|tx=" & anchorId & _
+        "|role=" & role & _
+        "|OLD=" & PfcTsLimit(strOld, 1700) & _
+        "|BETTER=" & PfcTsLimit(strBetter, 1700) & _
+        "|CURRENT=" & PfcTsLimit(strCurrent, 1700)
+
+    If oldTextIndex < 0 Then GoTo ExitSub
+    If strOld = "MISSING" Or strCurrent = "MISSING" Then GoTo ExitSub
+
+    Call PfcTsComparePart( _
+        anchorId, _
+        role, _
+        "SHOW_OPERATOR", _
+        "show", _
+        strOld, _
+        strBetter, _
+        strCurrent, _
+        PfcTsRolePriority(role), _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Call PfcTsComparePart( _
+        anchorId, _
+        role, _
+        "POSITIONING_OPERATOR", _
+        "pos", _
+        strOld, _
+        strBetter, _
+        strCurrent, _
+        PfcTsRolePriority(role), _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Call PfcTsComparePart( _
+        anchorId, _
+        role, _
+        "POSITIONING_OPERANDS", _
+        "posArgs", _
+        strOld, _
+        strBetter, _
+        strCurrent, _
+        1, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Call PfcTsComparePart( _
+        anchorId, _
+        role, _
+        "TEXT_STATE", _
+        "state", _
+        strOld, _
+        strBetter, _
+        strCurrent, _
+        PfcTsRolePriority(role), _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Call PfcTsComparePart( _
+        anchorId, _
+        role, _
+        "BT_GROUPING", _
+        "group", _
+        strOld, _
+        strBetter, _
+        strCurrent, _
+        PfcTsGroupingPriority(role), _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Call PfcTsComparePart( _
+        anchorId, _
+        role, _
+        "BT_RUN_ORDINAL", _
+        "btRun", _
+        strOld, _
+        strBetter, _
+        strCurrent, _
+        1, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Call PfcTsComparePart( _
+        anchorId, _
+        role, _
+        "Q_DEPTH", _
+        "qDepth", _
+        strOld, _
+        strBetter, _
+        strCurrent, _
+        1, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Call PfcTsComparePart( _
+        anchorId, _
+        role, _
+        "CLIP_STATE", _
+        "clip", _
+        strOld, _
+        strBetter, _
+        strCurrent, _
+        PfcTsRolePriority(role), _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Call PfcTsComparePart( _
+        anchorId, _
+        role, _
+        "CTM_STATE", _
+        "ctm", _
+        strOld, _
+        strBetter, _
+        strCurrent, _
+        PfcTsGroupingPriority(role), _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    ' Local operator window is useful as a parser-tolerance clue, but it is less
+    ' direct than show/position/state/clip. Keep it HIGH only for ISIN/WHG.
+    Call PfcTsComparePart( _
+        anchorId, _
+        role, _
+        "LOCAL_OPERATOR_WINDOW", _
+        "localOps", _
+        strOld, _
+        strBetter, _
+        strCurrent, _
+        PfcTsLocalOpsPriority(role), _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "anchorId;role;oldTextIndex;betterTextIndex;currentTextIndex", _
+        anchorId, _
+        role, _
+        oldTextIndex, _
+        betterTextIndex, _
+        currentTextIndex
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'===============================================================================
+' CACHE BUILDING
+'===============================================================================
+
+Private Function PfcTsBuildDocumentCache( _
+    ByRef pdfDoc As tPdfDocument) As Object
+
+    Const METHOD_NAME As String = "PfcTsBuildDocumentCache"
+    Dim dictCache As Object
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngPage As Long
+
+    On Error GoTo ErrorHandler
+
+    Set dictCache = CreateObject("Scripting.Dictionary")
+
+    For lngPage = 1 To pdfDoc.PageCount
+        Call PfcTsBuildPageCache( _
+            pdfDoc.Pages(lngPage).ContentText, _
+            lngPage, _
+            dictCache)
+    Next lngPage
+
+    Set PfcTsBuildDocumentCache = dictCache
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pdfPath", _
+        pdfDoc.PdfPath
+
+    errorManager.save
+    Set PfcTsBuildDocumentCache = Nothing
+    Resume ExitFunction
+End Function
+
+Private Sub PfcTsBuildPageCache( _
+    ByVal content As String, _
+    ByVal pageNo As Long, _
+    ByVal dictCache As Object)
+
+    Const METHOD_NAME As String = "PfcTsBuildPageCache"
+    Dim arrBtClip() As Boolean
+    Dim arrBtCtmA() As Double
+    Dim arrBtCtmB() As Double
+    Dim arrBtCtmC() As Double
+    Dim arrBtCtmD() As Double
+    Dim arrBtCtmE() As Double
+    Dim arrBtCtmF() As Double
+    Dim arrBtFontName() As String
+    Dim arrBtFontSize() As Double
+    Dim arrBtLeading() As Double
+    Dim arrBtTc() As Double
+    Dim arrBtTr() As Double
+    Dim arrBtTs() As Double
+    Dim arrBtTw() As Double
+    Dim arrBtTz() As Double
+    Dim arrBtClipOp() As String
+    Dim arrEventBt() As Long
+    Dim arrEventOp() As Long
+    Dim arrEventRaw() As String
+    Dim arrOpNames() As String
+    Dim arrTokens() As String
+    Dim blnClipActive As Boolean
+    Dim blnInArray As Boolean
+    Dim blnInText As Boolean
+    Dim blnPendingClip As Boolean
+    Dim dblCtmA As Double
+    Dim dblCtmB As Double
+    Dim dblCtmC As Double
+    Dim dblCtmD As Double
+    Dim dblCtmE As Double
+    Dim dblCtmF As Double
+    Dim dblFontSize As Double
+    Dim dblLeading As Double
+    Dim dblTc As Double
+    Dim dblTr As Double
+    Dim dblTs As Double
+    Dim dblTw As Double
+    Dim dblTz As Double
+    Dim dictBtCounts As Object
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim h0 As String
+    Dim h1 As String
+    Dim h2 As String
+    Dim h3 As String
+    Dim h4 As String
+    Dim h5 As String
+    Dim lngBtId As Long
+    Dim lngBtRun As Long
+    Dim lngEventCount As Long
+    Dim lngIndex As Long
+    Dim lngOpCount As Long
+    Dim lngQDepth As Long
+    Dim lngTokenCount As Long
+    Dim strArrayText As String
+    Dim strClipOp As String
+    Dim strFontName As String
+    Dim strLastPositionArgs As String
+    Dim strLastPositionOp As String
+    Dim strLastText As String
+    Dim strPendingClipOp As String
+    Dim strShowText As String
+    Dim strToken As String
+
+    On Error GoTo ErrorHandler
+
+    Set dictBtCounts = CreateObject("Scripting.Dictionary")
+
+    lngTokenCount = Tokenize(content, arrTokens)
+
+    ReDim arrEventBt(0 To lngTokenCount + 1)
+    ReDim arrEventOp(0 To lngTokenCount + 1)
+    ReDim arrEventRaw(0 To lngTokenCount + 1)
+    ReDim arrOpNames(0 To lngTokenCount + 1)
+
+    ReDim arrBtClip(0 To 127)
+    ReDim arrBtClipOp(0 To 127)
+    ReDim arrBtCtmA(0 To 127)
+    ReDim arrBtCtmB(0 To 127)
+    ReDim arrBtCtmC(0 To 127)
+    ReDim arrBtCtmD(0 To 127)
+    ReDim arrBtCtmE(0 To 127)
+    ReDim arrBtCtmF(0 To 127)
+    ReDim arrBtFontName(0 To 127)
+    ReDim arrBtFontSize(0 To 127)
+    ReDim arrBtLeading(0 To 127)
+    ReDim arrBtTc(0 To 127)
+    ReDim arrBtTr(0 To 127)
+    ReDim arrBtTs(0 To 127)
+    ReDim arrBtTw(0 To 127)
+    ReDim arrBtTz(0 To 127)
+
+    dblCtmA = 1#
+    dblCtmD = 1#
+    dblTz = 100#
+    strClipOp = "(none)"
+    strPendingClipOp = "(none)"
+    strLastPositionOp = "(none)"
+    strLastPositionArgs = "(none)"
+
+    For lngIndex = 0 To lngTokenCount - 1
+        strToken = arrTokens(lngIndex)
+
+        If PfcTsIsOperator(strToken) Then
+            lngOpCount = lngOpCount + 1
+            arrOpNames(lngOpCount) = strToken
+        End If
+
+        Select Case strToken
+            Case "q"
+                If lngQDepth <= UBound(arrBtClip) Then
+                    arrBtClip(lngQDepth) = blnClipActive
+                    arrBtClipOp(lngQDepth) = strClipOp
+                    arrBtCtmA(lngQDepth) = dblCtmA
+                    arrBtCtmB(lngQDepth) = dblCtmB
+                    arrBtCtmC(lngQDepth) = dblCtmC
+                    arrBtCtmD(lngQDepth) = dblCtmD
+                    arrBtCtmE(lngQDepth) = dblCtmE
+                    arrBtCtmF(lngQDepth) = dblCtmF
+                    arrBtFontName(lngQDepth) = strFontName
+                    arrBtFontSize(lngQDepth) = dblFontSize
+                    arrBtLeading(lngQDepth) = dblLeading
+                    arrBtTc(lngQDepth) = dblTc
+                    arrBtTr(lngQDepth) = dblTr
+                    arrBtTs(lngQDepth) = dblTs
+                    arrBtTw(lngQDepth) = dblTw
+                    arrBtTz(lngQDepth) = dblTz
+                End If
+                lngQDepth = lngQDepth + 1
+
+            Case "Q"
+                If lngQDepth > 0 Then
+                    lngQDepth = lngQDepth - 1
+                    If lngQDepth <= UBound(arrBtClip) Then
+                        blnClipActive = arrBtClip(lngQDepth)
+                        strClipOp = arrBtClipOp(lngQDepth)
+                        dblCtmA = arrBtCtmA(lngQDepth)
+                        dblCtmB = arrBtCtmB(lngQDepth)
+                        dblCtmC = arrBtCtmC(lngQDepth)
+                        dblCtmD = arrBtCtmD(lngQDepth)
+                        dblCtmE = arrBtCtmE(lngQDepth)
+                        dblCtmF = arrBtCtmF(lngQDepth)
+                        strFontName = arrBtFontName(lngQDepth)
+                        dblFontSize = arrBtFontSize(lngQDepth)
+                        dblLeading = arrBtLeading(lngQDepth)
+                        dblTc = arrBtTc(lngQDepth)
+                        dblTr = arrBtTr(lngQDepth)
+                        dblTs = arrBtTs(lngQDepth)
+                        dblTw = arrBtTw(lngQDepth)
+                        dblTz = arrBtTz(lngQDepth)
+                    End If
+                End If
+
+            Case "cm"
+                Call PfcTsConcatMatrix( _
+                    Val(h5), _
+                    Val(h4), _
+                    Val(h3), _
+                    Val(h2), _
+                    Val(h1), _
+                    Val(h0), _
+                    dblCtmA, _
+                    dblCtmB, _
+                    dblCtmC, _
+                    dblCtmD, _
+                    dblCtmE, _
+                    dblCtmF)
+
+            Case "W", "W*"
+                blnPendingClip = True
+                strPendingClipOp = strToken
+
+            Case "n", "S", "s", "f", "F", "f*", "B", "B*", "b", "b*"
+                If blnPendingClip Then
+                    blnClipActive = True
+                    strClipOp = strPendingClipOp
+                    blnPendingClip = False
+                    strPendingClipOp = "(none)"
+                End If
+
+            Case "BT"
+                blnInText = True
+                lngBtId = lngBtId + 1
+                lngBtRun = 0
+                strLastPositionOp = "BT"
+                strLastPositionArgs = "(reset)"
+
+            Case "ET"
+                blnInText = False
+
+            Case "Tf"
+                strFontName = h1
+                dblFontSize = Val(h0)
+
+            Case "Tc"
+                dblTc = Val(h0)
+
+            Case "Tw"
+                dblTw = Val(h0)
+
+            Case "Tz"
+                dblTz = Val(h0)
+
+            Case "Tr"
+                dblTr = Val(h0)
+
+            Case "Ts"
+                dblTs = Val(h0)
+
+            Case "TL"
+                dblLeading = Val(h0)
+
+            Case "Tm"
+                strLastPositionOp = "Tm"
+                strLastPositionArgs = _
+                    PfcTsNum(h5) & "," & _
+                    PfcTsNum(h4) & "," & _
+                    PfcTsNum(h3) & "," & _
+                    PfcTsNum(h2) & "," & _
+                    PfcTsNum(h1) & "," & _
+                    PfcTsNum(h0)
+
+            Case "Td"
+                strLastPositionOp = "Td"
+                strLastPositionArgs = PfcTsNum(h1) & "," & PfcTsNum(h0)
+
+            Case "TD"
+                strLastPositionOp = "TD"
+                strLastPositionArgs = PfcTsNum(h1) & "," & PfcTsNum(h0)
+                dblLeading = -Val(h0)
+
+            Case "T*"
+                strLastPositionOp = "T*"
+                strLastPositionArgs = "leading=" & PfcTsNum(CStr(dblLeading))
+
+            Case "Tj", "'"
+                strShowText = strLastText
+                If Len(Trim$(strShowText)) > 0 Then
+                    lngEventCount = lngEventCount + 1
+                    lngBtRun = lngBtRun + 1
+
+                    arrEventBt(lngEventCount) = lngBtId
+                    arrEventOp(lngEventCount) = lngOpCount
+                    arrEventRaw(lngEventCount) = PfcTsEventBase( _
+                        strShowText, _
+                        strToken, _
+                        strLastPositionOp, _
+                        strLastPositionArgs, _
+                        lngBtId, _
+                        lngBtRun, _
+                        strFontName, _
+                        dblFontSize, _
+                        PfcTsTextStateSignature( _
+                            dblTc, dblTw, dblTz, dblTr, dblTs, dblLeading), _
+                        lngQDepth, _
+                        PfcTsClipSignature(blnClipActive, strClipOp), _
+                        PfcTsCtmSignature( _
+                            dblCtmA, dblCtmB, dblCtmC, dblCtmD, dblCtmE, dblCtmF), _
+                        blnInText)
+
+                    Call PfcTsIncrementCount(dictBtCounts, CStr(lngBtId))
+                End If
+
+            Case "TJ"
+                strShowText = strArrayText
+                If Len(Trim$(strShowText)) > 0 Then
+                    lngEventCount = lngEventCount + 1
+                    lngBtRun = lngBtRun + 1
+
+                    arrEventBt(lngEventCount) = lngBtId
+                    arrEventOp(lngEventCount) = lngOpCount
+                    arrEventRaw(lngEventCount) = PfcTsEventBase( _
+                        strShowText, _
+                        "TJ", _
+                        strLastPositionOp, _
+                        strLastPositionArgs, _
+                        lngBtId, _
+                        lngBtRun, _
+                        strFontName, _
+                        dblFontSize, _
+                        PfcTsTextStateSignature( _
+                            dblTc, dblTw, dblTz, dblTr, dblTs, dblLeading), _
+                        lngQDepth, _
+                        PfcTsClipSignature(blnClipActive, strClipOp), _
+                        PfcTsCtmSignature( _
+                            dblCtmA, dblCtmB, dblCtmC, dblCtmD, dblCtmE, dblCtmF), _
+                        blnInText)
+
+                    Call PfcTsIncrementCount(dictBtCounts, CStr(lngBtId))
+                End If
+                strArrayText = vbNullString
+
+            Case "["
+                blnInArray = True
+                strArrayText = vbNullString
+
+            Case "]"
+                blnInArray = False
+        End Select
+
+        If Len(strToken) > 0 Then
+            If Left$(strToken, 1) = "(" Then
+                strLastText = Mid$(strToken, 2)
+
+                If blnInArray Then
+                    strArrayText = strArrayText & strLastText
+                End If
+            End If
+        End If
+
+        h5 = h4
+        h4 = h3
+        h3 = h2
+        h2 = h1
+        h1 = h0
+        h0 = strToken
+    Next lngIndex
+
+    Call PfcTsFinalizePageEvents( _
+        pageNo, _
+        lngEventCount, _
+        arrEventBt, _
+        arrEventOp, _
+        arrEventRaw, _
+        arrOpNames, _
+        lngOpCount, _
+        dictBtCounts, _
+        dictCache)
+
+ExitSub:
+    Set dictBtCounts = Nothing
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;contentLength", _
+        pageNo, _
+        Len(content)
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+Private Sub PfcTsFinalizePageEvents( _
+    ByVal pageNo As Long, _
+    ByVal eventCount As Long, _
+    ByRef eventBt() As Long, _
+    ByRef eventOp() As Long, _
+    ByRef eventRaw() As String, _
+    ByRef opNames() As String, _
+    ByVal opCount As Long, _
+    ByVal dictBtCounts As Object, _
+    ByVal dictCache As Object)
+
+    Dim lngBtCount As Long
+    Dim lngEvent As Long
+    Dim strGroup As String
+    Dim strKey As String
+    Dim strLocalOps As String
+
+    For lngEvent = 1 To eventCount
+        lngBtCount = 0
+        strKey = CStr(eventBt(lngEvent))
+
+        If dictBtCounts.Exists(strKey) Then
+            lngBtCount = CLng(dictBtCounts(strKey))
+        End If
+
+        If lngBtCount <= 1 Then
+            strGroup = "SINGLE"
+        Else
+            strGroup = "MULTI:" & CStr(lngBtCount)
+        End If
+
+        strLocalOps = PfcTsOperatorWindow( _
+            opNames, _
+            opCount, _
+            eventOp(lngEvent), _
+            LOCAL_OPERATOR_RADIUS)
+
+        dictCache(PfcTsCacheKey(pageNo, lngEvent)) = _
+            eventRaw(lngEvent) & _
+            "|btCount=" & CStr(lngBtCount) & _
+            "|group=" & strGroup & _
+            "|localOps=" & strLocalOps
+    Next lngEvent
+End Sub
+
+Private Function PfcTsEventBase( _
+    ByVal textValue As String, _
+    ByVal showOperator As String, _
+    ByVal positionOperator As String, _
+    ByVal positionArgs As String, _
+    ByVal btId As Long, _
+    ByVal btRun As Long, _
+    ByVal fontName As String, _
+    ByVal fontSize As Double, _
+    ByVal stateSignature As String, _
+    ByVal qDepth As Long, _
+    ByVal clipSignature As String, _
+    ByVal ctmSignature As String, _
+    ByVal inTextObject As Boolean) As String
+
+    PfcTsEventBase = _
+        "text=" & PfcTsSafe(textValue) & _
+        "|show=" & showOperator & _
+        "|pos=" & positionOperator & _
+        "|posArgs=" & positionArgs & _
+        "|btId=" & CStr(btId) & _
+        "|btRun=" & CStr(btRun) & _
+        "|font=" & fontName & "@" & NumTxt(fontSize) & _
+        "|state=" & stateSignature & _
+        "|qDepth=" & CStr(qDepth) & _
+        "|clip=" & clipSignature & _
+        "|ctm=" & ctmSignature & _
+        "|insideBT=" & CStr(inTextObject)
+End Function
+
+Private Function PfcTsTextStateSignature( _
+    ByVal tcValue As Double, _
+    ByVal twValue As Double, _
+    ByVal tzValue As Double, _
+    ByVal trValue As Double, _
+    ByVal tsValue As Double, _
+    ByVal leadingValue As Double) As String
+
+    PfcTsTextStateSignature = _
+        "Tc=" & NumTxt(tcValue) & _
+        ",Tw=" & NumTxt(twValue) & _
+        ",Tz=" & NumTxt(tzValue) & _
+        ",Tr=" & NumTxt(trValue) & _
+        ",Ts=" & NumTxt(tsValue) & _
+        ",TL=" & NumTxt(leadingValue)
+End Function
+
+Private Function PfcTsClipSignature( _
+    ByVal clipActive As Boolean, _
+    ByVal clipOperator As String) As String
+
+    If clipActive Then
+        PfcTsClipSignature = "ACTIVE:" & clipOperator
+    Else
+        PfcTsClipSignature = "NONE"
+    End If
+End Function
+
+Private Function PfcTsCtmSignature( _
+    ByVal ctmA As Double, _
+    ByVal ctmB As Double, _
+    ByVal ctmC As Double, _
+    ByVal ctmD As Double, _
+    ByVal ctmE As Double, _
+    ByVal ctmF As Double) As String
+
+    PfcTsCtmSignature = _
+        NumTxt(ctmA) & "," & _
+        NumTxt(ctmB) & "," & _
+        NumTxt(ctmC) & "," & _
+        NumTxt(ctmD) & "," & _
+        NumTxt(ctmE) & "," & _
+        NumTxt(ctmF)
+End Function
+
+Private Function PfcTsSnapshotForIndex( _
+    ByVal dictCache As Object, _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal textIndex As Long) As String
+
+    Dim lngOrdinal As Long
+    Dim lngPage As Long
+    Dim strKey As String
+
+    If dictCache Is Nothing Then
+        PfcTsSnapshotForIndex = "MISSING_CACHE"
+        Exit Function
+    End If
+
+    If textIndex < 0 Or textIndex >= pdfDoc.TextCount Then
+        PfcTsSnapshotForIndex = "MISSING"
+        Exit Function
+    End If
+
+    lngPage = pdfDoc.Texts(textIndex).PageNo
+
+    If lngPage < 1 Or lngPage > pdfDoc.PageCount Then
+        PfcTsSnapshotForIndex = "MISSING_PAGE"
+        Exit Function
+    End If
+
+    lngOrdinal = textIndex - pdfDoc.Pages(lngPage).TextStart + 1
+    strKey = PfcTsCacheKey(lngPage, lngOrdinal)
+
+    If dictCache.Exists(strKey) Then
+        PfcTsSnapshotForIndex = CStr(dictCache(strKey))
+    Else
+        PfcTsSnapshotForIndex = _
+            "MISSING_EVENT|page=" & CStr(lngPage) & _
+            "|ordinal=" & CStr(lngOrdinal)
+    End If
+End Function
+
+Private Function PfcTsCacheKey( _
+    ByVal pageNo As Long, _
+    ByVal textOrdinal As Long) As String
+
+    PfcTsCacheKey = _
+        "P" & CStr(pageNo) & _
+        "|T" & CStr(textOrdinal)
+End Function
+
+'===============================================================================
+' TARGET COMPARISON
+'===============================================================================
+
+Private Sub PfcTsComparePart( _
+    ByVal anchorId As String, _
+    ByVal role As String, _
+    ByVal familySuffix As String, _
+    ByVal fieldName As String, _
+    ByVal oldSnapshot As String, _
+    ByVal betterSnapshot As String, _
+    ByVal currentSnapshot As String, _
+    ByVal priority As Long, _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object)
+
+    Dim strBetter As String
+    Dim strCurrent As String
+    Dim strDirection As String
+    Dim strFamily As String
+    Dim strOld As String
+    Dim strSample As String
+
+    strOld = PfcTsField(oldSnapshot, fieldName)
+    strBetter = PfcTsField(betterSnapshot, fieldName)
+    strCurrent = PfcTsField(currentSnapshot, fieldName)
+
+    If strCurrent = strOld Then Exit Sub
+
+    If strBetter = strOld Then
+        strDirection = "OLD_EQ_BETTER_CURRENT_DIFF"
+    ElseIf strBetter = strCurrent Then
+        strDirection = "BETTER_EQ_CURRENT_OLD_DIFF"
+    Else
+        strDirection = "ALL_DIFFER"
+    End If
+
+    strFamily = _
+        "DOXIS_V19_" & familySuffix & "_CHANGED_" & role
+
+    strSample = _
+        "tx=" & anchorId & _
+        "|role=" & role & _
+        "|field=" & fieldName & _
+        "|direction=" & strDirection & _
+        "|OLD=" & PfcTsLimit(strOld, 500) & _
+        "|BETTER=" & PfcTsLimit(strBetter, 500) & _
+        "|CURRENT=" & PfcTsLimit(strCurrent, 500) & _
+        "|comparisonBasis=OLD_ORACLE"
+
+    Call PfcTsAddIssue( _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples, _
+        strFamily, _
+        priority, _
+        strSample)
+End Sub
+
+Private Function PfcTsRolePriority(ByVal role As String) As Long
+    If role = "TOP_ISIN" Then
+        PfcTsRolePriority = 3
+    ElseIf InStr(1, role, "WHG", vbBinaryCompare) > 0 Then
+        PfcTsRolePriority = 3
+    ElseIf role = "TOP_SCHLUSSTAG" Or role = "TOP_VALUTATAG" Then
+        PfcTsRolePriority = 2
+    Else
+        PfcTsRolePriority = 1
+    End If
+End Function
+
+Private Function PfcTsGroupingPriority(ByVal role As String) As Long
+    If role = "TOP_ISIN" Or _
+       InStr(1, role, "WHG", vbBinaryCompare) > 0 Then
+
+        PfcTsGroupingPriority = 2
+    Else
+        PfcTsGroupingPriority = 1
+    End If
+End Function
+
+Private Function PfcTsLocalOpsPriority(ByVal role As String) As Long
+    If role = "TOP_ISIN" Or _
+       InStr(1, role, "WHG", vbBinaryCompare) > 0 Then
+
+        PfcTsLocalOpsPriority = 2
+    Else
+        PfcTsLocalOpsPriority = 1
+    End If
+End Function
+
+Private Sub PfcTsAddIssue( _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object, _
+    ByVal family As String, _
+    ByVal priority As Long, _
+    ByVal sampleText As String)
+
+    Dim lngCount As Long
+    Dim strSampleKey As String
+
+    If dictIssueCounts.Exists(family) Then
+        dictIssueCounts(family) = CLng(dictIssueCounts(family)) + 1
+
+        If priority > CLng(dictIssuePriorities(family)) Then
+            dictIssuePriorities(family) = priority
+        End If
+    Else
+        dictIssueCounts.Add family, 1
+        dictIssuePriorities.Add family, priority
+    End If
+
+    lngCount = CLng(dictIssueCounts(family))
+    If lngCount > MAX_SAMPLES_PER_FAMILY Then Exit Sub
+
+    strSampleKey = family & "|" & CStr(lngCount)
+
+    If Not dictIssueSamples.Exists(strSampleKey) Then
+        dictIssueSamples.Add strSampleKey, sampleText
+    End If
+End Sub
+
+Private Function PfcTsField( _
+    ByVal snapshot As String, _
+    ByVal fieldName As String) As String
+
+    Dim arrParts As Variant
+    Dim lngIndex As Long
+    Dim strPart As String
+    Dim strPrefix As String
+
+    strPrefix = fieldName & "="
+    arrParts = Split(snapshot, "|")
+
+    For lngIndex = LBound(arrParts) To UBound(arrParts)
+        strPart = CStr(arrParts(lngIndex))
+
+        If Left$(strPart, Len(strPrefix)) = strPrefix Then
+            PfcTsField = Mid$(strPart, Len(strPrefix) + 1)
+            Exit Function
+        End If
+    Next lngIndex
+
+    PfcTsField = "(missing)"
+End Function
+
+'===============================================================================
+' PAGE-LEVEL DIAGNOSTICS
+'===============================================================================
+
+Private Function PfcTsPageDiagnostic( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long) As String
+
+    If pageNo < 1 Or pageNo > pdfDoc.PageCount Then
+        PfcTsPageDiagnostic = "MISSING_PAGE"
+        Exit Function
+    End If
+
+    PfcTsPageDiagnostic = _
+        "refs=" & PfcTsSafe(pdfDoc.Pages(pageNo).ContentReferences) & _
+        ",filters=" & PfcTsSafe(pdfDoc.Pages(pageNo).ContentFilters) & _
+        ",len=" & CStr(pdfDoc.Pages(pageNo).ContentLength) & _
+        ",ops=" & PfcTsTextOperatorProfile(pdfDoc.Pages(pageNo).ContentText) & _
+        ",eol=" & PfcTsEolProfile(pdfDoc.Pages(pageNo).ContentText)
+End Function
+
+Private Function PfcTsTextOperatorProfile( _
+    ByVal content As String) As String
+
+    Dim arrTokens() As String
+    Dim lngBt As Long
+    Dim lngEt As Long
+    Dim lngIndex As Long
+    Dim lngQ As Long
+    Dim lngBigQ As Long
+    Dim lngTc As Long
+    Dim lngTd As Long
+    Dim lngTD As Long
+    Dim lngTf As Long
+    Dim lngTj As Long
+    Dim lngTJ As Long
+    Dim lngTm As Long
+    Dim lngTr As Long
+    Dim lngTs As Long
+    Dim lngTw As Long
+    Dim lngTz As Long
+    Dim lngTokenCount As Long
+    Dim lngW As Long
+    Dim lngWStar As Long
+    Dim lngCm As Long
+
+    lngTokenCount = Tokenize(content, arrTokens)
+
+    For lngIndex = 0 To lngTokenCount - 1
+        Select Case arrTokens(lngIndex)
+            Case "BT": lngBt = lngBt + 1
+            Case "ET": lngEt = lngEt + 1
+            Case "Tf": lngTf = lngTf + 1
+            Case "Tm": lngTm = lngTm + 1
+            Case "Td": lngTd = lngTd + 1
+            Case "TD": lngTD = lngTD + 1
+            Case "Tj": lngTj = lngTj + 1
+            Case "TJ": lngTJ = lngTJ + 1
+            Case "Tc": lngTc = lngTc + 1
+            Case "Tw": lngTw = lngTw + 1
+            Case "Tz": lngTz = lngTz + 1
+            Case "Tr": lngTr = lngTr + 1
+            Case "Ts": lngTs = lngTs + 1
+            Case "q": lngQ = lngQ + 1
+            Case "Q": lngBigQ = lngBigQ + 1
+            Case "W": lngW = lngW + 1
+            Case "W*": lngWStar = lngWStar + 1
+            Case "cm": lngCm = lngCm + 1
+        End Select
+    Next lngIndex
+
+    PfcTsTextOperatorProfile = _
+        "BT" & CStr(lngBt) & _
+        "/ET" & CStr(lngEt) & _
+        "/Tf" & CStr(lngTf) & _
+        "/Tm" & CStr(lngTm) & _
+        "/Td" & CStr(lngTd) & _
+        "/TD" & CStr(lngTD) & _
+        "/Tj" & CStr(lngTj) & _
+        "/TJ" & CStr(lngTJ) & _
+        "/Tc" & CStr(lngTc) & _
+        "/Tw" & CStr(lngTw) & _
+        "/Tz" & CStr(lngTz) & _
+        "/Tr" & CStr(lngTr) & _
+        "/Ts" & CStr(lngTs) & _
+        "/q" & CStr(lngQ) & _
+        "/Q" & CStr(lngBigQ) & _
+        "/W" & CStr(lngW) & _
+        "/W*" & CStr(lngWStar) & _
+        "/cm" & CStr(lngCm)
+End Function
+
+Private Function PfcTsEolProfile(ByVal content As String) As String
+    Dim lngCr As Long
+    Dim lngCrLf As Long
+    Dim lngLf As Long
+    Dim lngTab As Long
+
+    lngCrLf = PfcTsCountSubstring(content, vbCrLf)
+    lngCr = PfcTsCountSubstring(content, vbCr) - lngCrLf
+    lngLf = PfcTsCountSubstring(content, vbLf) - lngCrLf
+    lngTab = PfcTsCountSubstring(content, vbTab)
+
+    PfcTsEolProfile = _
+        "CRLF" & CStr(lngCrLf) & _
+        "/LF" & CStr(lngLf) & _
+        "/CR" & CStr(lngCr) & _
+        "/TAB" & CStr(lngTab)
+End Function
+
+Private Function PfcTsCountSubstring( _
+    ByVal sourceText As String, _
+    ByVal searchText As String) As Long
+
+    Dim lngPosition As Long
+    Dim lngStart As Long
+
+    If Len(searchText) = 0 Then Exit Function
+
+    lngStart = 1
+
+    Do
+        lngPosition = InStr(lngStart, sourceText, searchText, vbBinaryCompare)
+        If lngPosition = 0 Then Exit Do
+
+        PfcTsCountSubstring = PfcTsCountSubstring + 1
+        lngStart = lngPosition + Len(searchText)
+    Loop
+End Function
+
+'===============================================================================
+' TOKEN / OPERATOR HELPERS
+'===============================================================================
+
+Private Function PfcTsIsOperator(ByVal tokenValue As String) As Boolean
+    Select Case tokenValue
+        Case "q", "Q", "cm", _
+             "w", "J", "j", "M", "d", "ri", "i", "gs", _
+             "m", "l", "c", "v", "y", "h", "re", _
+             "S", "s", "f", "F", "f*", "B", "B*", "b", "b*", "n", _
+             "W", "W*", _
+             "BT", "ET", "Tc", "Tw", "Tz", "TL", "Tf", "Tr", "Ts", _
+             "Td", "TD", "Tm", "T*", "Tj", "TJ", "'", _
+             "g", "G", "rg", "RG", "k", "K", "cs", "CS", "sc", "SC", _
+             "scn", "SCN", "Do"
+
+            PfcTsIsOperator = True
+    End Select
+End Function
+
+Private Function PfcTsOperatorWindow( _
+    ByRef opNames() As String, _
+    ByVal opCount As Long, _
+    ByVal centerOp As Long, _
+    ByVal radius As Long) As String
+
+    Dim lngEnd As Long
+    Dim lngIndex As Long
+    Dim lngStart As Long
+    Dim strResult As String
+
+    If centerOp < 1 Or centerOp > opCount Then
+        PfcTsOperatorWindow = "(missing)"
+        Exit Function
+    End If
+
+    lngStart = centerOp - radius
+    If lngStart < 1 Then lngStart = 1
+
+    lngEnd = centerOp + radius
+    If lngEnd > opCount Then lngEnd = opCount
+
+    For lngIndex = lngStart To lngEnd
+        If Len(strResult) > 0 Then strResult = strResult & ">"
+
+        If lngIndex = centerOp Then
+            strResult = strResult & "[" & opNames(lngIndex) & "]"
+        Else
+            strResult = strResult & opNames(lngIndex)
+        End If
+    Next lngIndex
+
+    PfcTsOperatorWindow = strResult
+End Function
+
+Private Sub PfcTsIncrementCount( _
+    ByVal dictCounts As Object, _
+    ByVal keyText As String)
+
+    If dictCounts.Exists(keyText) Then
+        dictCounts(keyText) = CLng(dictCounts(keyText)) + 1
+    Else
+        dictCounts.Add keyText, 1
+    End If
+End Sub
+
+Private Sub PfcTsConcatMatrix( _
+    ByVal a As Double, _
+    ByVal b As Double, _
+    ByVal c As Double, _
+    ByVal d As Double, _
+    ByVal e As Double, _
+    ByVal f As Double, _
+    ByRef ctmA As Double, _
+    ByRef ctmB As Double, _
+    ByRef ctmC As Double, _
+    ByRef ctmD As Double, _
+    ByRef ctmE As Double, _
+    ByRef ctmF As Double)
+
+    Dim dblNewA As Double
+    Dim dblNewB As Double
+    Dim dblNewC As Double
+    Dim dblNewD As Double
+    Dim dblNewE As Double
+    Dim dblNewF As Double
+
+    dblNewA = a * ctmA + b * ctmC
+    dblNewB = a * ctmB + b * ctmD
+    dblNewC = c * ctmA + d * ctmC
+    dblNewD = c * ctmB + d * ctmD
+    dblNewE = e * ctmA + f * ctmC + ctmE
+    dblNewF = e * ctmB + f * ctmD + ctmF
+
+    ctmA = dblNewA
+    ctmB = dblNewB
+    ctmC = dblNewC
+    ctmD = dblNewD
+    ctmE = dblNewE
+    ctmF = dblNewF
+End Sub
+
+'===============================================================================
+' STRING HELPERS
+'===============================================================================
+
+Private Function PfcTsSafe(ByVal value As String) As String
+    Dim strResult As String
+
+    strResult = SanitizeReportText(value)
+    strResult = Replace(strResult, "|", "/")
+    strResult = Replace(strResult, vbCr, " ")
+    strResult = Replace(strResult, vbLf, " ")
+
+    PfcTsSafe = strResult
+End Function
+
+Private Function PfcTsLimit( _
+    ByVal value As String, _
+    ByVal maxLength As Long) As String
+
+    If Len(value) <= maxLength Then
+        PfcTsLimit = value
+    Else
+        PfcTsLimit = Left$(value, maxLength) & "..."
+    End If
+End Function
+
+Private Function PfcTsNum(ByVal value As String) As String
+    If Len(Trim$(value)) = 0 Then
+        PfcTsNum = "0"
+    Else
+        PfcTsNum = NumTxt(Val(value))
+    End If
+End Function
