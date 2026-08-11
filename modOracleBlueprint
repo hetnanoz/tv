@@ -834,9 +834,13 @@ End Function
 '-------------------------------------------------------------------------------
 Private Sub BlueprintBuildObjectIndex()
 
+    Dim lngGenEnd As Long
+    Dim lngGenStart As Long
     Dim lngIndex As Long
+    Dim lngNumEnd As Long
+    Dim lngNumStart As Long
     Dim lngNumber As Long
-    Dim lngStart As Long
+    Dim lngPos As Long
     Dim lngUpper As Long
 
     lngUpper = UBound(m_pdf)
@@ -844,41 +848,73 @@ Private Sub BlueprintBuildObjectIndex()
     ReDim m_objNum(0 To 4095)
     ReDim m_objPos(0 To 4095)
 
-    For lngIndex = 0 To lngUpper - 3
-        If m_pdf(lngIndex) = 111 And m_pdf(lngIndex + 1) = 98 And m_pdf(lngIndex + 2) = 106 Then
+    For lngIndex = 1 To lngUpper - 3
+        If m_pdf(lngIndex) = 111 And m_pdf(lngIndex + 1) = 98 And _
+           m_pdf(lngIndex + 2) = 106 Then
 
-            ' Walk backwards over " G " and the object number.
-            lngStart = lngIndex - 1
-            Do While lngStart >= 0 And BlueprintIsSpaceByte(m_pdf(lngStart))
-                lngStart = lngStart - 1
-            Loop
+            ' The keyword has to stand alone, otherwise "endobj" matches too.
+            If BlueprintIsSpaceByte(m_pdf(lngIndex - 1)) Then
+                lngPos = lngIndex - 1
 
-            Do While lngStart >= 0 And m_pdf(lngStart) >= 48 And m_pdf(lngStart) <= 57
-                lngStart = lngStart - 1
-            Loop
+                Do While lngPos >= 0
+                    If Not BlueprintIsSpaceByte(m_pdf(lngPos)) Then
+                        Exit Do
+                    End If
 
-            Do While lngStart >= 0 And BlueprintIsSpaceByte(m_pdf(lngStart))
-                lngStart = lngStart - 1
-            Loop
-
-            lngNumber = 0
-            If lngStart >= 0 And m_pdf(lngStart) >= 48 And m_pdf(lngStart) <= 57 Then
-                Do While lngStart >= 0 And m_pdf(lngStart) >= 48 And m_pdf(lngStart) <= 57
-                    lngStart = lngStart - 1
+                    lngPos = lngPos - 1
                 Loop
 
-                lngNumber = Val(BlueprintBytesToText(lngStart + 1, lngIndex - 1))
-            End If
+                lngGenEnd = lngPos
 
-            If lngNumber > 0 Then
-                If m_objCount > UBound(m_objNum) Then
-                    ReDim Preserve m_objNum(0 To m_objCount + 4095)
-                    ReDim Preserve m_objPos(0 To m_objCount + 4095)
+                Do While lngPos >= 0
+                    If m_pdf(lngPos) < 48 Or m_pdf(lngPos) > 57 Then
+                        Exit Do
+                    End If
+
+                    lngPos = lngPos - 1
+                Loop
+
+                lngGenStart = lngPos + 1
+
+                If lngGenEnd >= lngGenStart Then
+                    Do While lngPos >= 0
+                        If Not BlueprintIsSpaceByte(m_pdf(lngPos)) Then
+                            Exit Do
+                        End If
+
+                        lngPos = lngPos - 1
+                    Loop
+
+                    lngNumEnd = lngPos
+
+                    Do While lngPos >= 0
+                        If m_pdf(lngPos) < 48 Or m_pdf(lngPos) > 57 Then
+                            Exit Do
+                        End If
+
+                        lngPos = lngPos - 1
+                    Loop
+
+                    lngNumStart = lngPos + 1
+
+                    If lngNumEnd >= lngNumStart Then
+                        ' Read ONLY the object-number digits. Val() strips blanks,
+                        ' so Val("11 0 ") returns 110 rather than 11 and every
+                        ' /Kids and /Contents lookup then misses.
+                        lngNumber = Val(BlueprintBytesToText(lngNumStart, lngNumEnd))
+
+                        If lngNumber > 0 Then
+                            If m_objCount > UBound(m_objNum) Then
+                                ReDim Preserve m_objNum(0 To m_objCount + 4095)
+                                ReDim Preserve m_objPos(0 To m_objCount + 4095)
+                            End If
+
+                            m_objNum(m_objCount) = lngNumber
+                            m_objPos(m_objCount) = lngIndex + 3
+                            m_objCount = m_objCount + 1
+                        End If
+                    End If
                 End If
-
-                m_objNum(m_objCount) = lngNumber
-                m_objPos(m_objCount) = lngIndex + 3
-                m_objCount = m_objCount + 1
             End If
         End If
     Next lngIndex
@@ -943,10 +979,10 @@ Private Function BlueprintIndexOfObject(ByVal lngObjNumber As Long) As Long
 
     BlueprintIndexOfObject = -1
 
+    ' An incrementally updated PDF redefines objects, so the last definition wins.
     For lngIndex = 0 To m_objCount - 1
         If m_objNum(lngIndex) = lngObjNumber Then
             BlueprintIndexOfObject = lngIndex
-            Exit Function
         End If
     Next lngIndex
 
@@ -1260,6 +1296,37 @@ End Sub
 ' Returns:       ---
 ' Description:   Writes why each page did or did not yield a content stream.
 '-------------------------------------------------------------------------------
+Private Function BlueprintObjectNumberSample() As String
+
+    Dim lngIndex As Long
+    Dim lngLimit As Long
+    Dim strResult As String
+
+    lngLimit = m_objCount - 1
+
+    If lngLimit > 19 Then
+        lngLimit = 19
+    End If
+
+    For lngIndex = 0 To lngLimit
+        strResult = strResult & CStr(m_objNum(lngIndex)) & " "
+    Next lngIndex
+
+    If m_objCount > 20 Then
+        strResult = strResult & "..."
+    End If
+
+    BlueprintObjectNumberSample = Trim$(strResult)
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    lngFile As Long
+' Returns:       ---
+' Description:   Writes why each page did or did not yield a content stream.
+'-------------------------------------------------------------------------------
 Private Sub BlueprintWriteDiagnostics(ByVal lngFile As Long)
 
     Dim lngIndex As Long
@@ -1269,6 +1336,7 @@ Private Sub BlueprintWriteDiagnostics(ByVal lngFile As Long)
         "A zero there means the stream was never decoded and every counter below " & _
         "is meaningless rather than small.")
     Call BlueprintEmit(lngFile, "objectsIndexed|" & CStr(m_objCount))
+    Call BlueprintEmit(lngFile, "objectNumbers|" & BlueprintObjectNumberSample())
     Call BlueprintEmit(lngFile, "")
 
     For lngIndex = 0 To m_diagCount - 1
