@@ -1,7 +1,7 @@
 Option Explicit
 
 Private Const CLASS_NAME As String = "modPdfForensicCompare"
-' V15: input-value-aware comparison plus optical cell/separator topology diagnostics.
+' V17: retains V16 and adds DOXIS-oriented three-way topology forensic (OLD Oracle / BETTER-PARSING / CURRENT).
 Private Const TARGET_X_FIRST As Double = 468#
 Private Const TARGET_X_SECOND As Double = 639#
 Private Const COORD_TOLERANCE As Double = 0.1
@@ -26,6 +26,17 @@ Private Const BREAKS_NEAR_RULE_Y_TOLERANCE As Double = 0.75
 Private Const BREAKS_EXCLUDE_WKN_CONTENT As Boolean = True
 Private Const BREAKS_SUPER_SHORT_MAX_FAMILIES As Long = 12
 Private Const BREAKS_SUPER_SHORT_SAMPLES_PER_FAMILY As Long = 2
+Private Const DOXIS_TEXT_DESCENDER_FACTOR As Double = 0.22
+Private Const DOXIS_TEXT_ASCENDER_FACTOR As Double = 0.78
+Private Const DOXIS_SEGMENTATION_BASELINE_BELOW As Double = 5.25
+Private Const DOXIS_NEAR_SEPARATOR_GAP As Double = 6.5
+Private Const DOXIS_LINE_X_TOLERANCE As Double = 0.35
+Private Const DOXIS_TEXT_X_MARGIN As Double = 0.15
+Private Const DOXIS_POSITION_CHANGE_TOLERANCE As Double = 0.15
+Private Const DOXIS_FONT_SIZE_CHANGE_TOLERANCE As Double = 0.05
+Private Const DOXIS_MAX_SAMPLES_PER_FAMILY As Long = 3
+Private Const DOXIS_RASTER_PROXY_DPI_LOW As Double = 300#
+Private Const DOXIS_RASTER_PROXY_DPI_HIGH As Double = 600#
 
 Public Type tPdfLine
     PageNo As Long
@@ -68,6 +79,8 @@ Public Type tPdfPage
     ResolvedFonts As String
     FontForensicSignature As String
     ContentFilters As String
+    ContentReferences As String
+    ResourcesDictionary As String
     ContentText As String
     ContentLength As Long
     ImageStart As Long
@@ -2418,6 +2431,8 @@ Private Sub ParsePage( _
         .ResolvedFonts = ResolvePageFontSignature(strDictionary)
         .FontForensicSignature = ResolvePageFontForensicSignature(strDictionary)
         .ContentFilters = PageContentFilterSignature(strDictionary)
+        .ContentReferences = RefList(strDictionary, "/Contents")
+        .ResourcesDictionary = DictValue(strDictionary, "/Resources")
         .ContentText = strContent
         .ContentLength = Len(strContent)
         .ImageStart = pdfDoc.ImageCount
@@ -5528,10 +5543,13 @@ Private Function IsAuditOperator(ByVal operatorValue As String) As Boolean
     On Error GoTo ErrorHandler
 
     Select Case operatorValue
-        Case "q", "Q", "cm", "w", "G", "RG", "K", "g", "rg", "k", _
+        Case "q", "Q", "cm", "w", "J", "j", "M", "d", "ri", "i", "gs", _
+             "G", "RG", "K", "g", "rg", "k", "CS", "cs", "SC", "SCN", "sc", "scn", _
              "m", "l", "h", "re", "S", "s", "B", "B*", "b", "b*", _
-             "f", "f*", "F", "n", "BT", "ET", "Tf", "Tm", "Td", "TD", _
-             "T*", "Tj", "TJ", "'", "Do"
+             "f", "f*", "F", "n", "W", "W*", _
+             "BT", "ET", "Tf", "Tm", "Td", "TD", "T*", "TL", "Tc", "Tw", "Tz", "Tr", "Ts", _
+             "Tj", "TJ", "'", """", "Do", _
+             "MP", "DP", "BMC", "BDC", "EMC", "BX", "EX"
             IsAuditOperator = True
     End Select
 
@@ -7589,3 +7607,4291 @@ ErrorHandler:
     Resume ExitFunction
 End Function
 
+
+'===============================================================================
+' V16 PARSER REGRESSION FORENSIC
+' PURPOSE:
+'   Compare three binaries of the same logical report:
+'       OLD Oracle reference
+'       PREVIOUS GOOD generated PDF (client parsed better)
+'       CURRENT generated PDF (client parses worse)
+'
+'   V15 intentionally normalised several differences that are visually harmless.
+'   V16 adds a raw parser-facing layer: exact operator order, operator operands,
+'   invisible rectangle paths, separator construction source, content-stream
+'   topology and local operator windows around ISIN/currency/date text.
+'===============================================================================
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    none
+' Returns:       none
+' Description:   Interactive three-way parser-regression forensic.
+'                This is the macro to assign to an Excel button for V16.
+'-------------------------------------------------------------------------------
+Public Sub RunPdfParserRegressionBrowse()
+    Const METHOD_NAME As String = "RunPdfParserRegressionBrowse"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strCurrentPdfPath As String
+    Dim strDetailPath As String
+    Dim strGoodPdfPath As String
+    Dim strOldPdfPath As String
+    Dim strSuperShortPath As String
+
+    On Error GoTo ErrorHandler
+
+    strOldPdfPath = SelectPdfFile("V16 - Select OLD Oracle reference PDF")
+    If Len(strOldPdfPath) = 0 Then
+        GoTo ExitSub
+    End If
+
+    strGoodPdfPath = SelectPdfFile("V16 - Select PREVIOUS GOOD PDF (client parsed this version better)")
+    If Len(strGoodPdfPath) = 0 Then
+        GoTo ExitSub
+    End If
+
+    strCurrentPdfPath = SelectPdfFile("V16 - Select CURRENT PDF (client parses this version worse)")
+    If Len(strCurrentPdfPath) = 0 Then
+        GoTo ExitSub
+    End If
+
+    strDetailPath = BuildParserRegressionDetailOutputPath( _
+        strGoodPdfPath, _
+        strCurrentPdfPath)
+
+    strSuperShortPath = BuildParserRegressionSuperShortOutputPath( _
+        strGoodPdfPath, _
+        strCurrentPdfPath)
+
+    If Not PdfParserRegressionAudit( _
+        strOldPdfPath, _
+        strGoodPdfPath, _
+        strCurrentPdfPath, _
+        strDetailPath, _
+        strSuperShortPath) Then
+
+        Err.Raise ERR_BASE + 30, METHOD_NAME, _
+            "The V16 parser-regression forensic could not be completed."
+    End If
+
+    MsgBox _
+        "V16 parser-regression forensic completed." & vbCrLf & vbCrLf & _
+        "SEND THIS FILE FIRST:" & vbCrLf & strSuperShortPath & vbCrLf & vbCrLf & _
+        "Detailed three-way forensic:" & vbCrLf & strDetailPath & vbCrLf & vbCrLf & _
+        "Important: PREVIOUS GOOD and CURRENT should represent the same logical report/input.", _
+        vbInformation, _
+        "Oracle parser regression V16"
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "oldPdfPath;goodPdfPath;currentPdfPath;detailPath;superShortPath", _
+        strOldPdfPath, _
+        strGoodPdfPath, _
+        strCurrentPdfPath, _
+        strDetailPath, _
+        strSuperShortPath
+
+    errorManager.save
+    errorManager.display "The V16 parser-regression forensic failed."
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    oldPdfPath, goodPdfPath, currentPdfPath, detailOutputPath,
+'                superShortOutputPath
+' Returns:       Boolean
+' Description:   Programmatic three-way parser-regression forensic.
+'-------------------------------------------------------------------------------
+Public Function PdfParserRegressionAudit( _
+    ByVal oldPdfPath As String, _
+    ByVal goodPdfPath As String, _
+    ByVal currentPdfPath As String, _
+    ByVal detailOutputPath As String, _
+    ByVal superShortOutputPath As String) As Boolean
+
+    Const METHOD_NAME As String = "PdfParserRegressionAudit"
+    Dim currentDoc As tPdfDocument
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim goodDoc As tPdfDocument
+    Dim oldDoc As tPdfDocument
+
+    On Error GoTo ErrorHandler
+
+    If Len(Trim$(oldPdfPath)) = 0 Then
+        Err.Raise 1001, METHOD_NAME, "The OLD Oracle PDF path is required."
+    End If
+
+    If Len(Trim$(goodPdfPath)) = 0 Then
+        Err.Raise 1001, METHOD_NAME, "The PREVIOUS GOOD PDF path is required."
+    End If
+
+    If Len(Trim$(currentPdfPath)) = 0 Then
+        Err.Raise 1001, METHOD_NAME, "The CURRENT PDF path is required."
+    End If
+
+    If Len(Trim$(detailOutputPath)) = 0 Then
+        Err.Raise 1020, METHOD_NAME, "The V16 detail output path is required."
+    End If
+
+    If Len(Trim$(superShortOutputPath)) = 0 Then
+        Err.Raise 1020, METHOD_NAME, "The V16 super-short output path is required."
+    End If
+
+    Call LoadPdfDocument(oldPdfPath, oldDoc)
+    If oldDoc.PageCount = 0 Then
+        Err.Raise 1014, METHOD_NAME, "The OLD Oracle PDF could not be parsed."
+    End If
+
+    Call LoadPdfDocument(goodPdfPath, goodDoc)
+    If goodDoc.PageCount = 0 Then
+        Err.Raise 1014, METHOD_NAME, "The PREVIOUS GOOD PDF could not be parsed."
+    End If
+
+    Call LoadPdfDocument(currentPdfPath, currentDoc)
+    If currentDoc.PageCount = 0 Then
+        Err.Raise 1014, METHOD_NAME, "The CURRENT PDF could not be parsed."
+    End If
+
+    Call WriteParserRegressionReports( _
+        oldDoc, _
+        goodDoc, _
+        currentDoc, _
+        detailOutputPath, _
+        superShortOutputPath)
+
+    PdfParserRegressionAudit = True
+
+ExitFunction:
+    Call ResetParserState
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    PdfParserRegressionAudit = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "oldPdfPath;goodPdfPath;currentPdfPath;detailOutputPath;superShortOutputPath", _
+        oldPdfPath, _
+        goodPdfPath, _
+        currentPdfPath, _
+        detailOutputPath, _
+        superShortOutputPath
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+Private Function BuildParserRegressionDetailOutputPath( _
+    ByVal goodPdfPath As String, _
+    ByVal currentPdfPath As String) As String
+
+    Const METHOD_NAME As String = "BuildParserRegressionDetailOutputPath"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngSlashPosition As Long
+    Dim strFolder As String
+
+    On Error GoTo ErrorHandler
+
+    lngSlashPosition = InStrRev(currentPdfPath, "\")
+    If lngSlashPosition > 0 Then
+        strFolder = Left$(currentPdfPath, lngSlashPosition)
+    End If
+
+    BuildParserRegressionDetailOutputPath = _
+        strFolder & _
+        FileBaseName(goodPdfPath) & _
+        "_VS_" & _
+        FileBaseName(currentPdfPath) & _
+        "_PARSER_REGRESSION_V16_DETAIL.txt"
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildParserRegressionDetailOutputPath = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "goodPdfPath;currentPdfPath", _
+        goodPdfPath, _
+        currentPdfPath
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+Private Function BuildParserRegressionSuperShortOutputPath( _
+    ByVal goodPdfPath As String, _
+    ByVal currentPdfPath As String) As String
+
+    Const METHOD_NAME As String = "BuildParserRegressionSuperShortOutputPath"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngSlashPosition As Long
+    Dim strFolder As String
+
+    On Error GoTo ErrorHandler
+
+    lngSlashPosition = InStrRev(currentPdfPath, "\")
+    If lngSlashPosition > 0 Then
+        strFolder = Left$(currentPdfPath, lngSlashPosition)
+    End If
+
+    BuildParserRegressionSuperShortOutputPath = _
+        strFolder & _
+        FileBaseName(goodPdfPath) & _
+        "_VS_" & _
+        FileBaseName(currentPdfPath) & _
+        "_PARSER_REGRESSION_V16_SUPER_SHORT.txt"
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildParserRegressionSuperShortOutputPath = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "goodPdfPath;currentPdfPath", _
+        goodPdfPath, _
+        currentPdfPath
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+Private Sub WriteParserRegressionReports( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef goodDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument, _
+    ByVal detailOutputPath As String, _
+    ByVal superShortOutputPath As String)
+
+    Const METHOD_NAME As String = "WriteParserRegressionReports"
+    Dim dictIssueCounts As Object
+    Dim dictIssuePriorities As Object
+    Dim dictIssueSamples As Object
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngDetailFile As Long
+    Dim lngMaxPages As Long
+    Dim lngPage As Long
+
+    On Error GoTo ErrorHandler
+
+    Set dictIssueCounts = CreateObject("Scripting.Dictionary")
+    Set dictIssuePriorities = CreateObject("Scripting.Dictionary")
+    Set dictIssueSamples = CreateObject("Scripting.Dictionary")
+
+    lngMaxPages = oldDoc.PageCount
+    If goodDoc.PageCount > lngMaxPages Then
+        lngMaxPages = goodDoc.PageCount
+    End If
+    If currentDoc.PageCount > lngMaxPages Then
+        lngMaxPages = currentDoc.PageCount
+    End If
+
+    lngDetailFile = FreeFile
+    Open detailOutputPath For Output Access Write As #lngDetailFile
+
+    Print #lngDetailFile, "ORACLE_PARSER_REGRESSION_FORENSIC_V16"
+    Print #lngDetailFile, "OLD_ORACLE|" & oldDoc.PdfPath
+    Print #lngDetailFile, "PREVIOUS_GOOD|" & goodDoc.PdfPath
+    Print #lngDetailFile, "CURRENT|" & currentDoc.PdfPath
+    Print #lngDetailFile, "PURPOSE|Find parser-facing changes introduced between PREVIOUS_GOOD and CURRENT. OLD Oracle is a directional reference, not the only pass/fail target."
+    Print #lngDetailFile, "REQUIREMENT|PREVIOUS_GOOD_AND_CURRENT_SHOULD_USE_THE_SAME_LOGICAL_REPORT_INPUT=TRUE"
+    Print #lngDetailFile, "POLICY|Business-value differences are not treated as parser regressions. WKN content remains excluded. ISIN/currency/date text topology remains audited."
+    Print #lngDetailFile, ""
+
+    Call RegressionWriteDocumentHeader( _
+        lngDetailFile, _
+        oldDoc, _
+        goodDoc, _
+        currentDoc)
+
+    If goodDoc.PageCount <> currentDoc.PageCount Then
+        Call RegressionAddIssue( _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples, _
+            "PAGE_COUNT_CHANGED", _
+            3, _
+            "GOOD=" & CStr(goodDoc.PageCount) & _
+            "|CURRENT=" & CStr(currentDoc.PageCount) & _
+            "|OLD=" & CStr(oldDoc.PageCount))
+    End If
+
+    For lngPage = 1 To lngMaxPages
+        Call RegressionWritePageAnalysis( _
+            lngDetailFile, _
+            oldDoc, _
+            goodDoc, _
+            currentDoc, _
+            lngPage, _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples)
+    Next lngPage
+
+    Close #lngDetailFile
+    lngDetailFile = 0
+
+    Call RegressionWriteSuperShortReport( _
+        oldDoc, _
+        goodDoc, _
+        currentDoc, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples, _
+        superShortOutputPath)
+
+ExitSub:
+    If lngDetailFile <> 0 Then
+        Close #lngDetailFile
+    End If
+    Set dictIssueCounts = Nothing
+    Set dictIssuePriorities = Nothing
+    Set dictIssueSamples = Nothing
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "detailOutputPath;superShortOutputPath", _
+        detailOutputPath, _
+        superShortOutputPath
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+Private Sub RegressionWriteDocumentHeader( _
+    ByVal fileNo As Long, _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef goodDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument)
+
+    Print #fileNo, "DOCUMENT_STRUCTURE"
+    Print #fileNo, _
+        "DOC|role=OLD_ORACLE" & _
+        "|version=" & oldDoc.PdfVersion & _
+        "|xref=" & oldDoc.XrefKind & _
+        "|pages=" & CStr(oldDoc.PageCount) & _
+        "|objects=" & CStr(oldDoc.ObjectCount) & _
+        "|bytes=" & CStr(oldDoc.FileSize)
+
+    Print #fileNo, _
+        "DOC|role=PREVIOUS_GOOD" & _
+        "|version=" & goodDoc.PdfVersion & _
+        "|xref=" & goodDoc.XrefKind & _
+        "|pages=" & CStr(goodDoc.PageCount) & _
+        "|objects=" & CStr(goodDoc.ObjectCount) & _
+        "|bytes=" & CStr(goodDoc.FileSize)
+
+    Print #fileNo, _
+        "DOC|role=CURRENT" & _
+        "|version=" & currentDoc.PdfVersion & _
+        "|xref=" & currentDoc.XrefKind & _
+        "|pages=" & CStr(currentDoc.PageCount) & _
+        "|objects=" & CStr(currentDoc.ObjectCount) & _
+        "|bytes=" & CStr(currentDoc.FileSize)
+
+    Print #fileNo, ""
+End Sub
+
+Private Sub RegressionWritePageAnalysis( _
+    ByVal fileNo As Long, _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef goodDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object)
+
+    Const METHOD_NAME As String = "RegressionWritePageAnalysis"
+    Dim currentContextMap As Object
+    Dim dictCurrentProfile As Object
+    Dim dictGoodProfile As Object
+    Dim dictOldProfile As Object
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim goodContextMap As Object
+    Dim oldContextMap As Object
+    Dim strCurrent As String
+    Dim strDirection As String
+    Dim strGood As String
+    Dim strOld As String
+
+    On Error GoTo ErrorHandler
+
+    Print #fileNo, "================================================================"
+    Print #fileNo, "PAGE|" & CStr(pageNo)
+    Print #fileNo, "================================================================"
+
+    If pageNo > oldDoc.PageCount Or _
+       pageNo > goodDoc.PageCount Or _
+       pageNo > currentDoc.PageCount Then
+
+        Print #fileNo, _
+            "PAGE_PRESENCE" & _
+            "|OLD=" & BoolText(pageNo <= oldDoc.PageCount) & _
+            "|GOOD=" & BoolText(pageNo <= goodDoc.PageCount) & _
+            "|CURRENT=" & BoolText(pageNo <= currentDoc.PageCount)
+
+        Call RegressionAddIssue( _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples, _
+            "PAGE_MISSING_IN_TRIAD", _
+            3, _
+            "page=" & CStr(pageNo) & _
+            "|OLD=" & BoolText(pageNo <= oldDoc.PageCount) & _
+            "|GOOD=" & BoolText(pageNo <= goodDoc.PageCount) & _
+            "|CURRENT=" & BoolText(pageNo <= currentDoc.PageCount))
+
+        GoTo ExitSub
+    End If
+
+    Print #fileNo, _
+        "STREAM_META" & _
+        "|OLD_refs=" & oldDoc.Pages(pageNo).ContentReferences & _
+        "|GOOD_refs=" & goodDoc.Pages(pageNo).ContentReferences & _
+        "|CURRENT_refs=" & currentDoc.Pages(pageNo).ContentReferences & _
+        "|OLD_len=" & CStr(oldDoc.Pages(pageNo).ContentLength) & _
+        "|GOOD_len=" & CStr(goodDoc.Pages(pageNo).ContentLength) & _
+        "|CURRENT_len=" & CStr(currentDoc.Pages(pageNo).ContentLength)
+
+    Print #fileNo, _
+        "RESOURCES_RAW" & _
+        "|OLD=" & RegressionLimitText(oldDoc.Pages(pageNo).ResourcesDictionary, 1200) & _
+        "|GOOD=" & RegressionLimitText(goodDoc.Pages(pageNo).ResourcesDictionary, 1200) & _
+        "|CURRENT=" & RegressionLimitText(currentDoc.Pages(pageNo).ResourcesDictionary, 1200)
+
+    Call RegressionCompareAndRecord( _
+        fileNo, _
+        pageNo, _
+        "CONTENT_STREAM_SHAPE", _
+        RegressionContentReferenceShape(oldDoc.Pages(pageNo).ContentReferences), _
+        RegressionContentReferenceShape(goodDoc.Pages(pageNo).ContentReferences), _
+        RegressionContentReferenceShape(currentDoc.Pages(pageNo).ContentReferences), _
+        2, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Call RegressionCompareAndRecord( _
+        fileNo, _
+        pageNo, _
+        "CONTENT_FILTERS", _
+        oldDoc.Pages(pageNo).ContentFilters, _
+        goodDoc.Pages(pageNo).ContentFilters, _
+        currentDoc.Pages(pageNo).ContentFilters, _
+        2, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Call RegressionCompareAndRecord( _
+        fileNo, _
+        pageNo, _
+        "FONT_RESOURCE_BINDING", _
+        oldDoc.Pages(pageNo).ResolvedFonts, _
+        goodDoc.Pages(pageNo).ResolvedFonts, _
+        currentDoc.Pages(pageNo).ResolvedFonts, _
+        2, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Call RegressionCompareAndRecord( _
+        fileNo, _
+        pageNo, _
+        "FONT_RESOURCE_FORENSIC", _
+        RegressionStripFontObjectNumbers(oldDoc.Pages(pageNo).FontForensicSignature), _
+        RegressionStripFontObjectNumbers(goodDoc.Pages(pageNo).FontForensicSignature), _
+        RegressionStripFontObjectNumbers(currentDoc.Pages(pageNo).FontForensicSignature), _
+        2, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Set dictOldProfile = BuildOperatorProfileDictionary(oldDoc.Pages(pageNo).ContentText)
+    Set dictGoodProfile = BuildOperatorProfileDictionary(goodDoc.Pages(pageNo).ContentText)
+    Set dictCurrentProfile = BuildOperatorProfileDictionary(currentDoc.Pages(pageNo).ContentText)
+
+    Call RegressionCompareAndRecord( _
+        fileNo, _
+        pageNo, _
+        "OPERATOR_PROFILE_COUNTS", _
+        DictionaryCountSignature(dictOldProfile), _
+        DictionaryCountSignature(dictGoodProfile), _
+        DictionaryCountSignature(dictCurrentProfile), _
+        1, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    strOld = RegressionOperatorSequenceSignature( _
+        oldDoc.Pages(pageNo).ContentText, _
+        False)
+
+    strGood = RegressionOperatorSequenceSignature( _
+        goodDoc.Pages(pageNo).ContentText, _
+        False)
+
+    strCurrent = RegressionOperatorSequenceSignature( _
+        currentDoc.Pages(pageNo).ContentText, _
+        False)
+
+    If strGood <> strCurrent Then
+        strDirection = RegressionDirection(strOld, strGood, strCurrent)
+
+        Print #fileNo, _
+            "OPERATOR_ORDER_DIFF" & _
+            "|direction=" & strDirection & _
+            "|" & RegressionFirstOperatorDifferenceSummary( _
+                goodDoc.Pages(pageNo).ContentText, _
+                currentDoc.Pages(pageNo).ContentText, _
+                False)
+
+        Call RegressionAddIssue( _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples, _
+            "OPERATOR_ORDER_CHANGED", _
+            RegressionPriorityFromDirection(strDirection, 2), _
+            "page=" & CStr(pageNo) & _
+            "|direction=" & strDirection & _
+            "|" & RegressionFirstOperatorDifferenceSummary( _
+                goodDoc.Pages(pageNo).ContentText, _
+                currentDoc.Pages(pageNo).ContentText, _
+                False))
+    Else
+        Print #fileNo, "OPERATOR_ORDER|GOOD=CURRENT"
+    End If
+
+    strOld = RegressionOperatorSequenceSignature( _
+        oldDoc.Pages(pageNo).ContentText, _
+        True)
+
+    strGood = RegressionOperatorSequenceSignature( _
+        goodDoc.Pages(pageNo).ContentText, _
+        True)
+
+    strCurrent = RegressionOperatorSequenceSignature( _
+        currentDoc.Pages(pageNo).ContentText, _
+        True)
+
+    If strGood <> strCurrent Then
+        strDirection = RegressionDirection(strOld, strGood, strCurrent)
+
+        Print #fileNo, _
+            "OPERATOR_SERIALIZATION_DIFF" & _
+            "|direction=" & strDirection & _
+            "|" & RegressionFirstOperatorDifferenceSummary( _
+                goodDoc.Pages(pageNo).ContentText, _
+                currentDoc.Pages(pageNo).ContentText, _
+                True)
+
+        Call RegressionAddIssue( _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples, _
+            "OPERATOR_SERIALIZATION_CHANGED", _
+            RegressionPriorityFromDirection(strDirection, 2), _
+            "page=" & CStr(pageNo) & _
+            "|direction=" & strDirection & _
+            "|" & RegressionFirstOperatorDifferenceSummary( _
+                goodDoc.Pages(pageNo).ContentText, _
+                currentDoc.Pages(pageNo).ContentText, _
+                True))
+    Else
+        Print #fileNo, "OPERATOR_SERIALIZATION|GOOD=CURRENT"
+    End If
+
+    Call RegressionCompareAndRecord( _
+        fileNo, _
+        pageNo, _
+        "INVISIBLE_RECTANGLE_PROFILE", _
+        RegressionInvisibleRectangleSignature(oldDoc.Pages(pageNo).ContentText), _
+        RegressionInvisibleRectangleSignature(goodDoc.Pages(pageNo).ContentText), _
+        RegressionInvisibleRectangleSignature(currentDoc.Pages(pageNo).ContentText), _
+        3, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Call RegressionCompareSeparatorFamily( _
+        fileNo, _
+        pageNo, _
+        TARGET_X_FIRST, _
+        oldDoc, _
+        goodDoc, _
+        currentDoc, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Call RegressionCompareSeparatorFamily( _
+        fileNo, _
+        pageNo, _
+        TARGET_X_SECOND, _
+        oldDoc, _
+        goodDoc, _
+        currentDoc, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Set oldContextMap = RegressionBuildTextContextMap( _
+        oldDoc.Pages(pageNo).ContentText)
+
+    Set goodContextMap = RegressionBuildTextContextMap( _
+        goodDoc.Pages(pageNo).ContentText)
+
+    Set currentContextMap = RegressionBuildTextContextMap( _
+        currentDoc.Pages(pageNo).ContentText)
+
+    Call RegressionCompareTargetTextContexts( _
+        fileNo, _
+        pageNo, _
+        oldDoc, _
+        goodDoc, _
+        currentDoc, _
+        oldContextMap, _
+        goodContextMap, _
+        currentContextMap, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Print #fileNo, ""
+
+ExitSub:
+    Set currentContextMap = Nothing
+    Set dictCurrentProfile = Nothing
+    Set dictGoodProfile = Nothing
+    Set dictOldProfile = Nothing
+    Set goodContextMap = Nothing
+    Set oldContextMap = Nothing
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo", _
+        pageNo
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+Private Sub RegressionCompareAndRecord( _
+    ByVal fileNo As Long, _
+    ByVal pageNo As Long, _
+    ByVal family As String, _
+    ByVal oldSignature As String, _
+    ByVal goodSignature As String, _
+    ByVal currentSignature As String, _
+    ByVal basePriority As Long, _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object)
+
+    Dim lngPriority As Long
+    Dim strDirection As String
+
+    strDirection = RegressionDirection( _
+        oldSignature, _
+        goodSignature, _
+        currentSignature)
+
+    Print #fileNo, _
+        "TRIAD" & _
+        "|family=" & family & _
+        "|direction=" & strDirection & _
+        "|OLD=" & RegressionLimitText(oldSignature, 900) & _
+        "|GOOD=" & RegressionLimitText(goodSignature, 900) & _
+        "|CURRENT=" & RegressionLimitText(currentSignature, 900)
+
+    If goodSignature <> currentSignature Then
+        lngPriority = RegressionPriorityFromDirection( _
+            strDirection, _
+            basePriority)
+
+        Call RegressionAddIssue( _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples, _
+            family, _
+            lngPriority, _
+            "page=" & CStr(pageNo) & _
+            "|direction=" & strDirection & _
+            "|GOOD=" & RegressionLimitText(goodSignature, 500) & _
+            "|CURRENT=" & RegressionLimitText(currentSignature, 500))
+    End If
+End Sub
+
+Private Sub RegressionCompareSeparatorFamily( _
+    ByVal fileNo As Long, _
+    ByVal pageNo As Long, _
+    ByVal targetX As Double, _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef goodDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument, _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object)
+
+    Dim strFamily As String
+    Dim strTarget As String
+
+    strTarget = Replace(NumTxt(targetX), ".", "_")
+
+    strFamily = "VISIBLE_SEPARATOR_ENCODING_X" & strTarget
+    Call RegressionCompareAndRecord( _
+        fileNo, _
+        pageNo, _
+        strFamily, _
+        RegressionVisibleSeparatorSignature(oldDoc, pageNo, targetX), _
+        RegressionVisibleSeparatorSignature(goodDoc, pageNo, targetX), _
+        RegressionVisibleSeparatorSignature(currentDoc, pageNo, targetX), _
+        3, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    strFamily = "RECTANGLE_EDGE_TOPOLOGY_X" & strTarget
+    Call RegressionCompareAndRecord( _
+        fileNo, _
+        pageNo, _
+        strFamily, _
+        RegressionRectangleEdgeSignature(oldDoc.Pages(pageNo).ContentText, targetX), _
+        RegressionRectangleEdgeSignature(goodDoc.Pages(pageNo).ContentText, targetX), _
+        RegressionRectangleEdgeSignature(currentDoc.Pages(pageNo).ContentText, targetX), _
+        3, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+End Sub
+
+Private Function RegressionVisibleSeparatorSignature( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal targetX As Double) As String
+
+    Const METHOD_NAME As String = "RegressionVisibleSeparatorSignature"
+    Dim dictLines As Object
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngEnd As Long
+    Dim lngIndex As Long
+    Dim lngStart As Long
+    Dim strKey As String
+
+    On Error GoTo ErrorHandler
+
+    Set dictLines = CreateObject("Scripting.Dictionary")
+
+    If pageNo < 1 Or pageNo > pdfDoc.PageCount Then
+        RegressionVisibleSeparatorSignature = "(page-missing)"
+        GoTo ExitFunction
+    End If
+
+    lngStart = pdfDoc.Pages(pageNo).LineStart
+    lngEnd = lngStart + pdfDoc.Pages(pageNo).LineCount - 1
+
+    For lngIndex = lngStart To lngEnd
+        If IsVerticalAtX( _
+            pdfDoc.Lines(lngIndex), _
+            targetX, _
+            TARGET_TOLERANCE) Then
+
+            strKey = _
+                "y=" & NumTxt(WorksheetFunction.Min( _
+                    pdfDoc.Lines(lngIndex).Y1, _
+                    pdfDoc.Lines(lngIndex).Y2)) & _
+                ".." & _
+                NumTxt(WorksheetFunction.Max( _
+                    pdfDoc.Lines(lngIndex).Y1, _
+                    pdfDoc.Lines(lngIndex).Y2)) & _
+                ",w=" & NumTxt(pdfDoc.Lines(lngIndex).LineWidth) & _
+                ",paint=" & pdfDoc.Lines(lngIndex).PaintOperator & _
+                ",source=" & pdfDoc.Lines(lngIndex).SourceOperator & _
+                ",stroke=" & pdfDoc.Lines(lngIndex).StrokeColor
+
+            Call IncrementDictionaryValue(dictLines, strKey)
+        End If
+    Next lngIndex
+
+    If dictLines.Count = 0 Then
+        RegressionVisibleSeparatorSignature = "(none)"
+    Else
+        RegressionVisibleSeparatorSignature = DictionaryCountSignature(dictLines)
+    End If
+
+ExitFunction:
+    Set dictLines = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    RegressionVisibleSeparatorSignature = "(error)"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;targetX", _
+        pageNo, _
+        targetX
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+Private Function RegressionContentReferenceShape( _
+    ByVal contentReferences As String) As String
+
+    Dim arrRefs As Variant
+
+    If Len(Trim$(contentReferences)) = 0 Then
+        RegressionContentReferenceShape = "count=0"
+        Exit Function
+    End If
+
+    arrRefs = Split(contentReferences, ",")
+    RegressionContentReferenceShape = _
+        "count=" & CStr(UBound(arrRefs) - LBound(arrRefs) + 1)
+End Function
+
+Private Function RegressionStripFontObjectNumbers( _
+    ByVal forensicSignature As String) As String
+
+    Const METHOD_NAME As String = "RegressionStripFontObjectNumbers"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngEnd As Long
+    Dim lngStart As Long
+    Dim strResult As String
+
+    On Error GoTo ErrorHandler
+
+    strResult = forensicSignature
+    lngStart = InStr(1, strResult, "|obj=", vbBinaryCompare)
+
+    Do While lngStart > 0
+        lngEnd = InStr(lngStart + 5, strResult, "|", vbBinaryCompare)
+
+        If lngEnd = 0 Then
+            strResult = Left$(strResult, lngStart - 1)
+            Exit Do
+        End If
+
+        strResult = _
+            Left$(strResult, lngStart - 1) & _
+            Mid$(strResult, lngEnd)
+
+        lngStart = InStr(lngStart, strResult, "|obj=", vbBinaryCompare)
+    Loop
+
+    RegressionStripFontObjectNumbers = strResult
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    RegressionStripFontObjectNumbers = forensicSignature
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+Private Function RegressionDirection( _
+    ByVal oldSignature As String, _
+    ByVal goodSignature As String, _
+    ByVal currentSignature As String) As String
+
+    If goodSignature = currentSignature Then
+        RegressionDirection = "STABLE_GOOD_TO_CURRENT"
+    ElseIf goodSignature = oldSignature And _
+           currentSignature <> oldSignature Then
+        RegressionDirection = "REGRESSED_FROM_OLD_MATCH"
+    ElseIf currentSignature = oldSignature And _
+           goodSignature <> oldSignature Then
+        RegressionDirection = "MOVED_TOWARD_OLD"
+    ElseIf goodSignature <> oldSignature And _
+           currentSignature <> oldSignature Then
+        RegressionDirection = "CHANGED_BETWEEN_GENERATED"
+    Else
+        RegressionDirection = "CHANGED"
+    End If
+End Function
+
+Private Function RegressionPriorityFromDirection( _
+    ByVal direction As String, _
+    ByVal basePriority As Long) As Long
+
+    RegressionPriorityFromDirection = basePriority
+
+    If direction = "REGRESSED_FROM_OLD_MATCH" Then
+        If RegressionPriorityFromDirection < 3 Then
+            RegressionPriorityFromDirection = _
+                RegressionPriorityFromDirection + 1
+        End If
+    ElseIf direction = "MOVED_TOWARD_OLD" Then
+        If RegressionPriorityFromDirection > 1 Then
+            RegressionPriorityFromDirection = _
+                RegressionPriorityFromDirection - 1
+        End If
+    End If
+End Function
+
+Private Function RegressionLimitText( _
+    ByVal textValue As String, _
+    ByVal maxLength As Long) As String
+
+    Dim strResult As String
+
+    strResult = SanitizeReportText(textValue)
+
+    If maxLength > 0 And Len(strResult) > maxLength Then
+        strResult = Left$(strResult, maxLength) & "...[truncated]"
+    End If
+
+    RegressionLimitText = strResult
+End Function
+
+Private Sub RegressionAddIssue( _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object, _
+    ByVal family As String, _
+    ByVal priority As Long, _
+    ByVal sample As String)
+
+    Const MAX_SAMPLES_PER_FAMILY As Long = 4
+    Dim lngCount As Long
+    Dim lngExistingPriority As Long
+    Dim lngSampleNo As Long
+    Dim strSampleKey As String
+
+    If dictIssueCounts.Exists(family) Then
+        lngCount = CLng(dictIssueCounts(family)) + 1
+    Else
+        lngCount = 1
+    End If
+    dictIssueCounts(family) = lngCount
+
+    If dictIssuePriorities.Exists(family) Then
+        lngExistingPriority = CLng(dictIssuePriorities(family))
+        If priority > lngExistingPriority Then
+            dictIssuePriorities(family) = priority
+        End If
+    Else
+        dictIssuePriorities(family) = priority
+    End If
+
+    For lngSampleNo = 1 To MAX_SAMPLES_PER_FAMILY
+        strSampleKey = family & "|" & CStr(lngSampleNo)
+
+        If Not dictIssueSamples.Exists(strSampleKey) Then
+            dictIssueSamples(strSampleKey) = _
+                RegressionLimitText(sample, 1400)
+            Exit For
+        End If
+    Next lngSampleNo
+End Sub
+
+Private Function RegressionPriorityLabel( _
+    ByVal priority As Long) As String
+
+    Select Case priority
+        Case Is >= 3
+            RegressionPriorityLabel = "CRITICAL"
+        Case 2
+            RegressionPriorityLabel = "HIGH"
+        Case Else
+            RegressionPriorityLabel = "REVIEW"
+    End Select
+End Function
+
+Private Function RegressionOperatorSequenceSignature( _
+    ByVal content As String, _
+    ByVal includeOperands As Boolean) As String
+
+    Const METHOD_NAME As String = "RegressionOperatorSequenceSignature"
+    Dim arrTokens() As String
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim h0 As String
+    Dim h1 As String
+    Dim h2 As String
+    Dim h3 As String
+    Dim h4 As String
+    Dim h5 As String
+    Dim lngIndex As Long
+    Dim lngTokenCount As Long
+    Dim strResult As String
+    Dim strToken As String
+
+    On Error GoTo ErrorHandler
+
+    lngTokenCount = Tokenize(content, arrTokens)
+
+    For lngIndex = 0 To lngTokenCount - 1
+        strToken = arrTokens(lngIndex)
+
+        If IsAuditOperator(strToken) Then
+            If Len(strResult) > 0 Then
+                strResult = strResult & ";"
+            End If
+
+            If includeOperands Then
+                strResult = strResult & _
+                    RegressionOperatorSummary( _
+                        strToken, _
+                        h0, _
+                        h1, _
+                        h2, _
+                        h3, _
+                        h4, _
+                        h5)
+            Else
+                strResult = strResult & strToken
+            End If
+        End If
+
+        h5 = h4
+        h4 = h3
+        h3 = h2
+        h2 = h1
+        h1 = h0
+        h0 = strToken
+    Next lngIndex
+
+    RegressionOperatorSequenceSignature = strResult
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    RegressionOperatorSequenceSignature = "(error)"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "contentLength;includeOperands", _
+        Len(content), _
+        includeOperands
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+Private Function RegressionFirstOperatorDifferenceSummary( _
+    ByVal goodContent As String, _
+    ByVal currentContent As String, _
+    ByVal includeOperands As Boolean) As String
+
+    Const METHOD_NAME As String = "RegressionFirstOperatorDifferenceSummary"
+    Dim arrCurrent() As String
+    Dim arrGood() As String
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngCurrentCount As Long
+    Dim lngGoodCount As Long
+    Dim lngIndex As Long
+    Dim lngLimit As Long
+
+    On Error GoTo ErrorHandler
+
+    lngGoodCount = RegressionBuildOperatorEventArray( _
+        goodContent, _
+        includeOperands, _
+        arrGood)
+
+    lngCurrentCount = RegressionBuildOperatorEventArray( _
+        currentContent, _
+        includeOperands, _
+        arrCurrent)
+
+    lngLimit = lngGoodCount
+    If lngCurrentCount < lngLimit Then
+        lngLimit = lngCurrentCount
+    End If
+
+    For lngIndex = 0 To lngLimit - 1
+        If arrGood(lngIndex) <> arrCurrent(lngIndex) Then
+            RegressionFirstOperatorDifferenceSummary = _
+                "firstDiffOrdinal=" & CStr(lngIndex + 1) & _
+                "|GOOD_WINDOW=" & _
+                RegressionArrayWindow(arrGood, lngGoodCount, lngIndex, 5) & _
+                "|CURRENT_WINDOW=" & _
+                RegressionArrayWindow(arrCurrent, lngCurrentCount, lngIndex, 5)
+            GoTo ExitFunction
+        End If
+    Next lngIndex
+
+    If lngGoodCount <> lngCurrentCount Then
+        RegressionFirstOperatorDifferenceSummary = _
+            "firstDiffOrdinal=" & CStr(lngLimit + 1) & _
+            "|GOOD_COUNT=" & CStr(lngGoodCount) & _
+            "|CURRENT_COUNT=" & CStr(lngCurrentCount) & _
+            "|GOOD_TAIL=" & _
+            RegressionArrayWindow(arrGood, lngGoodCount, lngLimit, 5) & _
+            "|CURRENT_TAIL=" & _
+            RegressionArrayWindow(arrCurrent, lngCurrentCount, lngLimit, 5)
+    Else
+        RegressionFirstOperatorDifferenceSummary = _
+            "firstDiffOrdinal=(none)"
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    RegressionFirstOperatorDifferenceSummary = "(error)"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "includeOperands", _
+        includeOperands
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+Private Function RegressionBuildOperatorEventArray( _
+    ByVal content As String, _
+    ByVal includeOperands As Boolean, _
+    ByRef events() As String) As Long
+
+    Const METHOD_NAME As String = "RegressionBuildOperatorEventArray"
+    Dim arrTokens() As String
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim h0 As String
+    Dim h1 As String
+    Dim h2 As String
+    Dim h3 As String
+    Dim h4 As String
+    Dim h5 As String
+    Dim lngCount As Long
+    Dim lngIndex As Long
+    Dim lngTokenCount As Long
+    Dim strToken As String
+
+    On Error GoTo ErrorHandler
+
+    lngTokenCount = Tokenize(content, arrTokens)
+    ReDim events(0 To lngTokenCount)
+
+    For lngIndex = 0 To lngTokenCount - 1
+        strToken = arrTokens(lngIndex)
+
+        If IsAuditOperator(strToken) Then
+            If includeOperands Then
+                events(lngCount) = _
+                    RegressionOperatorSummary( _
+                        strToken, _
+                        h0, _
+                        h1, _
+                        h2, _
+                        h3, _
+                        h4, _
+                        h5)
+            Else
+                events(lngCount) = strToken
+            End If
+
+            lngCount = lngCount + 1
+        End If
+
+        h5 = h4
+        h4 = h3
+        h3 = h2
+        h2 = h1
+        h1 = h0
+        h0 = strToken
+    Next lngIndex
+
+    RegressionBuildOperatorEventArray = lngCount
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ReDim events(0 To 0)
+    RegressionBuildOperatorEventArray = 0
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+Private Function RegressionOperatorSummary( _
+    ByVal operatorName As String, _
+    ByVal h0 As String, _
+    ByVal h1 As String, _
+    ByVal h2 As String, _
+    ByVal h3 As String, _
+    ByVal h4 As String, _
+    ByVal h5 As String) As String
+
+    Select Case operatorName
+        Case "Tf"
+            RegressionOperatorSummary = _
+                "Tf(" & h1 & "," & h0 & ")"
+
+        Case "Tm", "cm"
+            RegressionOperatorSummary = _
+                operatorName & _
+                "(" & h5 & "," & h4 & "," & h3 & "," & _
+                h2 & "," & h1 & "," & h0 & ")"
+
+        Case "Td", "TD", "m", "l"
+            RegressionOperatorSummary = _
+                operatorName & "(" & h1 & "," & h0 & ")"
+
+        Case "re"
+            RegressionOperatorSummary = _
+                "re(" & h3 & "," & h2 & "," & h1 & "," & h0 & ")"
+
+        Case "w", "G", "g", "J", "j", "M", "Tr", "Tc", "Tw", "Tz", "Ts"
+            RegressionOperatorSummary = _
+                operatorName & "(" & h0 & ")"
+
+        Case "RG", "rg"
+            RegressionOperatorSummary = _
+                operatorName & "(" & h2 & "," & h1 & "," & h0 & ")"
+
+        Case "K", "k"
+            RegressionOperatorSummary = _
+                operatorName & _
+                "(" & h3 & "," & h2 & "," & h1 & "," & h0 & ")"
+
+        Case "Do"
+            RegressionOperatorSummary = _
+                "Do(" & h0 & ")"
+
+        Case "Tj", "'", """", "TJ"
+            RegressionOperatorSummary = operatorName & "(<TEXT>)"
+
+        Case Else
+            RegressionOperatorSummary = operatorName
+    End Select
+End Function
+
+Private Function RegressionArrayWindow( _
+    ByRef values() As String, _
+    ByVal valueCount As Long, _
+    ByVal centreIndex As Long, _
+    ByVal radius As Long) As String
+
+    Dim lngEnd As Long
+    Dim lngIndex As Long
+    Dim lngStart As Long
+    Dim strResult As String
+
+    If valueCount <= 0 Then
+        RegressionArrayWindow = "(none)"
+        Exit Function
+    End If
+
+    lngStart = centreIndex - radius
+    If lngStart < 0 Then
+        lngStart = 0
+    End If
+
+    lngEnd = centreIndex + radius
+    If lngEnd > valueCount - 1 Then
+        lngEnd = valueCount - 1
+    End If
+
+    For lngIndex = lngStart To lngEnd
+        If Len(strResult) > 0 Then
+            strResult = strResult & ">"
+        End If
+
+        strResult = strResult & _
+            CStr(lngIndex + 1) & ":" & values(lngIndex)
+    Next lngIndex
+
+    RegressionArrayWindow = RegressionLimitText(strResult, 1400)
+End Function
+
+Private Function RegressionInvisibleRectangleSignature( _
+    ByVal content As String) As String
+
+    Const METHOD_NAME As String = "RegressionInvisibleRectangleSignature"
+    Dim dictEvents As Object
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    Set dictEvents = RegressionBuildRectangleEventDictionary( _
+        content, _
+        "INVISIBLE", _
+        0#)
+
+    If dictEvents Is Nothing Then
+        RegressionInvisibleRectangleSignature = "(error)"
+    ElseIf dictEvents.Count = 0 Then
+        RegressionInvisibleRectangleSignature = "(none)"
+    Else
+        RegressionInvisibleRectangleSignature = _
+            DictionaryCountSignature(dictEvents)
+    End If
+
+ExitFunction:
+    Set dictEvents = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    RegressionInvisibleRectangleSignature = "(error)"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+Private Function RegressionRectangleEdgeSignature( _
+    ByVal content As String, _
+    ByVal targetX As Double) As String
+
+    Const METHOD_NAME As String = "RegressionRectangleEdgeSignature"
+    Dim dictEvents As Object
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    Set dictEvents = RegressionBuildRectangleEventDictionary( _
+        content, _
+        "EDGE", _
+        targetX)
+
+    If dictEvents Is Nothing Then
+        RegressionRectangleEdgeSignature = "(error)"
+    ElseIf dictEvents.Count = 0 Then
+        RegressionRectangleEdgeSignature = "(none)"
+    Else
+        RegressionRectangleEdgeSignature = _
+            DictionaryCountSignature(dictEvents)
+    End If
+
+ExitFunction:
+    Set dictEvents = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    RegressionRectangleEdgeSignature = "(error)"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "targetX", _
+        targetX
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+Private Function RegressionBuildRectangleEventDictionary( _
+    ByVal content As String, _
+    ByVal mode As String, _
+    ByVal targetX As Double) As Object
+
+    Const METHOD_NAME As String = "RegressionBuildRectangleEventDictionary"
+    Dim arrPending() As String
+    Dim arrTokens() As String
+    Dim dblLeft As Double
+    Dim dblRight As Double
+    Dim dictEvents As Object
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim h0 As String
+    Dim h1 As String
+    Dim h2 As String
+    Dim h3 As String
+    Dim h4 As String
+    Dim h5 As String
+    Dim lngIndex As Long
+    Dim lngPendingCount As Long
+    Dim lngPendingIndex As Long
+    Dim lngTokenCount As Long
+    Dim strEvent As String
+    Dim strFinalizer As String
+    Dim strToken As String
+    Dim strX As String
+    Dim strY As String
+    Dim strW As String
+    Dim strH As String
+    Dim varParts As Variant
+
+    On Error GoTo ErrorHandler
+
+    Set dictEvents = CreateObject("Scripting.Dictionary")
+    ReDim arrPending(0 To 31)
+
+    lngTokenCount = Tokenize(content, arrTokens)
+
+    For lngIndex = 0 To lngTokenCount - 1
+        strToken = arrTokens(lngIndex)
+
+        If strToken = "re" Then
+            If lngPendingCount > UBound(arrPending) Then
+                ReDim Preserve arrPending(0 To UBound(arrPending) * 2)
+            End If
+
+            arrPending(lngPendingCount) = _
+                NumTxt(Val(h3)) & "," & _
+                NumTxt(Val(h2)) & "," & _
+                NumTxt(Val(h1)) & "," & _
+                NumTxt(Val(h0))
+
+            lngPendingCount = lngPendingCount + 1
+
+        ElseIf RegressionIsPathFinalizer(strToken) Then
+            strFinalizer = strToken
+
+            For lngPendingIndex = 0 To lngPendingCount - 1
+                varParts = Split( _
+                    arrPending(lngPendingIndex), _
+                    ",")
+
+                If UBound(varParts) >= 3 Then
+                    strX = CStr(varParts(0))
+                    strY = CStr(varParts(1))
+                    strW = CStr(varParts(2))
+                    strH = CStr(varParts(3))
+
+                    If mode = "INVISIBLE" Then
+                        If strFinalizer = "n" Then
+                            strEvent = _
+                                "re(" & strX & "," & strY & "," & _
+                                strW & "," & strH & ")->n"
+
+                            Call IncrementDictionaryValue( _
+                                dictEvents, _
+                                strEvent)
+                        End If
+
+                    ElseIf mode = "EDGE" Then
+                        dblLeft = Val(strX)
+                        dblRight = dblLeft + Val(strW)
+
+                        If Abs(dblLeft - targetX) <= TARGET_TOLERANCE Or _
+                           Abs(dblRight - targetX) <= TARGET_TOLERANCE Then
+
+                            strEvent = _
+                                "edgeX=" & NumTxt(targetX) & _
+                                ",rect=" & strX & "," & strY & "," & _
+                                strW & "," & strH & _
+                                ",final=" & strFinalizer
+
+                            Call IncrementDictionaryValue( _
+                                dictEvents, _
+                                strEvent)
+                        End If
+                    End If
+                End If
+            Next lngPendingIndex
+
+            lngPendingCount = 0
+        End If
+
+        h5 = h4
+        h4 = h3
+        h3 = h2
+        h2 = h1
+        h1 = h0
+        h0 = strToken
+    Next lngIndex
+
+    Set RegressionBuildRectangleEventDictionary = dictEvents
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    Set RegressionBuildRectangleEventDictionary = Nothing
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "mode;targetX", _
+        mode, _
+        targetX
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+Private Function RegressionIsPathFinalizer( _
+    ByVal operatorName As String) As Boolean
+
+    Select Case operatorName
+        Case "S", "s", "B", "B*", "b", "b*", _
+             "f", "f*", "F", "n"
+            RegressionIsPathFinalizer = True
+    End Select
+End Function
+
+Private Function RegressionBuildTextContextMap( _
+    ByVal content As String) As Object
+
+    Const METHOD_NAME As String = "RegressionBuildTextContextMap"
+    Dim arrOpNames() As String
+    Dim arrOpSummaries() As String
+    Dim arrTokens() As String
+    Dim blnInArray As Boolean
+    Dim dblFontSize As Double
+    Dim dictEventFont As Object
+    Dim dictEventOp As Object
+    Dim dictResult As Object
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim h0 As String
+    Dim h1 As String
+    Dim h2 As String
+    Dim h3 As String
+    Dim h4 As String
+    Dim h5 As String
+    Dim lngCurrentOp As Long
+    Dim lngIndex As Long
+    Dim lngKeyIndex As Long
+    Dim lngOpCount As Long
+    Dim lngTextCount As Long
+    Dim lngTokenCount As Long
+    Dim strArrayText As String
+    Dim strContext As String
+    Dim strFontName As String
+    Dim strKey As String
+    Dim strLastText As String
+    Dim strTextValue As String
+    Dim strToken As String
+    Dim varKeys As Variant
+
+    On Error GoTo ErrorHandler
+
+    Set dictEventFont = CreateObject("Scripting.Dictionary")
+    Set dictEventOp = CreateObject("Scripting.Dictionary")
+    Set dictResult = CreateObject("Scripting.Dictionary")
+
+    lngTokenCount = Tokenize(content, arrTokens)
+    ReDim arrOpNames(0 To lngTokenCount)
+    ReDim arrOpSummaries(0 To lngTokenCount)
+
+    For lngIndex = 0 To lngTokenCount - 1
+        strToken = arrTokens(lngIndex)
+        lngCurrentOp = -1
+
+        If IsAuditOperator(strToken) Then
+            arrOpNames(lngOpCount) = strToken
+            arrOpSummaries(lngOpCount) = _
+                RegressionOperatorSummary( _
+                    strToken, _
+                    h0, _
+                    h1, _
+                    h2, _
+                    h3, _
+                    h4, _
+                    h5)
+
+            lngCurrentOp = lngOpCount
+            lngOpCount = lngOpCount + 1
+        End If
+
+        Select Case strToken
+            Case "BT"
+                strLastText = vbNullString
+                strArrayText = vbNullString
+
+            Case "Tf"
+                dblFontSize = Val(h0)
+                strFontName = h1
+
+            Case "Tj", "'"
+                strTextValue = strLastText
+
+                If Len(Trim$(strTextValue)) > 0 Then
+                    lngTextCount = lngTextCount + 1
+                    strKey = CStr(lngTextCount)
+                    dictEventOp(strKey) = lngCurrentOp
+                    dictEventFont(strKey) = _
+                        strFontName & "@" & NumTxt(dblFontSize)
+                End If
+
+            Case "TJ"
+                strTextValue = strArrayText
+
+                If Len(Trim$(strTextValue)) > 0 Then
+                    lngTextCount = lngTextCount + 1
+                    strKey = CStr(lngTextCount)
+                    dictEventOp(strKey) = lngCurrentOp
+                    dictEventFont(strKey) = _
+                        strFontName & "@" & NumTxt(dblFontSize)
+                End If
+
+                strArrayText = vbNullString
+
+            Case "["
+                blnInArray = True
+                strArrayText = vbNullString
+
+            Case "]"
+                blnInArray = False
+        End Select
+
+        If Len(strToken) > 0 Then
+            If Left$(strToken, 1) = "(" Then
+                strLastText = Mid$(strToken, 2)
+
+                If blnInArray Then
+                    strArrayText = _
+                        strArrayText & strLastText
+                End If
+            End If
+        End If
+
+        h5 = h4
+        h4 = h3
+        h3 = h2
+        h2 = h1
+        h1 = h0
+        h0 = strToken
+    Next lngIndex
+
+    If dictEventOp.Count > 0 Then
+        varKeys = dictEventOp.Keys
+
+        For lngKeyIndex = LBound(varKeys) To UBound(varKeys)
+            strKey = CStr(varKeys(lngKeyIndex))
+            lngCurrentOp = CLng(dictEventOp(strKey))
+
+            strContext = _
+                "FONT=" & CStr(dictEventFont(strKey)) & _
+                "||OPS=" & _
+                RegressionRelativeArrayWindow( _
+                    arrOpNames, _
+                    lngOpCount, _
+                    lngCurrentOp, _
+                    7) & _
+                "||PATH=" & _
+                RegressionNearestPathContext( _
+                    arrOpNames, _
+                    arrOpSummaries, _
+                    lngOpCount, _
+                    lngCurrentOp) & _
+                "||RAW=" & _
+                RegressionRelativeArrayWindow( _
+                    arrOpSummaries, _
+                    lngOpCount, _
+                    lngCurrentOp, _
+                    7)
+
+            dictResult(strKey) = strContext
+        Next lngKeyIndex
+    End If
+
+    Set RegressionBuildTextContextMap = dictResult
+
+ExitFunction:
+    Set dictEventFont = Nothing
+    Set dictEventOp = Nothing
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    Set RegressionBuildTextContextMap = Nothing
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "contentLength", _
+        Len(content)
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+Private Function RegressionRelativeArrayWindow( _
+    ByRef values() As String, _
+    ByVal valueCount As Long, _
+    ByVal centreIndex As Long, _
+    ByVal radius As Long) As String
+
+    Dim lngEnd As Long
+    Dim lngIndex As Long
+    Dim lngRelative As Long
+    Dim lngStart As Long
+    Dim strResult As String
+
+    If valueCount <= 0 Or centreIndex < 0 Then
+        RegressionRelativeArrayWindow = "(none)"
+        Exit Function
+    End If
+
+    lngStart = centreIndex - radius
+    If lngStart < 0 Then
+        lngStart = 0
+    End If
+
+    lngEnd = centreIndex + radius
+    If lngEnd > valueCount - 1 Then
+        lngEnd = valueCount - 1
+    End If
+
+    For lngIndex = lngStart To lngEnd
+        If Len(strResult) > 0 Then
+            strResult = strResult & ">"
+        End If
+
+        lngRelative = lngIndex - centreIndex
+        strResult = strResult & _
+            CStr(lngRelative) & ":" & values(lngIndex)
+    Next lngIndex
+
+    RegressionRelativeArrayWindow = _
+        RegressionLimitText(strResult, 1800)
+End Function
+
+Private Function RegressionNearestPathContext( _
+    ByRef opNames() As String, _
+    ByRef opSummaries() As String, _
+    ByVal opCount As Long, _
+    ByVal centreIndex As Long) As String
+
+    Dim lngDistance As Long
+    Dim lngIndex As Long
+    Dim strNext As String
+    Dim strPrevious As String
+
+    For lngIndex = centreIndex - 1 To 0 Step -1
+        If RegressionIsPathOperator(opNames(lngIndex)) Then
+            lngDistance = centreIndex - lngIndex
+            strPrevious = _
+                "-" & CStr(lngDistance) & ":" & _
+                opSummaries(lngIndex)
+            Exit For
+        End If
+    Next lngIndex
+
+    For lngIndex = centreIndex + 1 To opCount - 1
+        If RegressionIsPathOperator(opNames(lngIndex)) Then
+            lngDistance = lngIndex - centreIndex
+            strNext = _
+                "+" & CStr(lngDistance) & ":" & _
+                opSummaries(lngIndex)
+            Exit For
+        End If
+    Next lngIndex
+
+    If Len(strPrevious) = 0 Then
+        strPrevious = "(none)"
+    End If
+
+    If Len(strNext) = 0 Then
+        strNext = "(none)"
+    End If
+
+    RegressionNearestPathContext = _
+        "prev=" & strPrevious & _
+        ",next=" & strNext
+End Function
+
+Private Function RegressionIsPathOperator( _
+    ByVal operatorName As String) As Boolean
+
+    Select Case operatorName
+        Case "m", "l", "h", "re", _
+             "S", "s", "B", "B*", "b", "b*", _
+             "f", "f*", "F", "n"
+            RegressionIsPathOperator = True
+    End Select
+End Function
+
+Private Function RegressionContextPart( _
+    ByVal contextValue As String, _
+    ByVal partName As String) As String
+
+    Dim arrParts As Variant
+    Dim lngIndex As Long
+    Dim strPrefix As String
+
+    strPrefix = partName & "="
+    arrParts = Split(contextValue, "||")
+
+    For lngIndex = LBound(arrParts) To UBound(arrParts)
+        If Left$(CStr(arrParts(lngIndex)), Len(strPrefix)) = strPrefix Then
+            RegressionContextPart = _
+                Mid$(CStr(arrParts(lngIndex)), Len(strPrefix) + 1)
+            Exit Function
+        End If
+    Next lngIndex
+
+    RegressionContextPart = "(missing)"
+End Function
+
+Private Sub RegressionCompareTargetTextContexts( _
+    ByVal fileNo As Long, _
+    ByVal pageNo As Long, _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef goodDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument, _
+    ByVal oldContextMap As Object, _
+    ByVal goodContextMap As Object, _
+    ByVal currentContextMap As Object, _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object)
+
+    Const METHOD_NAME As String = "RegressionCompareTargetTextContexts"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngCurrentIndex As Long
+    Dim lngGoodEnd As Long
+    Dim lngGoodIndex As Long
+    Dim lngGoodOrdinal As Long
+    Dim lngGoodStart As Long
+    Dim lngOldIndex As Long
+    Dim strClass As String
+    Dim strCurrentContext As String
+    Dim strCurrentFontAlias As String
+    Dim strCurrentFontSemantic As String
+    Dim strDirection As String
+    Dim strFamily As String
+    Dim strGoodContext As String
+    Dim strGoodFontAlias As String
+    Dim strGoodFontSemantic As String
+    Dim strOldContext As String
+    Dim strOldFontAlias As String
+    Dim strOldFontSemantic As String
+    Dim strRole As String
+
+    On Error GoTo ErrorHandler
+
+    lngGoodStart = goodDoc.Pages(pageNo).TextStart
+    lngGoodEnd = _
+        lngGoodStart + _
+        goodDoc.Pages(pageNo).TextCount - 1
+
+    For lngGoodIndex = lngGoodStart To lngGoodEnd
+        strRole = RegressionInferStructuralFieldRole( _
+            pageNo, _
+            goodDoc.Texts(lngGoodIndex).X, _
+            goodDoc.Texts(lngGoodIndex).Y)
+
+        If RegressionIsParserTargetRole(strRole) Then
+            strClass = RegressionTargetRoleClass(strRole)
+
+            lngCurrentIndex = RegressionFindCounterpartText( _
+                currentDoc, _
+                pageNo, _
+                strRole, _
+                goodDoc.Texts(lngGoodIndex).X, _
+                goodDoc.Texts(lngGoodIndex).Y, _
+                goodDoc.Texts(lngGoodIndex).TextValue)
+
+            lngOldIndex = RegressionFindCounterpartText( _
+                oldDoc, _
+                pageNo, _
+                strRole, _
+                goodDoc.Texts(lngGoodIndex).X, _
+                goodDoc.Texts(lngGoodIndex).Y, _
+                goodDoc.Texts(lngGoodIndex).TextValue)
+
+            If lngCurrentIndex < 0 Then
+                strFamily = "TARGET_TEXT_MISSING_" & strClass
+
+                Print #fileNo, _
+                    "TARGET_REGRESSION" & _
+                    "|family=" & strFamily & _
+                    "|role=" & strRole & _
+                    "|GOOD_TEXT=" & _
+                    RegressionLimitText( _
+                        goodDoc.Texts(lngGoodIndex).TextValue, _
+                        120) & _
+                    "|GOOD_X=" & NumTxt(goodDoc.Texts(lngGoodIndex).X) & _
+                    "|GOOD_Y=" & NumTxt(goodDoc.Texts(lngGoodIndex).Y) & _
+                    "|CURRENT=(missing)"
+
+                Call RegressionAddIssue( _
+                    dictIssueCounts, _
+                    dictIssuePriorities, _
+                    dictIssueSamples, _
+                    strFamily, _
+                    3, _
+                    "page=" & CStr(pageNo) & _
+                    "|role=" & strRole & _
+                    "|GOOD_TEXT=" & _
+                    RegressionLimitText( _
+                        goodDoc.Texts(lngGoodIndex).TextValue, _
+                        120) & _
+                    "|GOOD_X=" & NumTxt(goodDoc.Texts(lngGoodIndex).X) & _
+                    "|GOOD_Y=" & NumTxt(goodDoc.Texts(lngGoodIndex).Y))
+
+                GoTo NextGoodText
+            End If
+
+            lngGoodOrdinal = _
+                lngGoodIndex - _
+                goodDoc.Pages(pageNo).TextStart + 1
+
+            strGoodContext = RegressionContextByOrdinal( _
+                goodContextMap, _
+                lngGoodOrdinal)
+
+            strCurrentContext = RegressionContextByOrdinal( _
+                currentContextMap, _
+                lngCurrentIndex - _
+                currentDoc.Pages(pageNo).TextStart + 1)
+
+            If lngOldIndex >= 0 Then
+                strOldContext = RegressionContextByOrdinal( _
+                    oldContextMap, _
+                    lngOldIndex - _
+                    oldDoc.Pages(pageNo).TextStart + 1)
+            Else
+                strOldContext = "(missing)"
+            End If
+
+            Call RegressionCompareTargetContextPart( _
+                fileNo, _
+                pageNo, _
+                strRole, _
+                strClass, _
+                "OPERATOR_WINDOW", _
+                RegressionContextPart(strOldContext, "OPS"), _
+                RegressionContextPart(strGoodContext, "OPS"), _
+                RegressionContextPart(strCurrentContext, "OPS"), _
+                3, _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples)
+
+            Call RegressionCompareTargetContextPart( _
+                fileNo, _
+                pageNo, _
+                strRole, _
+                strClass, _
+                "PATH_NEIGHBOR", _
+                RegressionContextPart(strOldContext, "PATH"), _
+                RegressionContextPart(strGoodContext, "PATH"), _
+                RegressionContextPart(strCurrentContext, "PATH"), _
+                3, _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples)
+
+            Call RegressionCompareTargetContextPart( _
+                fileNo, _
+                pageNo, _
+                strRole, _
+                strClass, _
+                "RAW_OPERATOR_WINDOW", _
+                RegressionContextPart(strOldContext, "RAW"), _
+                RegressionContextPart(strGoodContext, "RAW"), _
+                RegressionContextPart(strCurrentContext, "RAW"), _
+                2, _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples)
+
+            strGoodFontAlias = _
+                goodDoc.Texts(lngGoodIndex).FontName & _
+                "@" & NumTxt(goodDoc.Texts(lngGoodIndex).FontSize)
+
+            strCurrentFontAlias = _
+                currentDoc.Texts(lngCurrentIndex).FontName & _
+                "@" & NumTxt(currentDoc.Texts(lngCurrentIndex).FontSize)
+
+            If lngOldIndex >= 0 Then
+                strOldFontAlias = _
+                    oldDoc.Texts(lngOldIndex).FontName & _
+                    "@" & NumTxt(oldDoc.Texts(lngOldIndex).FontSize)
+            Else
+                strOldFontAlias = "(missing)"
+            End If
+
+            Call RegressionCompareTargetContextPart( _
+                fileNo, _
+                pageNo, _
+                strRole, _
+                strClass, _
+                "FONT_ALIAS_SIZE", _
+                strOldFontAlias, _
+                strGoodFontAlias, _
+                strCurrentFontAlias, _
+                2, _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples)
+
+            strGoodFontSemantic = _
+                RegressionTextFontSemanticSignature( _
+                    goodDoc, _
+                    pageNo, _
+                    lngGoodIndex)
+
+            strCurrentFontSemantic = _
+                RegressionTextFontSemanticSignature( _
+                    currentDoc, _
+                    pageNo, _
+                    lngCurrentIndex)
+
+            If lngOldIndex >= 0 Then
+                strOldFontSemantic = _
+                    RegressionTextFontSemanticSignature( _
+                        oldDoc, _
+                        pageNo, _
+                        lngOldIndex)
+            Else
+                strOldFontSemantic = "(missing)"
+            End If
+
+            Call RegressionCompareTargetContextPart( _
+                fileNo, _
+                pageNo, _
+                strRole, _
+                strClass, _
+                "FONT_SEMANTIC", _
+                strOldFontSemantic, _
+                strGoodFontSemantic, _
+                strCurrentFontSemantic, _
+                3, _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples)
+
+            If goodDoc.Texts(lngGoodIndex).TextValue <> _
+               currentDoc.Texts(lngCurrentIndex).TextValue Then
+
+                Print #fileNo, _
+                    "TARGET_VALUE_INFO" & _
+                    "|role=" & strRole & _
+                    "|GOOD=" & _
+                    RegressionLimitText( _
+                        goodDoc.Texts(lngGoodIndex).TextValue, _
+                        120) & _
+                    "|CURRENT=" & _
+                    RegressionLimitText( _
+                        currentDoc.Texts(lngCurrentIndex).TextValue, _
+                        120) & _
+                    "|classification=INPUT_VALUE_NOT_USED_AS_PARSER_BREAK"
+            End If
+        End If
+
+NextGoodText:
+    Next lngGoodIndex
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo", _
+        pageNo
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+Private Sub RegressionCompareTargetContextPart( _
+    ByVal fileNo As Long, _
+    ByVal pageNo As Long, _
+    ByVal role As String, _
+    ByVal roleClass As String, _
+    ByVal contextFamily As String, _
+    ByVal oldSignature As String, _
+    ByVal goodSignature As String, _
+    ByVal currentSignature As String, _
+    ByVal basePriority As Long, _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object)
+
+    Dim lngPriority As Long
+    Dim strDirection As String
+    Dim strFamily As String
+
+    If goodSignature = currentSignature Then
+        Exit Sub
+    End If
+
+    strDirection = RegressionDirection( _
+        oldSignature, _
+        goodSignature, _
+        currentSignature)
+
+    strFamily = _
+        "TARGET_" & contextFamily & "_" & roleClass
+
+    lngPriority = RegressionPriorityFromDirection( _
+        strDirection, _
+        basePriority)
+
+    Print #fileNo, _
+        "TARGET_CONTEXT_DIFF" & _
+        "|family=" & strFamily & _
+        "|role=" & role & _
+        "|direction=" & strDirection & _
+        "|OLD=" & RegressionLimitText(oldSignature, 1100) & _
+        "|GOOD=" & RegressionLimitText(goodSignature, 1100) & _
+        "|CURRENT=" & RegressionLimitText(currentSignature, 1100)
+
+    Call RegressionAddIssue( _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples, _
+        strFamily, _
+        lngPriority, _
+        "page=" & CStr(pageNo) & _
+        "|role=" & role & _
+        "|direction=" & strDirection & _
+        "|GOOD=" & RegressionLimitText(goodSignature, 650) & _
+        "|CURRENT=" & RegressionLimitText(currentSignature, 650))
+End Sub
+
+Private Function RegressionContextByOrdinal( _
+    ByVal contextMap As Object, _
+    ByVal ordinal As Long) As String
+
+    If contextMap Is Nothing Then
+        RegressionContextByOrdinal = "(map-error)"
+    ElseIf contextMap.Exists(CStr(ordinal)) Then
+        RegressionContextByOrdinal = _
+            CStr(contextMap(CStr(ordinal)))
+    Else
+        RegressionContextByOrdinal = "(missing)"
+    End If
+End Function
+
+Private Function RegressionFindCounterpartText( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal targetRole As String, _
+    ByVal targetX As Double, _
+    ByVal targetY As Double, _
+    ByVal targetText As String) As Long
+
+    Const METHOD_NAME As String = "RegressionFindCounterpartText"
+    Const MAX_Y_DISTANCE As Double = 3#
+    Dim dblBestScore As Double
+    Dim dblCurrentScore As Double
+    Dim dblDx As Double
+    Dim dblDy As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngEnd As Long
+    Dim lngIndex As Long
+    Dim lngStart As Long
+    Dim strCandidateRole As String
+
+    On Error GoTo ErrorHandler
+
+    RegressionFindCounterpartText = -1
+    dblBestScore = 1E+30
+
+    If pageNo < 1 Or pageNo > pdfDoc.PageCount Then
+        GoTo ExitFunction
+    End If
+
+    lngStart = pdfDoc.Pages(pageNo).TextStart
+    lngEnd = lngStart + pdfDoc.Pages(pageNo).TextCount - 1
+
+    For lngIndex = lngStart To lngEnd
+        strCandidateRole = RegressionInferStructuralFieldRole( _
+            pageNo, _
+            pdfDoc.Texts(lngIndex).X, _
+            pdfDoc.Texts(lngIndex).Y)
+
+        If strCandidateRole = targetRole Then
+            dblDy = Abs(pdfDoc.Texts(lngIndex).Y - targetY)
+
+            If dblDy <= MAX_Y_DISTANCE Then
+                dblDx = Abs(pdfDoc.Texts(lngIndex).X - targetX)
+                dblCurrentScore = dblDy * 1000# + dblDx
+
+                If pdfDoc.Texts(lngIndex).TextValue = targetText Then
+                    dblCurrentScore = dblCurrentScore - 100000#
+                End If
+
+                If dblCurrentScore < dblBestScore Then
+                    dblBestScore = dblCurrentScore
+                    RegressionFindCounterpartText = lngIndex
+                End If
+            End If
+        End If
+    Next lngIndex
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    RegressionFindCounterpartText = -1
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;targetRole;targetX;targetY", _
+        pageNo, _
+        targetRole, _
+        targetX, _
+        targetY
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+Private Function RegressionIsParserTargetRole( _
+    ByVal role As String) As Boolean
+
+    If role = "TOP_ISIN" Or _
+       role = "TOP_SCHLUSSTAG" Or _
+       role = "TOP_VALUTATAG" Then
+
+        RegressionIsParserTargetRole = True
+        Exit Function
+    End If
+
+    If InStr(1, role, "WHG", vbBinaryCompare) > 0 Then
+        RegressionIsParserTargetRole = True
+    End If
+End Function
+
+Private Function RegressionTargetRoleClass( _
+    ByVal role As String) As String
+
+    If role = "TOP_ISIN" Then
+        RegressionTargetRoleClass = "ISIN"
+    ElseIf role = "TOP_SCHLUSSTAG" Or _
+           role = "TOP_VALUTATAG" Then
+        RegressionTargetRoleClass = "DATE"
+    ElseIf InStr(1, role, "WHG", vbBinaryCompare) > 0 Then
+        RegressionTargetRoleClass = "CURRENCY"
+    Else
+        RegressionTargetRoleClass = "OTHER"
+    End If
+End Function
+
+Private Function RegressionInferStructuralFieldRole( _
+    ByVal pageNo As Long, _
+    ByVal x As Double, _
+    ByVal y As Double) As String
+
+    Dim strRowKind As String
+
+    RegressionInferStructuralFieldRole = vbNullString
+    strRowKind = RegressionOracleRowKind(pageNo, y)
+
+    If strRowKind = "TOP" Then
+        RegressionInferStructuralFieldRole = _
+            RegressionTopFieldByX(x)
+    ElseIf strRowKind = "BOTTOM" Then
+        RegressionInferStructuralFieldRole = _
+            RegressionBottomFieldByX(x)
+    End If
+End Function
+
+Private Function RegressionOracleRowKind( _
+    ByVal pageNo As Long, _
+    ByVal y As Double) As String
+
+    Const BASELINE_TOLERANCE As Double = 2#
+    Const DATA_ROW_HEIGHT As Double = 18#
+    Dim arrTopBaselines As Variant
+    Dim dblBottom As Double
+    Dim dblDistanceBottom As Double
+    Dim dblDistanceTop As Double
+    Dim dblTop As Double
+    Dim lngIndex As Long
+
+    RegressionOracleRowKind = vbNullString
+
+    If pageNo = 1 Then
+        arrTopBaselines = Array( _
+            504#, _
+            463.48, _
+            423#, _
+            382.48, _
+            342#, _
+            301.48, _
+            261#, _
+            220.48, _
+            180#, _
+            139.48, _
+            99#)
+    Else
+        arrTopBaselines = Array( _
+            558#, _
+            517.48, _
+            477#, _
+            436.48, _
+            396#, _
+            355.48, _
+            315#, _
+            274.48, _
+            234#, _
+            193.48, _
+            153#, _
+            112.48)
+    End If
+
+    For lngIndex = LBound(arrTopBaselines) To UBound(arrTopBaselines)
+        dblTop = CDbl(arrTopBaselines(lngIndex))
+        dblBottom = dblTop - DATA_ROW_HEIGHT
+
+        dblDistanceTop = Abs(y - dblTop)
+        dblDistanceBottom = Abs(y - dblBottom)
+
+        If dblDistanceTop <= BASELINE_TOLERANCE Or _
+           dblDistanceBottom <= BASELINE_TOLERANCE Then
+
+            If dblDistanceTop <= dblDistanceBottom Then
+                RegressionOracleRowKind = "TOP"
+            Else
+                RegressionOracleRowKind = "BOTTOM"
+            End If
+
+            Exit Function
+        End If
+    Next lngIndex
+End Function
+
+Private Function RegressionTopFieldByX( _
+    ByVal x As Double) As String
+
+    Select Case x
+        Case 40.52 To 125.999
+            RegressionTopFieldByX = "TOP_DEPOTNR"
+        Case 126# To 328.519
+            RegressionTopFieldByX = "TOP_FONDSBEZEICHNUNG"
+        Case 328.52 To 413.999
+            RegressionTopFieldByX = "TOP_GESCHAEFTSART"
+        Case 414# To 503.999
+            RegressionTopFieldByX = "TOP_SCHLUSSTAG"
+        Case 504# To 553.519
+            RegressionTopFieldByX = "TOP_VALUTATAG"
+        Case 553.52 To 593.999
+            RegressionTopFieldByX = "TOP_WKN"
+        Case 594# To 674.999
+            RegressionTopFieldByX = "TOP_ISIN"
+        Case 675# To 890.999
+            RegressionTopFieldByX = "TOP_WERTPAPIERBEZEICHNUNG"
+        Case 891# To 1025.999
+            RegressionTopFieldByX = "TOP_NOMINALE_STUECKE"
+        Case 1026# To 1052.999
+            RegressionTopFieldByX = "TOP_WHG_NOMINALE"
+        Case 1053# To 1178.999
+            RegressionTopFieldByX = "TOP_KURS"
+        Case 1179# To 1323.04
+            RegressionTopFieldByX = "TOP_STUECKZINSEN"
+    End Select
+End Function
+
+Private Function RegressionBottomFieldByX( _
+    ByVal x As Double) As String
+
+    Select Case x
+        Case 40.52 To 125.999
+            RegressionBottomFieldByX = "BOTTOM_TRANSAKTIONSNR"
+        Case 126# To 283.519
+            RegressionBottomFieldByX = "BOTTOM_MAKLERGEBUEHREN"
+        Case 283.52 To 328.519
+            RegressionBottomFieldByX = "BOTTOM_WHG_MAKLER"
+        Case 328.52 To 467.999
+            RegressionBottomFieldByX = "BOTTOM_STEUERN"
+        Case 468# To 503.999
+            RegressionBottomFieldByX = "BOTTOM_WHG_STEUERN"
+        Case 504# To 638.999
+            RegressionBottomFieldByX = "BOTTOM_ABWICKLUNGSPROVISION"
+        Case 639# To 674.999
+            RegressionBottomFieldByX = "BOTTOM_WHG_ABWICKLUNG"
+        Case 675# To 854.999
+            RegressionBottomFieldByX = "BOTTOM_SPESEN"
+        Case 855# To 890.999
+            RegressionBottomFieldByX = "BOTTOM_WHG_SPESEN"
+        Case 891# To 1052.999
+            RegressionBottomFieldByX = "BOTTOM_AUSM_BETRAG_WHG"
+        Case 1053# To 1178.999
+            RegressionBottomFieldByX = _
+                "BOTTOM_AUSM_BETRAG_ABRECH_WHG"
+        Case 1179# To 1205.999
+            RegressionBottomFieldByX = "BOTTOM_WHG_ABRECH"
+        Case 1206# To 1323.04
+            RegressionBottomFieldByX = "BOTTOM_DEVISENKURS"
+    End Select
+End Function
+
+Private Function RegressionTextFontSemanticSignature( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal textIndex As Long) As String
+
+    Dim strAlias As String
+    Dim strSemantic As String
+
+    If pageNo < 1 Or pageNo > pdfDoc.PageCount Then
+        RegressionTextFontSemanticSignature = "(page-missing)"
+        Exit Function
+    End If
+
+    If textIndex < 0 Or textIndex >= pdfDoc.TextCount Then
+        RegressionTextFontSemanticSignature = "(text-missing)"
+        Exit Function
+    End If
+
+    strAlias = pdfDoc.Texts(textIndex).FontName
+    strSemantic = RegressionFontSemanticForAlias( _
+        pdfDoc.Pages(pageNo).ResolvedFonts, _
+        strAlias)
+
+    RegressionTextFontSemanticSignature = _
+        "semantic=" & strSemantic & _
+        "|size=" & NumTxt(pdfDoc.Texts(textIndex).FontSize)
+End Function
+
+Private Function RegressionFontSemanticForAlias( _
+    ByVal resolvedFonts As String, _
+    ByVal fontAlias As String) As String
+
+    Dim arrEntries As Variant
+    Dim lngIndex As Long
+    Dim strEntry As String
+    Dim strPrefix As String
+
+    If Len(fontAlias) = 0 Then
+        RegressionFontSemanticForAlias = "(alias-missing)"
+        Exit Function
+    End If
+
+    strPrefix = fontAlias & "="
+    arrEntries = Split(resolvedFonts, ";")
+
+    For lngIndex = LBound(arrEntries) To UBound(arrEntries)
+        strEntry = CStr(arrEntries(lngIndex))
+
+        If Left$(strEntry, Len(strPrefix)) = strPrefix Then
+            RegressionFontSemanticForAlias = _
+                Mid$(strEntry, Len(strPrefix) + 1)
+            Exit Function
+        End If
+    Next lngIndex
+
+    RegressionFontSemanticForAlias = "(unresolved)"
+End Function
+
+Private Sub RegressionWriteSuperShortReport( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef goodDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument, _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object, _
+    ByVal outputPath As String)
+
+    Const METHOD_NAME As String = "RegressionWriteSuperShortReport"
+    Dim arrKeys As Variant
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngCriticalEvents As Long
+    Dim lngFile As Long
+    Dim lngHighEvents As Long
+    Dim lngIndex As Long
+    Dim lngPriority As Long
+    Dim lngReviewEvents As Long
+    Dim lngSampleNo As Long
+    Dim strFamily As String
+    Dim strSampleKey As String
+    Dim strStatus As String
+
+    On Error GoTo ErrorHandler
+
+    If dictIssueCounts.Count = 0 Then
+        strStatus = "NO_GOOD_TO_CURRENT_PARSER_REGRESSION_FOUND"
+    Else
+        strStatus = "ACTION_REQUIRED"
+    End If
+
+    If dictIssueCounts.Count > 0 Then
+        arrKeys = SortedDictionaryKeys(dictIssueCounts)
+
+        For lngIndex = LBound(arrKeys) To UBound(arrKeys)
+            strFamily = CStr(arrKeys(lngIndex))
+            lngPriority = CLng(dictIssuePriorities(strFamily))
+
+            Select Case lngPriority
+                Case Is >= 3
+                    lngCriticalEvents = _
+                        lngCriticalEvents + _
+                        CLng(dictIssueCounts(strFamily))
+                Case 2
+                    lngHighEvents = _
+                        lngHighEvents + _
+                        CLng(dictIssueCounts(strFamily))
+                Case Else
+                    lngReviewEvents = _
+                        lngReviewEvents + _
+                        CLng(dictIssueCounts(strFamily))
+            End Select
+        Next lngIndex
+    End If
+
+    lngFile = FreeFile
+    Open outputPath For Output Access Write As #lngFile
+
+    Print #lngFile, "ORACLE_PARSER_REGRESSION_SUPER_SHORT_V16"
+    Print #lngFile, "OLD_ORACLE|" & oldDoc.PdfPath
+    Print #lngFile, "PREVIOUS_GOOD|" & goodDoc.PdfPath
+    Print #lngFile, "CURRENT|" & currentDoc.PdfPath
+    Print #lngFile, _
+        "RESULT|status=" & strStatus & _
+        "|families=" & CStr(dictIssueCounts.Count) & _
+        "|criticalEvents=" & CStr(lngCriticalEvents) & _
+        "|highEvents=" & CStr(lngHighEvents) & _
+        "|reviewEvents=" & CStr(lngReviewEvents) & _
+        "|pagesOld=" & CStr(oldDoc.PageCount) & _
+        "|pagesGood=" & CStr(goodDoc.PageCount) & _
+        "|pagesCurrent=" & CStr(currentDoc.PageCount)
+
+    Print #lngFile, _
+        "SCOPE|This report asks what changed from PREVIOUS_GOOD to CURRENT at parser-facing PDF-stream level. OLD Oracle is used only to tell whether the change moved away from or toward the Oracle structure."
+
+    Print #lngFile, _
+        "IMPORTANT|A clean V15 optical audit is not sufficient. V16 checks operator order, operator operands, re/n invisible paths, separator source encoding, font binding and local text operator windows."
+
+    Print #lngFile, ""
+
+    If dictIssueCounts.Count = 0 Then
+        Print #lngFile, "BREAKING_REGRESSION_SIGNALS|NONE"
+        Print #lngFile, _
+            "NEXT|No parser-facing regression was found between the selected GOOD and CURRENT binaries. Verify that these are the exact files sent/tested by the client and that GOOD/CURRENT were generated from the same logical input."
+        GoTo ExitSub
+    End If
+
+    Print #lngFile, "BREAKING_REGRESSION_SIGNALS"
+
+    For lngPriority = 3 To 1 Step -1
+        arrKeys = SortedDictionaryKeys(dictIssueCounts)
+
+        For lngIndex = LBound(arrKeys) To UBound(arrKeys)
+            strFamily = CStr(arrKeys(lngIndex))
+
+            If CLng(dictIssuePriorities(strFamily)) = lngPriority Then
+                Print #lngFile, _
+                    "ISSUE" & _
+                    "|priority=" & RegressionPriorityLabel(lngPriority) & _
+                    "|family=" & strFamily & _
+                    "|count=" & CStr(dictIssueCounts(strFamily))
+
+                For lngSampleNo = 1 To 2
+                    strSampleKey = _
+                        strFamily & "|" & CStr(lngSampleNo)
+
+                    If dictIssueSamples.Exists(strSampleKey) Then
+                        Print #lngFile, _
+                            "DETAIL" & _
+                            "|family=" & strFamily & _
+                            "|" & CStr(dictIssueSamples(strSampleKey))
+                    End If
+                Next lngSampleNo
+            End If
+        Next lngIndex
+    Next lngPriority
+
+    Print #lngFile, ""
+    Print #lngFile, "HYPOTHESIS_RANKING"
+    Call RegressionWriteHypothesisRanking( _
+        lngFile, _
+        dictIssueCounts)
+
+    Print #lngFile, ""
+    Print #lngFile, _
+        "NEXT|Fix only the highest-ranked GOOD-to-CURRENT regression families first. Keep FIX34 business formatting unless this report explicitly ties it to a parser-facing stream change. Then regenerate the same input and rerun V16."
+
+ExitSub:
+    If lngFile <> 0 Then
+        Close #lngFile
+    End If
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "outputPath", _
+        outputPath
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+Private Sub RegressionWriteHypothesisRanking( _
+    ByVal fileNo As Long, _
+    ByVal dictIssueCounts As Object)
+
+    Dim lngRank As Long
+
+    lngRank = 1
+
+    If RegressionDictionaryHasPrefix( _
+        dictIssueCounts, _
+        "TARGET_OPERATOR_WINDOW_") Or _
+       RegressionDictionaryHasPrefix( _
+        dictIssueCounts, _
+        "TARGET_PATH_NEIGHBOR_") Then
+
+        Print #fileNo, _
+            "HYPOTHESIS|rank=" & CStr(lngRank) & _
+            "|name=TEXT_LOCAL_OPERATOR_TOPOLOGY" & _
+            "|reason=ISIN/currency/date text is surrounded by a different operator sequence or by different nearest path operators in CURRENT than in PREVIOUS_GOOD."
+        lngRank = lngRank + 1
+    End If
+
+    If RegressionDictionaryHasPrefix( _
+        dictIssueCounts, _
+        "RECTANGLE_EDGE_TOPOLOGY_X") Or _
+       dictIssueCounts.Exists("INVISIBLE_RECTANGLE_PROFILE") Or _
+       RegressionDictionaryHasPrefix( _
+        dictIssueCounts, _
+        "VISIBLE_SEPARATOR_ENCODING_X") Then
+
+        Print #fileNo, _
+            "HYPOTHESIS|rank=" & CStr(lngRank) & _
+            "|name=SEPARATOR_OR_INVISIBLE_RECTANGLE_ENCODING" & _
+            "|reason=The same visual cell boundary may be serialized differently (m/l versus re, different paint finalizer, or invisible re n path). A primitive parser can treat these as different cells."
+        lngRank = lngRank + 1
+    End If
+
+    If dictIssueCounts.Exists("OPERATOR_ORDER_CHANGED") Or _
+       dictIssueCounts.Exists("OPERATOR_SERIALIZATION_CHANGED") Then
+
+        Print #fileNo, _
+            "HYPOTHESIS|rank=" & CStr(lngRank) & _
+            "|name=CONTENT_STREAM_SERIALIZATION" & _
+            "|reason=Operator counts can be identical while the actual order/operands differ. This is precisely the class of difference V15 could classify as compatible."
+        lngRank = lngRank + 1
+    End If
+
+    If RegressionDictionaryHasPrefix( _
+        dictIssueCounts, _
+        "TARGET_FONT_") Or _
+       dictIssueCounts.Exists("FONT_RESOURCE_BINDING") Or _
+       dictIssueCounts.Exists("FONT_RESOURCE_FORENSIC") Then
+
+        Print #fileNo, _
+            "HYPOTHESIS|rank=" & CStr(lngRank) & _
+            "|name=FONT_RESOURCE_BINDING" & _
+            "|reason=The local font alias/size or semantic resource behind text changed between GOOD and CURRENT."
+        lngRank = lngRank + 1
+    End If
+
+    If dictIssueCounts.Exists("CONTENT_STREAM_SHAPE") Or _
+       dictIssueCounts.Exists("CONTENT_FILTERS") Then
+
+        Print #fileNo, _
+            "HYPOTHESIS|rank=" & CStr(lngRank) & _
+            "|name=PAGE_CONTENT_STREAM_TOPOLOGY" & _
+            "|reason=The number of content streams or their filter structure changed between GOOD and CURRENT."
+        lngRank = lngRank + 1
+    End If
+
+    If lngRank = 1 Then
+        Print #fileNo, _
+            "HYPOTHESIS|rank=1|name=NO_REGRESSION_SIGNAL|reason=The selected GOOD and CURRENT PDFs are parser-facing equivalent under the V16 checks."
+    End If
+End Sub
+
+Private Function RegressionDictionaryHasPrefix( _
+    ByVal dictValues As Object, _
+    ByVal prefix As String) As Boolean
+
+    Dim varKey As Variant
+
+    For Each varKey In dictValues.Keys
+        If Left$(CStr(varKey), Len(prefix)) = prefix Then
+            RegressionDictionaryHasPrefix = True
+            Exit Function
+        End If
+    Next varKey
+End Function
+
+'===============================================================================
+' V17 DOXIS-ORIENTED TOPOLOGY FORENSIC
+'===============================================================================
+' IMPORTANT:
+' - This is a heuristic forensic mode. It does NOT claim to reproduce an
+'   undocumented DOXISLoader algorithm.
+' - The middle PDF is deliberately called BETTER_PARSING, not GOOD. It is
+'   evidence of parser behaviour and may still contain defects.
+' - OLD Oracle remains the semantic/layout reference.
+'===============================================================================
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka / OpenAI-assisted forensic extension
+' Creation date: 2026-08-11
+' Parameters:    ---
+' Returns:       ---
+' Description:   Selects OLD Oracle, BETTER-PARSING and CURRENT PDFs and writes
+'                a DOXIS-oriented topology regression report.
+'-------------------------------------------------------------------------------
+Public Sub RunPdfDoxisTopologyBrowse()
+    Const METHOD_NAME As String = "RunPdfDoxisTopologyBrowse"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strBetterPdfPath As String
+    Dim strCurrentPdfPath As String
+    Dim strDetailPath As String
+    Dim strOldPdfPath As String
+    Dim strSuperShortPath As String
+
+    On Error GoTo ErrorHandler
+
+    strOldPdfPath = SelectPdfFile( _
+        "V17 DOXIS - Select OLD Oracle reference PDF")
+    If Len(strOldPdfPath) = 0 Then GoTo ExitSub
+
+    strBetterPdfPath = SelectPdfFile( _
+        "V17 DOXIS - Select BETTER-PARSING intermediate PDF (not assumed perfect)")
+    If Len(strBetterPdfPath) = 0 Then GoTo ExitSub
+
+    strCurrentPdfPath = SelectPdfFile( _
+        "V17 DOXIS - Select CURRENT PDF (client parses this version worse)")
+    If Len(strCurrentPdfPath) = 0 Then GoTo ExitSub
+
+    strDetailPath = BuildDoxisTopologyDetailOutputPath( _
+        strBetterPdfPath, _
+        strCurrentPdfPath)
+
+    strSuperShortPath = BuildDoxisTopologySuperShortOutputPath( _
+        strBetterPdfPath, _
+        strCurrentPdfPath)
+
+    If Not PdfDoxisTopologyAudit( _
+        strOldPdfPath, _
+        strBetterPdfPath, _
+        strCurrentPdfPath, _
+        strDetailPath, _
+        strSuperShortPath) Then
+
+        Err.Raise ERR_BASE + 40, METHOD_NAME, _
+            "The V17 DOXIS topology forensic could not be completed."
+    End If
+
+    MsgBox _
+        "V17 DOXIS topology forensic completed." & vbCrLf & vbCrLf & _
+        "SEND THIS FILE FIRST:" & vbCrLf & strSuperShortPath & vbCrLf & vbCrLf & _
+        "Detailed topology forensic:" & vbCrLf & strDetailPath & vbCrLf & vbCrLf & _
+        "Input order: OLD Oracle -> BETTER-PARSING intermediate -> CURRENT." & vbCrLf & _
+        "BETTER-PARSING is evidence only and is NOT assumed to be correct.", _
+        vbInformation, _
+        "Oracle / DOXIS topology V17"
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "oldPdfPath;betterPdfPath;currentPdfPath;detailPath;superShortPath", _
+        strOldPdfPath, _
+        strBetterPdfPath, _
+        strCurrentPdfPath, _
+        strDetailPath, _
+        strSuperShortPath
+
+    errorManager.save
+    errorManager.display "The V17 DOXIS topology forensic failed."
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka / OpenAI-assisted forensic extension
+' Creation date: 2026-08-11
+' Parameters:    PDF paths and output paths
+' Returns:       Boolean
+' Description:   Loads the three PDFs and writes V17 DOXIS reports.
+'-------------------------------------------------------------------------------
+Public Function PdfDoxisTopologyAudit( _
+    ByVal oldPdfPath As String, _
+    ByVal betterPdfPath As String, _
+    ByVal currentPdfPath As String, _
+    ByVal detailOutputPath As String, _
+    ByVal superShortOutputPath As String) As Boolean
+
+    Const METHOD_NAME As String = "PdfDoxisTopologyAudit"
+    Dim betterDoc As tPdfDocument
+    Dim currentDoc As tPdfDocument
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim oldDoc As tPdfDocument
+
+    On Error GoTo ErrorHandler
+
+    PdfDoxisTopologyAudit = False
+
+    Call ResetParserState
+    Call LoadPdfDocument(oldPdfPath, oldDoc)
+    If oldDoc.PageCount = 0 Then
+        Err.Raise 1014, METHOD_NAME, "The OLD Oracle PDF could not be parsed."
+    End If
+
+    Call LoadPdfDocument(betterPdfPath, betterDoc)
+    If betterDoc.PageCount = 0 Then
+        Err.Raise 1014, METHOD_NAME, "The BETTER-PARSING PDF could not be parsed."
+    End If
+
+    Call LoadPdfDocument(currentPdfPath, currentDoc)
+    If currentDoc.PageCount = 0 Then
+        Err.Raise 1014, METHOD_NAME, "The CURRENT PDF could not be parsed."
+    End If
+
+    Call WriteDoxisTopologyReports( _
+        oldDoc, _
+        betterDoc, _
+        currentDoc, _
+        detailOutputPath, _
+        superShortOutputPath)
+
+    PdfDoxisTopologyAudit = True
+
+ExitFunction:
+    Call ResetParserState
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    PdfDoxisTopologyAudit = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "oldPdfPath;betterPdfPath;currentPdfPath;detailOutputPath;superShortOutputPath", _
+        oldPdfPath, _
+        betterPdfPath, _
+        currentPdfPath, _
+        detailOutputPath, _
+        superShortOutputPath
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+Private Sub WriteDoxisTopologyReports( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef betterDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument, _
+    ByVal detailOutputPath As String, _
+    ByVal superShortOutputPath As String)
+
+    Const METHOD_NAME As String = "WriteDoxisTopologyReports"
+    Dim dictIssueCounts As Object
+    Dim dictIssuePriorities As Object
+    Dim dictIssueSamples As Object
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngDetailFile As Long
+    Dim lngMaxPages As Long
+    Dim lngPage As Long
+
+    On Error GoTo ErrorHandler
+
+    Set dictIssueCounts = CreateObject("Scripting.Dictionary")
+    Set dictIssuePriorities = CreateObject("Scripting.Dictionary")
+    Set dictIssueSamples = CreateObject("Scripting.Dictionary")
+
+    lngMaxPages = oldDoc.PageCount
+    If betterDoc.PageCount > lngMaxPages Then lngMaxPages = betterDoc.PageCount
+    If currentDoc.PageCount > lngMaxPages Then lngMaxPages = currentDoc.PageCount
+
+    lngDetailFile = FreeFile
+    Open detailOutputPath For Output Access Write As #lngDetailFile
+
+    Print #lngDetailFile, "ORACLE_DOXIS_TOPOLOGY_FORENSIC_V17"
+    Print #lngDetailFile, "OLD_ORACLE|" & oldDoc.PdfPath
+    Print #lngDetailFile, "BETTER_PARSING|" & betterDoc.PdfPath
+    Print #lngDetailFile, "CURRENT|" & currentDoc.PdfPath
+    Print #lngDetailFile, _
+        "PURPOSE|Test whether the CURRENT PDF introduced parser-facing cell/topology changes relative to the BETTER-PARSING intermediate, while OLD Oracle remains the reference."
+    Print #lngDetailFile, _
+        "IMPORTANT|BETTER_PARSING_IS_NOT_ASSUMED_CORRECT=TRUE|It is only behavioural evidence because the client said it extracted ISIN/currency better."
+    Print #lngDetailFile, _
+        "HEURISTIC|This report does not claim to implement a proprietary DOXISLoader algorithm. It measures text-to-separator topology, vector primitive/style, font/position and raster-distance proxies."
+    Print #lngDetailFile, _
+        "TARGETS|TOP_ISIN;TOP_SCHLUSSTAG;TOP_VALUTATAG;all WHG roles;special separators x=468 and x=639"
+    Print #lngDetailFile, _
+        "RASTER_PROXY|Distances are also shown as equivalent pixels at 300 and 600 DPI. No PDF rasterizer is invoked."
+    Print #lngDetailFile, ""
+
+    Call DoxisWriteDocumentHeader( _
+        lngDetailFile, _
+        oldDoc, _
+        betterDoc, _
+        currentDoc)
+
+    For lngPage = 1 To lngMaxPages
+        Call DoxisWritePageAnalysis( _
+            lngDetailFile, _
+            oldDoc, _
+            betterDoc, _
+            currentDoc, _
+            lngPage, _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples)
+    Next lngPage
+
+    Close #lngDetailFile
+    lngDetailFile = 0
+
+    Call DoxisWriteSuperShortReport( _
+        oldDoc, _
+        betterDoc, _
+        currentDoc, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples, _
+        superShortOutputPath)
+
+ExitSub:
+    If lngDetailFile <> 0 Then Close #lngDetailFile
+    Set dictIssueCounts = Nothing
+    Set dictIssuePriorities = Nothing
+    Set dictIssueSamples = Nothing
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "detailOutputPath;superShortOutputPath", _
+        detailOutputPath, _
+        superShortOutputPath
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+Private Sub DoxisWriteDocumentHeader( _
+    ByVal fileNo As Long, _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef betterDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument)
+
+    Print #fileNo, "================================================================"
+    Print #fileNo, "DOCUMENT_TRIAD"
+    Print #fileNo, "================================================================"
+    Print #fileNo, _
+        "PAGES|OLD=" & CStr(oldDoc.PageCount) & _
+        "|BETTER=" & CStr(betterDoc.PageCount) & _
+        "|CURRENT=" & CStr(currentDoc.PageCount)
+    Print #fileNo, _
+        "PDF_VERSION|OLD=" & oldDoc.PdfVersion & _
+        "|BETTER=" & betterDoc.PdfVersion & _
+        "|CURRENT=" & currentDoc.PdfVersion
+    Print #fileNo, _
+        "XREF|OLD=" & oldDoc.XrefKind & _
+        "|BETTER=" & betterDoc.XrefKind & _
+        "|CURRENT=" & currentDoc.XrefKind
+    Print #fileNo, ""
+End Sub
+
+Private Sub DoxisWritePageAnalysis( _
+    ByVal fileNo As Long, _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef betterDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object)
+
+    Const METHOD_NAME As String = "DoxisWritePageAnalysis"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngBetterEnd As Long
+    Dim lngBetterIndex As Long
+    Dim lngBetterStart As Long
+    Dim strRole As String
+
+    On Error GoTo ErrorHandler
+
+    Print #fileNo, "================================================================"
+    Print #fileNo, "PAGE|" & CStr(pageNo)
+    Print #fileNo, "================================================================"
+
+    If pageNo > oldDoc.PageCount Or _
+       pageNo > betterDoc.PageCount Or _
+       pageNo > currentDoc.PageCount Then
+
+        Print #fileNo, _
+            "PAGE_PRESENCE" & _
+            "|OLD=" & BoolText(pageNo <= oldDoc.PageCount) & _
+            "|BETTER=" & BoolText(pageNo <= betterDoc.PageCount) & _
+            "|CURRENT=" & BoolText(pageNo <= currentDoc.PageCount)
+
+        Call DoxisAddIssue( _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples, _
+            "PAGE_MISSING_IN_TRIAD", _
+            3, _
+            "page=" & CStr(pageNo))
+
+        GoTo ExitSub
+    End If
+
+    Print #fileNo, _
+        "PAGE_STREAM" & _
+        "|OLD_refs=" & oldDoc.Pages(pageNo).ContentReferences & _
+        "|BETTER_refs=" & betterDoc.Pages(pageNo).ContentReferences & _
+        "|CURRENT_refs=" & currentDoc.Pages(pageNo).ContentReferences
+
+    Print #fileNo, _
+        "PAGE_FONTS" & _
+        "|OLD=" & RegressionStripFontObjectNumbers(oldDoc.Pages(pageNo).FontForensicSignature) & _
+        "|BETTER=" & RegressionStripFontObjectNumbers(betterDoc.Pages(pageNo).FontForensicSignature) & _
+        "|CURRENT=" & RegressionStripFontObjectNumbers(currentDoc.Pages(pageNo).FontForensicSignature)
+
+    Call DoxisWriteFixedSeparatorProbe( _
+        fileNo, _
+        pageNo, _
+        468#, _
+        "TOP_SCHLUSSTAG", _
+        oldDoc, _
+        betterDoc, _
+        currentDoc, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Call DoxisWriteFixedSeparatorProbe( _
+        fileNo, _
+        pageNo, _
+        639#, _
+        "TOP_ISIN", _
+        oldDoc, _
+        betterDoc, _
+        currentDoc, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    lngBetterStart = betterDoc.Pages(pageNo).TextStart
+    lngBetterEnd = lngBetterStart + betterDoc.Pages(pageNo).TextCount - 1
+
+    For lngBetterIndex = lngBetterStart To lngBetterEnd
+        strRole = RegressionInferStructuralFieldRole( _
+            pageNo, _
+            betterDoc.Texts(lngBetterIndex).X, _
+            betterDoc.Texts(lngBetterIndex).Y)
+
+        If DoxisIsTargetRole(strRole) Then
+            Call DoxisCompareTextOccurrence( _
+                fileNo, _
+                pageNo, _
+                strRole, _
+                lngBetterIndex, _
+                oldDoc, _
+                betterDoc, _
+                currentDoc, _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples)
+        End If
+    Next lngBetterIndex
+
+    Call DoxisFindCurrentOnlyTargets( _
+        fileNo, _
+        pageNo, _
+        betterDoc, _
+        currentDoc, _
+        dictIssueCounts, _
+        dictIssuePriorities, _
+        dictIssueSamples)
+
+    Print #fileNo, ""
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo", _
+        pageNo
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+Private Sub DoxisCompareTextOccurrence( _
+    ByVal fileNo As Long, _
+    ByVal pageNo As Long, _
+    ByVal role As String, _
+    ByVal betterTextIndex As Long, _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef betterDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument, _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object)
+
+    Const METHOD_NAME As String = "DoxisCompareTextOccurrence"
+    Dim dblBetterRisk As Double
+    Dim dblCurrentRisk As Double
+    Dim dblDx As Double
+    Dim dblDy As Double
+    Dim dblFontDelta As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngCurrentIndex As Long
+    Dim lngOldIndex As Long
+    Dim strBetterLine As String
+    Dim strBetterSnapshot As String
+    Dim strCurrentLine As String
+    Dim strCurrentSnapshot As String
+    Dim strFamily As String
+    Dim strOldLine As String
+    Dim strOldSnapshot As String
+    Dim strSample As String
+
+    On Error GoTo ErrorHandler
+
+    lngOldIndex = RegressionFindCounterpartText( _
+        oldDoc, _
+        pageNo, _
+        role, _
+        betterDoc.Texts(betterTextIndex).X, _
+        betterDoc.Texts(betterTextIndex).Y, _
+        betterDoc.Texts(betterTextIndex).TextValue)
+
+    lngCurrentIndex = RegressionFindCounterpartText( _
+        currentDoc, _
+        pageNo, _
+        role, _
+        betterDoc.Texts(betterTextIndex).X, _
+        betterDoc.Texts(betterTextIndex).Y, _
+        betterDoc.Texts(betterTextIndex).TextValue)
+
+    strBetterSnapshot = DoxisTextTopologySnapshot( _
+        betterDoc, _
+        pageNo, _
+        betterTextIndex, _
+        role, _
+        dblBetterRisk, _
+        strBetterLine)
+
+    If lngOldIndex >= 0 Then
+        strOldSnapshot = DoxisTextTopologySnapshot( _
+            oldDoc, _
+            pageNo, _
+            lngOldIndex, _
+            role, _
+            dblCurrentRisk, _
+            strOldLine)
+    Else
+        strOldSnapshot = "MISSING"
+        strOldLine = "(none)"
+    End If
+
+    If lngCurrentIndex >= 0 Then
+        strCurrentSnapshot = DoxisTextTopologySnapshot( _
+            currentDoc, _
+            pageNo, _
+            lngCurrentIndex, _
+            role, _
+            dblCurrentRisk, _
+            strCurrentLine)
+    Else
+        strCurrentSnapshot = "MISSING"
+        strCurrentLine = "(none)"
+        dblCurrentRisk = 999#
+    End If
+
+    Print #fileNo, _
+        "TARGET" & _
+        "|page=" & CStr(pageNo) & _
+        "|role=" & role & _
+        "|BETTER_TEXT=" & SanitizeReportText(betterDoc.Texts(betterTextIndex).TextValue) & _
+        "|OLD=" & strOldSnapshot & _
+        "|BETTER=" & strBetterSnapshot & _
+        "|CURRENT=" & strCurrentSnapshot
+
+    If lngCurrentIndex < 0 Then
+        strFamily = "DOXIS_TARGET_TEXT_MISSING_" & role
+        strSample = _
+            "page=" & CStr(pageNo) & _
+            "|role=" & role & _
+            "|text=" & SanitizeReportText(betterDoc.Texts(betterTextIndex).TextValue)
+
+        Call DoxisAddIssue( _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples, _
+            strFamily, _
+            3, _
+            strSample)
+
+        GoTo ExitSub
+    End If
+
+    If dblCurrentRisk > dblBetterRisk + 0.01 Then
+        strFamily = "DOXIS_CUT_RISK_INCREASE_" & role
+        strSample = _
+            "page=" & CStr(pageNo) & _
+            "|text=" & SanitizeReportText(betterDoc.Texts(betterTextIndex).TextValue) & _
+            "|riskBetter=" & NumTxt(dblBetterRisk) & _
+            "|riskCurrent=" & NumTxt(dblCurrentRisk) & _
+            "|BETTER_LINE=" & strBetterLine & _
+            "|CURRENT_LINE=" & strCurrentLine
+
+        Call DoxisAddIssue( _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples, _
+            strFamily, _
+            3, _
+            strSample)
+    End If
+
+    dblDx = currentDoc.Texts(lngCurrentIndex).X - betterDoc.Texts(betterTextIndex).X
+    dblDy = currentDoc.Texts(lngCurrentIndex).Y - betterDoc.Texts(betterTextIndex).Y
+    dblFontDelta = currentDoc.Texts(lngCurrentIndex).FontSize - betterDoc.Texts(betterTextIndex).FontSize
+
+    If Abs(dblDx) > DOXIS_POSITION_CHANGE_TOLERANCE Or _
+       Abs(dblDy) > DOXIS_POSITION_CHANGE_TOLERANCE Then
+
+        strFamily = "DOXIS_TEXT_POSITION_CHANGED_" & role
+        strSample = _
+            "page=" & CStr(pageNo) & _
+            "|text=" & SanitizeReportText(betterDoc.Texts(betterTextIndex).TextValue) & _
+            "|dx=" & NumTxt(dblDx) & _
+            "|dy=" & NumTxt(dblDy)
+
+        Call DoxisAddIssue( _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples, _
+            strFamily, _
+            DoxisRolePriority(role), _
+            strSample)
+    End If
+
+    If Abs(dblFontDelta) > DOXIS_FONT_SIZE_CHANGE_TOLERANCE Or _
+       RegressionTextFontSemanticSignature(betterDoc, pageNo, betterTextIndex) <> _
+       RegressionTextFontSemanticSignature(currentDoc, pageNo, lngCurrentIndex) Then
+
+        strFamily = "DOXIS_TEXT_FONT_CHANGED_" & role
+        strSample = _
+            "page=" & CStr(pageNo) & _
+            "|text=" & SanitizeReportText(betterDoc.Texts(betterTextIndex).TextValue) & _
+            "|BETTER=" & RegressionTextFontSemanticSignature(betterDoc, pageNo, betterTextIndex) & _
+            "|CURRENT=" & RegressionTextFontSemanticSignature(currentDoc, pageNo, lngCurrentIndex)
+
+        Call DoxisAddIssue( _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples, _
+            strFamily, _
+            DoxisRolePriority(role), _
+            strSample)
+    End If
+
+    If strBetterLine <> strCurrentLine Then
+        strFamily = "DOXIS_NEAR_SEPARATOR_CHANGED_" & role
+        strSample = _
+            "page=" & CStr(pageNo) & _
+            "|text=" & SanitizeReportText(betterDoc.Texts(betterTextIndex).TextValue) & _
+            "|OLD_LINE=" & strOldLine & _
+            "|BETTER_LINE=" & strBetterLine & _
+            "|CURRENT_LINE=" & strCurrentLine
+
+        Call DoxisAddIssue( _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples, _
+            strFamily, _
+            DoxisRolePriority(role), _
+            strSample)
+    End If
+
+    If lngOldIndex >= 0 Then
+        Call DoxisRecordThreeWayInterpretation( _
+            fileNo, _
+            pageNo, _
+            role, _
+            betterDoc, _
+            betterTextIndex, _
+            currentDoc, _
+            lngCurrentIndex, _
+            strOldSnapshot, _
+            strBetterSnapshot, _
+            strCurrentSnapshot, _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples)
+    End If
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;role;betterTextIndex", _
+        pageNo, _
+        role, _
+        betterTextIndex
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+Private Sub DoxisRecordThreeWayInterpretation( _
+    ByVal fileNo As Long, _
+    ByVal pageNo As Long, _
+    ByVal role As String, _
+    ByRef betterDoc As tPdfDocument, _
+    ByVal betterTextIndex As Long, _
+    ByRef currentDoc As tPdfDocument, _
+    ByVal currentTextIndex As Long, _
+    ByVal oldSnapshot As String, _
+    ByVal betterSnapshot As String, _
+    ByVal currentSnapshot As String, _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object)
+
+    Dim strFamily As String
+    Dim strSample As String
+
+    If oldSnapshot = currentSnapshot And _
+       oldSnapshot <> betterSnapshot Then
+
+        Print #fileNo, _
+            "TRIAD_SIGNAL" & _
+            "|page=" & CStr(pageNo) & _
+            "|role=" & role & _
+            "|classification=CURRENT_MATCHES_OLD_TOPOLOGY_BUT_CLIENT_REPORTS_WORSE" & _
+            "|interpretation=Pure coordinates alone are unlikely to explain the regression; inspect primitive/source/operator/font rendering around this field."
+
+        strFamily = "DOXIS_CURRENT_MATCHES_OLD_BUT_WORSE_" & role
+        strSample = _
+            "page=" & CStr(pageNo) & _
+            "|text=" & SanitizeReportText(currentDoc.Texts(currentTextIndex).TextValue)
+
+        Call DoxisAddIssue( _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples, _
+            strFamily, _
+            2, _
+            strSample)
+
+    ElseIf betterSnapshot = currentSnapshot Then
+
+        Print #fileNo, _
+            "TRIAD_SIGNAL" & _
+            "|page=" & CStr(pageNo) & _
+            "|role=" & role & _
+            "|classification=BETTER_AND_CURRENT_TOPOLOGY_EQUAL" & _
+            "|interpretation=Look beyond simple text/line coordinates for this occurrence."
+
+    Else
+        Print #fileNo, _
+            "TRIAD_SIGNAL" & _
+            "|page=" & CStr(pageNo) & _
+            "|role=" & role & _
+            "|classification=TOPOLOGY_CHANGED_BETTER_TO_CURRENT"
+    End If
+End Sub
+
+Private Function DoxisTextTopologySnapshot( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal textIndex As Long, _
+    ByVal role As String, _
+    ByRef riskScore As Double, _
+    ByRef separatorSignature As String) As String
+
+    Const METHOD_NAME As String = "DoxisTextTopologySnapshot"
+    Dim dblBandBottom As Double
+    Dim dblGlyphBottom As Double
+    Dim dblGlyphTop As Double
+    Dim dblLineGap As Double
+    Dim dblLineX As Double
+    Dim dblTextEnd As Double
+    Dim dblTextWidth As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngCutIndex As Long
+    Dim lngLineIndex As Long
+    Dim strRisk As String
+
+    On Error GoTo ErrorHandler
+
+    riskScore = 0#
+    separatorSignature = "(none)"
+
+    dblTextWidth = EstimateTextWidth( _
+        pdfDoc.Texts(textIndex).TextValue, _
+        pdfDoc.Texts(textIndex).FontName, _
+        pdfDoc.Texts(textIndex).FontSize)
+
+    dblTextEnd = pdfDoc.Texts(textIndex).X + dblTextWidth
+    dblGlyphBottom = pdfDoc.Texts(textIndex).Y - _
+        (pdfDoc.Texts(textIndex).FontSize * DOXIS_TEXT_DESCENDER_FACTOR)
+    dblGlyphTop = pdfDoc.Texts(textIndex).Y + _
+        (pdfDoc.Texts(textIndex).FontSize * DOXIS_TEXT_ASCENDER_FACTOR)
+    dblBandBottom = pdfDoc.Texts(textIndex).Y - DOXIS_SEGMENTATION_BASELINE_BELOW
+
+    lngLineIndex = DoxisFindMostRelevantVerticalSeparator( _
+        pdfDoc, _
+        pageNo, _
+        pdfDoc.Texts(textIndex).X, _
+        dblTextEnd, _
+        dblGlyphBottom, _
+        dblGlyphTop, _
+        dblBandBottom, _
+        pdfDoc.Texts(textIndex).Y, _
+        dblLineGap, _
+        dblLineX)
+
+    If lngLineIndex >= 0 Then
+        separatorSignature = DoxisLineSignature(pdfDoc.Lines(lngLineIndex))
+        lngCutIndex = DoxisPredictCutCharacter( _
+            pdfDoc.Texts(textIndex).TextValue, _
+            pdfDoc.Texts(textIndex).FontName, _
+            pdfDoc.Texts(textIndex).FontSize, _
+            pdfDoc.Texts(textIndex).X, _
+            dblLineX)
+
+        riskScore = DoxisSeparatorRiskScore( _
+            pdfDoc.Lines(lngLineIndex), _
+            dblLineGap, _
+            dblLineX, _
+            pdfDoc.Texts(textIndex).X, _
+            dblTextEnd, _
+            dblGlyphBottom, _
+            dblGlyphTop)
+
+        strRisk = DoxisRiskLabel(riskScore)
+    Else
+        lngCutIndex = 0
+        dblLineGap = 999#
+        strRisk = "NONE"
+    End If
+
+    DoxisTextTopologySnapshot = _
+        "text=" & SanitizeReportText(pdfDoc.Texts(textIndex).TextValue) & _
+        ",x=" & NumTxt(pdfDoc.Texts(textIndex).X) & _
+        ",y=" & NumTxt(pdfDoc.Texts(textIndex).Y) & _
+        ",font=" & pdfDoc.Texts(textIndex).FontName & "@" & NumTxt(pdfDoc.Texts(textIndex).FontSize) & _
+        ",estW=" & NumTxt(dblTextWidth) & _
+        ",risk=" & strRisk & _
+        ",riskScore=" & NumTxt(riskScore) & _
+        ",separatorGapPt=" & DoxisOptionalNumber(dblLineGap) & _
+        ",gapPx300=" & DoxisOptionalNumber(DoxisPointsToPixels(dblLineGap, DOXIS_RASTER_PROXY_DPI_LOW)) & _
+        ",gapPx600=" & DoxisOptionalNumber(DoxisPointsToPixels(dblLineGap, DOXIS_RASTER_PROXY_DPI_HIGH)) & _
+        ",predictedCutAfterChars=" & CStr(lngCutIndex) & _
+        ",separator=" & separatorSignature
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    DoxisTextTopologySnapshot = "ERROR"
+    riskScore = 0#
+    separatorSignature = "(error)"
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "pageNo;textIndex;role", _
+        pageNo, _
+        textIndex, _
+        role
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+Private Function DoxisFindMostRelevantVerticalSeparator( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal textX As Double, _
+    ByVal textEndX As Double, _
+    ByVal glyphBottom As Double, _
+    ByVal glyphTop As Double, _
+    ByVal segmentationBottom As Double, _
+    ByVal baselineY As Double, _
+    ByRef bestGap As Double, _
+    ByRef bestLineX As Double) As Long
+
+    Dim dblGap As Double
+    Dim dblLineX As Double
+    Dim dblScore As Double
+    Dim dblBestScore As Double
+    Dim dblYMax As Double
+    Dim dblYMin As Double
+    Dim lngEnd As Long
+    Dim lngIndex As Long
+    Dim lngStart As Long
+
+    DoxisFindMostRelevantVerticalSeparator = -1
+    bestGap = 999#
+    bestLineX = 0#
+    dblBestScore = 1E+30
+
+    If pageNo < 1 Or pageNo > pdfDoc.PageCount Then Exit Function
+
+    lngStart = pdfDoc.Pages(pageNo).LineStart
+    lngEnd = lngStart + pdfDoc.Pages(pageNo).LineCount - 1
+
+    For lngIndex = lngStart To lngEnd
+        If Abs(pdfDoc.Lines(lngIndex).X1 - pdfDoc.Lines(lngIndex).X2) <= DOXIS_LINE_X_TOLERANCE Then
+            dblLineX = (pdfDoc.Lines(lngIndex).X1 + pdfDoc.Lines(lngIndex).X2) / 2#
+
+            If dblLineX >= textX + DOXIS_TEXT_X_MARGIN And _
+               dblLineX <= textEndX - DOXIS_TEXT_X_MARGIN Then
+
+                dblYMin = MinDouble(pdfDoc.Lines(lngIndex).Y1, pdfDoc.Lines(lngIndex).Y2)
+                dblYMax = MaxDouble(pdfDoc.Lines(lngIndex).Y1, pdfDoc.Lines(lngIndex).Y2)
+
+                dblGap = DoxisVerticalGapToBand( _
+                    dblYMin, _
+                    dblYMax, _
+                    glyphBottom, _
+                    glyphTop)
+
+                If dblGap > DOXIS_NEAR_SEPARATOR_GAP Then
+                    dblGap = DoxisVerticalGapToBand( _
+                        dblYMin, _
+                        dblYMax, _
+                        segmentationBottom, _
+                        baselineY + 1#)
+                End If
+
+                If dblGap <= DOXIS_NEAR_SEPARATOR_GAP Then
+                    dblScore = dblGap * 100# + Abs(dblLineX - ((textX + textEndX) / 2#))
+
+                    If dblScore < dblBestScore Then
+                        dblBestScore = dblScore
+                        bestGap = dblGap
+                        bestLineX = dblLineX
+                        DoxisFindMostRelevantVerticalSeparator = lngIndex
+                    End If
+                End If
+            End If
+        End If
+    Next lngIndex
+End Function
+
+Private Function DoxisSeparatorRiskScore( _
+    ByRef pdfLine As tPdfLine, _
+    ByVal lineGap As Double, _
+    ByVal lineX As Double, _
+    ByVal textX As Double, _
+    ByVal textEndX As Double, _
+    ByVal glyphBottom As Double, _
+    ByVal glyphTop As Double) As Double
+
+    Dim dblScore As Double
+    Dim dblYMax As Double
+    Dim dblYMin As Double
+
+    dblYMin = MinDouble(pdfLine.Y1, pdfLine.Y2)
+    dblYMax = MaxDouble(pdfLine.Y1, pdfLine.Y2)
+
+    If lineX > textX And lineX < textEndX Then
+        dblScore = dblScore + 30#
+    End If
+
+    If dblYMax >= glyphBottom And dblYMin <= glyphTop Then
+        dblScore = dblScore + 70#
+    ElseIf lineGap <= 1# Then
+        dblScore = dblScore + 45#
+    ElseIf lineGap <= 3# Then
+        dblScore = dblScore + 30#
+    ElseIf lineGap <= DOXIS_NEAR_SEPARATOR_GAP Then
+        dblScore = dblScore + 15#
+    End If
+
+    If LCase$(pdfLine.SourceOperator) = "re" Then
+        dblScore = dblScore + 8#
+    End If
+
+    If pdfLine.PaintOperator <> "S" Then
+        dblScore = dblScore + 4#
+    End If
+
+    If pdfLine.LineWidth > 0.01 Then
+        dblScore = dblScore + MinDouble(10#, pdfLine.LineWidth * 10#)
+    End If
+
+    DoxisSeparatorRiskScore = dblScore
+End Function
+
+Private Function DoxisRiskLabel(ByVal riskScore As Double) As String
+    If riskScore >= 90# Then
+        DoxisRiskLabel = "CROSSING_OR_VERY_HIGH"
+    ElseIf riskScore >= 60# Then
+        DoxisRiskLabel = "HIGH"
+    ElseIf riskScore >= 40# Then
+        DoxisRiskLabel = "MEDIUM"
+    ElseIf riskScore > 0# Then
+        DoxisRiskLabel = "NEAR"
+    Else
+        DoxisRiskLabel = "NONE"
+    End If
+End Function
+
+Private Function DoxisPredictCutCharacter( _
+    ByVal textValue As String, _
+    ByVal fontName As String, _
+    ByVal fontSize As Double, _
+    ByVal textX As Double, _
+    ByVal separatorX As Double) As Long
+
+    Dim dblCursor As Double
+    Dim lngIndex As Long
+
+    DoxisPredictCutCharacter = 0
+    dblCursor = textX
+
+    If separatorX <= textX Then Exit Function
+
+    For lngIndex = 1 To Len(textValue)
+        dblCursor = dblCursor + DoxisCharacterWidthPoints( _
+            Mid$(textValue, lngIndex, 1), _
+            fontName, _
+            fontSize)
+
+        If dblCursor >= separatorX Then
+            DoxisPredictCutCharacter = lngIndex - 1
+            Exit Function
+        End If
+    Next lngIndex
+
+    DoxisPredictCutCharacter = Len(textValue)
+End Function
+
+Private Function DoxisCharacterWidthPoints( _
+    ByVal characterValue As String, _
+    ByVal fontName As String, _
+    ByVal fontSize As Double) As Double
+
+    Dim dblFactor As Double
+    Dim dblUnits As Double
+
+    Select Case characterValue
+        Case " "
+            dblUnits = 0.25
+        Case "i", "l", "I", ".", ",", ":", ";", "!", "'", "|"
+            dblUnits = 0.25
+        Case "M", "W", "m", "w", "@", "%"
+            dblUnits = 0.85
+        Case "0" To "9"
+            dblUnits = 0.5
+        Case "A" To "Z"
+            dblUnits = 0.65
+        Case Else
+            dblUnits = 0.48
+    End Select
+
+    dblFactor = 1#
+    If InStr(1, fontName, "Bold", vbTextCompare) > 0 Then
+        dblFactor = 1.03
+    End If
+
+    DoxisCharacterWidthPoints = dblUnits * fontSize * dblFactor
+End Function
+
+Private Function DoxisVerticalGapToBand( _
+    ByVal lineMinY As Double, _
+    ByVal lineMaxY As Double, _
+    ByVal bandMinY As Double, _
+    ByVal bandMaxY As Double) As Double
+
+    If lineMaxY < bandMinY Then
+        DoxisVerticalGapToBand = bandMinY - lineMaxY
+    ElseIf lineMinY > bandMaxY Then
+        DoxisVerticalGapToBand = lineMinY - bandMaxY
+    Else
+        DoxisVerticalGapToBand = 0#
+    End If
+End Function
+
+Private Function DoxisLineSignature(ByRef pdfLine As tPdfLine) As String
+    DoxisLineSignature = _
+        "x=" & NumTxt((pdfLine.X1 + pdfLine.X2) / 2#) & _
+        ",y=" & NumTxt(MinDouble(pdfLine.Y1, pdfLine.Y2)) & _
+        ".." & NumTxt(MaxDouble(pdfLine.Y1, pdfLine.Y2)) & _
+        ",w=" & NumTxt(pdfLine.LineWidth) & _
+        ",source=" & pdfLine.SourceOperator & _
+        ",paint=" & pdfLine.PaintOperator & _
+        ",color=" & pdfLine.StrokeColor
+End Function
+
+Private Function DoxisPointsToPixels( _
+    ByVal pointsValue As Double, _
+    ByVal dpi As Double) As Double
+
+    If pointsValue >= 900# Then
+        DoxisPointsToPixels = pointsValue
+    Else
+        DoxisPointsToPixels = pointsValue * dpi / 72#
+    End If
+End Function
+
+Private Function DoxisOptionalNumber(ByVal value As Double) As String
+    If value >= 900# Then
+        DoxisOptionalNumber = "NA"
+    Else
+        DoxisOptionalNumber = NumTxt(value)
+    End If
+End Function
+
+Private Function DoxisIsTargetRole(ByVal role As String) As Boolean
+    If role = "TOP_ISIN" Or _
+       role = "TOP_SCHLUSSTAG" Or _
+       role = "TOP_VALUTATAG" Then
+
+        DoxisIsTargetRole = True
+        Exit Function
+    End If
+
+    If InStr(1, role, "WHG", vbBinaryCompare) > 0 Then
+        DoxisIsTargetRole = True
+    End If
+End Function
+
+Private Function DoxisRolePriority(ByVal role As String) As Long
+    If role = "TOP_ISIN" Then
+        DoxisRolePriority = 3
+    ElseIf InStr(1, role, "WHG", vbBinaryCompare) > 0 Then
+        DoxisRolePriority = 3
+    ElseIf role = "TOP_SCHLUSSTAG" Or role = "TOP_VALUTATAG" Then
+        DoxisRolePriority = 2
+    Else
+        DoxisRolePriority = 1
+    End If
+End Function
+
+Private Sub DoxisWriteFixedSeparatorProbe( _
+    ByVal fileNo As Long, _
+    ByVal pageNo As Long, _
+    ByVal targetX As Double, _
+    ByVal affectedRole As String, _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef betterDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument, _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object)
+
+    Dim strBetter As String
+    Dim strCurrent As String
+    Dim strFamily As String
+    Dim strOld As String
+    Dim strSample As String
+
+    strOld = DoxisFixedSeparatorSignature(oldDoc, pageNo, targetX)
+    strBetter = DoxisFixedSeparatorSignature(betterDoc, pageNo, targetX)
+    strCurrent = DoxisFixedSeparatorSignature(currentDoc, pageNo, targetX)
+
+    Print #fileNo, _
+        "FIXED_SEPARATOR" & _
+        "|page=" & CStr(pageNo) & _
+        "|x=" & NumTxt(targetX) & _
+        "|affectedRole=" & affectedRole & _
+        "|OLD=" & strOld & _
+        "|BETTER=" & strBetter & _
+        "|CURRENT=" & strCurrent
+
+    If strBetter <> strCurrent Then
+        strFamily = "DOXIS_FIXED_SEPARATOR_CHANGED_X" & Replace(NumTxt(targetX), ".", "_")
+        strSample = _
+            "page=" & CStr(pageNo) & _
+            "|affectedRole=" & affectedRole & _
+            "|OLD=" & strOld & _
+            "|BETTER=" & strBetter & _
+            "|CURRENT=" & strCurrent
+
+        Call DoxisAddIssue( _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples, _
+            strFamily, _
+            3, _
+            strSample)
+    ElseIf strOld = strCurrent And strOld <> strBetter Then
+        strFamily = "DOXIS_FIXED_SEPARATOR_CURRENT_MATCHES_OLD_X" & Replace(NumTxt(targetX), ".", "_")
+        strSample = _
+            "page=" & CStr(pageNo) & _
+            "|affectedRole=" & affectedRole & _
+            "|signal=Current matches Oracle separator serialization but client says parsing is worse; inspect surrounding operators/text/font."
+
+        Call DoxisAddIssue( _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples, _
+            strFamily, _
+            2, _
+            strSample)
+    End If
+End Sub
+
+Private Function DoxisFixedSeparatorSignature( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal targetX As Double) As String
+
+    Dim lngEnd As Long
+    Dim lngIndex As Long
+    Dim lngStart As Long
+    Dim strResult As String
+
+    If pageNo < 1 Or pageNo > pdfDoc.PageCount Then
+        DoxisFixedSeparatorSignature = "PAGE_MISSING"
+        Exit Function
+    End If
+
+    lngStart = pdfDoc.Pages(pageNo).LineStart
+    lngEnd = lngStart + pdfDoc.Pages(pageNo).LineCount - 1
+
+    For lngIndex = lngStart To lngEnd
+        If Abs(pdfDoc.Lines(lngIndex).X1 - pdfDoc.Lines(lngIndex).X2) <= DOXIS_LINE_X_TOLERANCE Then
+            If Abs(((pdfDoc.Lines(lngIndex).X1 + pdfDoc.Lines(lngIndex).X2) / 2#) - targetX) <= DOXIS_LINE_X_TOLERANCE Then
+                If Len(strResult) > 0 Then strResult = strResult & ";"
+                strResult = strResult & DoxisLineSignature(pdfDoc.Lines(lngIndex))
+            End If
+        End If
+    Next lngIndex
+
+    If Len(strResult) = 0 Then strResult = "(none)"
+    DoxisFixedSeparatorSignature = strResult
+End Function
+
+Private Sub DoxisFindCurrentOnlyTargets( _
+    ByVal fileNo As Long, _
+    ByVal pageNo As Long, _
+    ByRef betterDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument, _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object)
+
+    Dim lngBetterIndex As Long
+    Dim lngCurrentEnd As Long
+    Dim lngCurrentIndex As Long
+    Dim lngCurrentStart As Long
+    Dim strRole As String
+
+    lngCurrentStart = currentDoc.Pages(pageNo).TextStart
+    lngCurrentEnd = lngCurrentStart + currentDoc.Pages(pageNo).TextCount - 1
+
+    For lngCurrentIndex = lngCurrentStart To lngCurrentEnd
+        strRole = RegressionInferStructuralFieldRole( _
+            pageNo, _
+            currentDoc.Texts(lngCurrentIndex).X, _
+            currentDoc.Texts(lngCurrentIndex).Y)
+
+        If DoxisIsTargetRole(strRole) Then
+            lngBetterIndex = RegressionFindCounterpartText( _
+                betterDoc, _
+                pageNo, _
+                strRole, _
+                currentDoc.Texts(lngCurrentIndex).X, _
+                currentDoc.Texts(lngCurrentIndex).Y, _
+                currentDoc.Texts(lngCurrentIndex).TextValue)
+
+            If lngBetterIndex < 0 Then
+                Print #fileNo, _
+                    "CURRENT_ONLY_TARGET" & _
+                    "|page=" & CStr(pageNo) & _
+                    "|role=" & strRole & _
+                    "|text=" & SanitizeReportText(currentDoc.Texts(lngCurrentIndex).TextValue)
+
+                Call DoxisAddIssue( _
+                    dictIssueCounts, _
+                    dictIssuePriorities, _
+                    dictIssueSamples, _
+                    "DOXIS_CURRENT_ONLY_TARGET_" & strRole, _
+                    DoxisRolePriority(strRole), _
+                    "page=" & CStr(pageNo) & _
+                    "|text=" & SanitizeReportText(currentDoc.Texts(lngCurrentIndex).TextValue))
+            End If
+        End If
+    Next lngCurrentIndex
+End Sub
+
+Private Sub DoxisAddIssue( _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object, _
+    ByVal family As String, _
+    ByVal priority As Long, _
+    ByVal sampleText As String)
+
+    Dim lngCount As Long
+    Dim lngSampleNo As Long
+    Dim strKey As String
+
+    If dictIssueCounts.Exists(family) Then
+        dictIssueCounts(family) = CLng(dictIssueCounts(family)) + 1
+        If priority > CLng(dictIssuePriorities(family)) Then
+            dictIssuePriorities(family) = priority
+        End If
+    Else
+        dictIssueCounts.Add family, 1
+        dictIssuePriorities.Add family, priority
+    End If
+
+    lngCount = CLng(dictIssueCounts(family))
+    lngSampleNo = lngCount
+    If lngSampleNo > DOXIS_MAX_SAMPLES_PER_FAMILY Then Exit Sub
+
+    strKey = family & "|" & CStr(lngSampleNo)
+    If Not dictIssueSamples.Exists(strKey) Then
+        dictIssueSamples.Add strKey, sampleText
+    End If
+End Sub
+
+Private Sub DoxisWriteSuperShortReport( _
+    ByRef oldDoc As tPdfDocument, _
+    ByRef betterDoc As tPdfDocument, _
+    ByRef currentDoc As tPdfDocument, _
+    ByVal dictIssueCounts As Object, _
+    ByVal dictIssuePriorities As Object, _
+    ByVal dictIssueSamples As Object, _
+    ByVal outputPath As String)
+
+    Const METHOD_NAME As String = "DoxisWriteSuperShortReport"
+    Dim arrKeys As Variant
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngCritical As Long
+    Dim lngFile As Long
+    Dim lngIndex As Long
+    Dim lngPriority As Long
+    Dim lngSample As Long
+    Dim strFamily As String
+    Dim strSampleKey As String
+    Dim strStatus As String
+
+    On Error GoTo ErrorHandler
+
+    If dictIssueCounts.Count = 0 Then
+        strStatus = "NO_DOXIS_TOPOLOGY_REGRESSION_FOUND"
+    Else
+        strStatus = "ACTION_REQUIRED"
+    End If
+
+    If dictIssueCounts.Count > 0 Then
+        arrKeys = SortedDictionaryKeys(dictIssueCounts)
+        For lngIndex = LBound(arrKeys) To UBound(arrKeys)
+            strFamily = CStr(arrKeys(lngIndex))
+            If CLng(dictIssuePriorities(strFamily)) >= 3 Then
+                lngCritical = lngCritical + CLng(dictIssueCounts(strFamily))
+            End If
+        Next lngIndex
+    End If
+
+    lngFile = FreeFile
+    Open outputPath For Output Access Write As #lngFile
+
+    Print #lngFile, "ORACLE_DOXIS_TOPOLOGY_SUPER_SHORT_V17"
+    Print #lngFile, "OLD_ORACLE|" & oldDoc.PdfPath
+    Print #lngFile, "BETTER_PARSING|" & betterDoc.PdfPath
+    Print #lngFile, "CURRENT|" & currentDoc.PdfPath
+    Print #lngFile, _
+        "RESULT|status=" & strStatus & _
+        "|families=" & CStr(dictIssueCounts.Count) & _
+        "|criticalEvents=" & CStr(lngCritical) & _
+        "|pagesOld=" & CStr(oldDoc.PageCount) & _
+        "|pagesBetter=" & CStr(betterDoc.PageCount) & _
+        "|pagesCurrent=" & CStr(currentDoc.PageCount)
+
+    Print #lngFile, _
+        "IMPORTANT|BETTER_PARSING_IS_NOT_A_GOLD_STANDARD=TRUE|It may be imperfect; it is used because client behaviour says it parsed ISIN/currency better."
+    Print #lngFile, _
+        "MODEL|Heuristic DOXIS-style topology test: text bounding-width estimate + nearest vertical separator + separator primitive/style + font/position + 300/600-DPI distance proxy."
+    Print #lngFile, _
+        "FOCUS|ISIN;currency/WHG;Schlusstag;Valutatag;x=468;x=639"
+
+    If dictIssueCounts.Count = 0 Then
+        Print #lngFile, "BREAKING_SIGNALS|NONE"
+        Print #lngFile, _
+            "NEXT|The three PDFs are equivalent under the V17 topology checks. If client behaviour still differs, the next suspects are exact font rasterization, content-stream/operator ordering, or a DOXISLoader-specific extraction configuration."
+        GoTo ExitSub
+    End If
+
+    Print #lngFile, ""
+    Print #lngFile, "BREAKING_SIGNALS"
+
+    For lngPriority = 3 To 1 Step -1
+        arrKeys = SortedDictionaryKeys(dictIssueCounts)
+
+        For lngIndex = LBound(arrKeys) To UBound(arrKeys)
+            strFamily = CStr(arrKeys(lngIndex))
+
+            If CLng(dictIssuePriorities(strFamily)) = lngPriority Then
+                Print #lngFile, _
+                    "ISSUE" & _
+                    "|priority=" & RegressionPriorityLabel(lngPriority) & _
+                    "|family=" & strFamily & _
+                    "|count=" & CStr(dictIssueCounts(strFamily))
+
+                For lngSample = 1 To DOXIS_MAX_SAMPLES_PER_FAMILY
+                    strSampleKey = strFamily & "|" & CStr(lngSample)
+
+                    If dictIssueSamples.Exists(strSampleKey) Then
+                        Print #lngFile, _
+                            "DETAIL" & _
+                            "|family=" & strFamily & _
+                            "|" & CStr(dictIssueSamples(strSampleKey))
+                    End If
+                Next lngSample
+            End If
+        Next lngIndex
+    Next lngPriority
+
+    Print #lngFile, ""
+    Print #lngFile, "INTERPRETATION_PRIORITY"
+    Print #lngFile, _
+        "1|If CURRENT increases CUT_RISK for TOP_ISIN or WHG relative to BETTER, fix geometry/topology first."
+    Print #lngFile, _
+        "2|If coordinates match OLD but CURRENT is worse, do NOT move lines blindly; inspect separator primitive/source, font rendering and local operator serialization."
+    Print #lngFile, _
+        "3|If only BETTER differs from both OLD and CURRENT, treat that difference as a possible parser-tolerance clue, not as the target layout."
+    Print #lngFile, _
+        "4|The predictedCutAfterChars value is especially useful for ISIN. A result around 8 near x=639 would match the client's earlier 'first 8 characters' symptom."
+
+    Print #lngFile, ""
+    Print #lngFile, _
+        "NEXT|Send this SUPER_SHORT first. If it shows a TOP_ISIN/WHG/x468/x639 family, use the V17 DETAIL report for the exact line y-span, source operator, paint operator, width, font and estimated cut index."
+
+ExitSub:
+    If lngFile <> 0 Then Close #lngFile
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "outputPath", _
+        outputPath
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+Private Function BuildDoxisTopologyDetailOutputPath( _
+    ByVal betterPdfPath As String, _
+    ByVal currentPdfPath As String) As String
+
+    Dim lngSlashPosition As Long
+    Dim strFolder As String
+
+    lngSlashPosition = InStrRev(currentPdfPath, "\")
+    If lngSlashPosition > 0 Then
+        strFolder = Left$(currentPdfPath, lngSlashPosition)
+    End If
+
+    BuildDoxisTopologyDetailOutputPath = _
+        strFolder & _
+        FileBaseName(betterPdfPath) & _
+        "_VS_" & _
+        FileBaseName(currentPdfPath) & _
+        "_DOXIS_V17_DETAIL.txt"
+End Function
+
+Private Function BuildDoxisTopologySuperShortOutputPath( _
+    ByVal betterPdfPath As String, _
+    ByVal currentPdfPath As String) As String
+
+    Dim lngSlashPosition As Long
+    Dim strFolder As String
+
+    lngSlashPosition = InStrRev(currentPdfPath, "\")
+    If lngSlashPosition > 0 Then
+        strFolder = Left$(currentPdfPath, lngSlashPosition)
+    End If
+
+    BuildDoxisTopologySuperShortOutputPath = _
+        strFolder & _
+        FileBaseName(betterPdfPath) & _
+        "_VS_" & _
+        FileBaseName(currentPdfPath) & _
+        "_DOXIS_V17_SUPER_SHORT.txt"
+End Function
