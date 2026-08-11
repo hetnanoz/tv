@@ -1,7 +1,7 @@
 Option Explicit
 
 Private Const CLASS_NAME As String = "modRawOraclePdfExport"
-' FIX35: X=468/X=639 are hard-locked to OLD Oracle m/l/S primitives with raw-stream self-validation; all FIX34 logic retained.
+' FIX36: keep FIX35 geometry lock, align X=468/X=639 transaction Y-span exactly to OLD/BETTER, and simplify text serialization to BETTER-like Tf/Td/Tj.
 Private Const CONFIG_RANGE_NAME As String = "cfg_OraclePdfFormat"
 Private Const PDF_HEADER As String = "%PDF-1.4"
 Private Const PDF_PAGE_WIDTH As Double = 1368#
@@ -79,7 +79,11 @@ Private Const BOTTOM_FIELD_DEVISENKURS_INDEX As Long = 12
 Private Const ORACLE_PARSER_TARGET_X_FIRST As Double = 468#
 Private Const ORACLE_PARSER_TARGET_X_SECOND As Double = 639#
 Private Const ORACLE_PARSER_TARGET_X_TOLERANCE As Double = 0.01
-Private Const RAW_ORACLE_BUILD_SIGNATURE As String = "FIX35_TARGET_X_ML_LOCK"
+' V19 audit: OLD and BETTER use relY=-4.52..13.48 while CURRENT used -4.48..13.52.
+' Shift only transaction-row X=468/X=639 target separators down by 0.04 pt;
+' header target separators remain unchanged.
+Private Const ORACLE_TRANSACTION_TARGET_SEPARATOR_Y_SHIFT As Double = -0.04
+Private Const RAW_ORACLE_BUILD_SIGNATURE As String = "FIX36_DOXIS_TEXT_STREAM_ALIGN"
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -1855,7 +1859,8 @@ Private Function BuildTransactionGridStrokeContent( _
     strContent = strContent & BuildOracleParserSensitiveBottomVerticalLines( _
         arrBottomX, _
         dblBottomRowBottomY, _
-        dblTopRowBottomY)
+        dblTopRowBottomY, _
+        ORACLE_TRANSACTION_TARGET_SEPARATOR_Y_SHIFT)
 
     BuildTransactionGridStrokeContent = strContent
 
@@ -1953,7 +1958,8 @@ End Function
 Private Function BuildOracleParserSensitiveBottomVerticalLines( _
     ByVal arrX As Variant, _
     ByVal dblBottomY As Double, _
-    ByVal dblTopY As Double) As String
+    ByVal dblTopY As Double, _
+    Optional ByVal dblTargetYShift As Double = 0#) As String
 
     Const METHOD_NAME As String = "BuildOracleParserSensitiveBottomVerticalLines"
     Dim dblX As Double
@@ -1979,8 +1985,8 @@ Private Function BuildOracleParserSensitiveBottomVerticalLines( _
         If IsOracleParserTargetX(dblX) Then
             strContent = strContent & BuildOracleTargetSeparatorLineCommand( _
                 dblX, _
-                dblBottomY, _
-                dblTopY)
+                dblBottomY + dblTargetYShift, _
+                dblTopY + dblTargetYShift)
         Else
             strContent = strContent & BuildLineCommand( _
                 dblX, _
@@ -4096,15 +4102,18 @@ Private Function BuildAbsoluteTextCommand( _
 
     On Error GoTo ErrorHandler
 
-    ' FIX18:
-    ' Geometry commands are already isolated with q/Q and the page starts in
-    ' black. Keep the visibility fix (0 Tr) but do not wrap every text object in
-    ' an extra graphics-state pair; this mirrors the Oracle operator profile.
+    ' FIX36 / V19:
+    ' The BETTER-PARSING PDF uses the compact BT/Tf/Td/Tj/ET text pattern.
+    ' Td gives the same text placement as TD when each text object starts with
+    ' a fresh text matrix, but unlike TD it does not overwrite text leading TL.
+    ' Do not emit redundant Tr/Tc/Tw/Tz/Ts resets before every field; those
+    ' operators were a CURRENT-only local stream difference in the V19 audit.
+    ' Page graphics start in black and this generator does not set a non-default
+    ' text rendering mode elsewhere, so visible output remains unchanged.
     BuildAbsoluteTextCommand = _
         "BT " & _
         strFont & " " & PdfNumber(dblFontSize) & " Tf " & _
-        "0 Tr 0 Tc 0 Tw 100 Tz 0 Ts " & _
-        PdfNumber(dblX) & " " & PdfNumber(dblY) & " TD (" & _
+        PdfNumber(dblX) & " " & PdfNumber(dblY) & " Td (" & _
         EncodePdfText(strText) & ") Tj ET" & vbCrLf
 
 ExitFunction:
@@ -4147,11 +4156,10 @@ Private Function BuildPageNumberCommand( _
 
     On Error GoTo ErrorHandler
 
-    ' FIX18: keep the explicit visible-text state without a per-text q/Q wrapper.
+    ' FIX36: same compact BETTER-like Tf/Td/Tj stream as normal page text.
     BuildPageNumberCommand = _
         "BT /F0 " & PdfNumber(PAGE_NUMBER_FONT_SIZE) & " Tf " & _
-        "0 Tr 0 Tc 0 Tw 100 Tz 0 Ts " & _
-        PdfNumber(PAGE_NUMBER_X) & " " & PdfNumber(PAGE_NUMBER_Y) & " TD (" & _
+        PdfNumber(PAGE_NUMBER_X) & " " & PdfNumber(PAGE_NUMBER_Y) & " Td (" & _
         EncodePdfText(CStr(lngPage)) & ") Tj ( / ) Tj (" & _
         EncodePdfText(CStr(lngPageCount)) & ") Tj ET" & vbCrLf
 
