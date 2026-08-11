@@ -1,7 +1,7 @@
 Option Explicit
 
 Private Const CLASS_NAME As String = "modPdfForensicCompareBreaks"
-' V18.1: optical/breaks engine retained; global-X and invisible re n diagnostics are in modPdfForensicCompare.
+' V18.2: optical/breaks engine uses 0.01pt minimum row-overlap; OLD-based triad diagnostics are in modPdfForensicCompare.
 Private Const TARGET_X_FIRST As Double = 468#
 Private Const TARGET_X_SECOND As Double = 639#
 Private Const COORD_TOLERANCE As Double = 0.1
@@ -29,7 +29,7 @@ Private Const BREAKS_OPTICAL_LINE_MATCH_X_TOLERANCE As Double = 0.3
 Private Const BREAKS_OPTICAL_LINE_MATCH_Y_TOLERANCE As Double = 0.8
 Private Const BREAKS_OPTICAL_BASELINE_TO_BOTTOM As Double = 4.52
 Private Const BREAKS_OPTICAL_BASELINE_TO_TOP As Double = 13.48
-Private Const BREAKS_OPTICAL_MIN_ROW_OVERLAP As Double = 0.2
+Private Const BREAKS_OPTICAL_MIN_ROW_OVERLAP As Double = 0.01 ' V18.2: detect 0.04pt row intrusion
 
 '===============================================================================
 ' PUBLIC ENTRY BRIDGES CALLED BY modPdfForensicCompare
