@@ -10,12 +10,16 @@
 '               a full graphics state and classifies every primitive by the
 '               operator that terminates its path.
 '
-' Output:       <base>_bp_primitives.txt  every primitive, page by page
-'               <base>_bp_boxes.txt       rectangles clustered into row bands,
-'                                         invisible ones flagged separately
-'               <base>_bp_text.txt        text runs with resolved coordinates
-'               <base>_bp_vba.txt         counters plus paste-ready Array()
-'                                         constants for modRawOraclePdfExport
+'  Output:      One file, <base>_blueprint.txt, written next to the source PDF:
+'                 SECTION 1 DIAGNOSTICS  why each page did or did not decode
+'                 SECTION 2 COUNTERS     ml, re and invisible re n totals plus
+'                                        paste-ready Array() constants
+'                 SECTION 3 TABLE SPEC   media box, fonts, rule grid, per-cell
+'                                        geometry and measured padding
+'                 SECTION 4 BOXES        rectangles clustered into row bands,
+'                                        invisible ones listed separately
+'                 SECTION 5 PRIMITIVES   every primitive with its paint operator
+'                 SECTION 6 TEXT RUNS    text with resolved coordinates
 '
 ' Dependencies: InflateStream, exposed as Public by the existing modPdfReport
 '               module (imported as modpdfinflate). No references, no external
@@ -76,6 +80,9 @@ Private m_primCount As Long
 
 Private m_text() As tTextRun
 Private m_textCount As Long
+
+Private m_diag() As String
+Private m_diagCount As Long
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -140,8 +147,10 @@ Public Sub OracleBlueprintExtract( _
     Dim lngIndex As Long
     Dim lngPageCount As Long
     Dim strBase As String
+    Dim lngFile As Long
     Dim strContent As String
     Dim strFolder As String
+    Dim strReport As String
     Dim varPages As Variant
 
     On Error GoTo ErrorHandler
@@ -168,8 +177,10 @@ Public Sub OracleBlueprintExtract( _
 
     m_primCount = 0
     m_textCount = 0
+    m_diagCount = 0
     ReDim m_prim(0 To MAX_PRIMITIVES - 1)
     ReDim m_text(0 To MAX_TEXTS - 1)
+    ReDim m_diag(0 To 1023)
 
     varPages = BlueprintPageObjectNumbers()
 
@@ -179,23 +190,44 @@ Public Sub OracleBlueprintExtract( _
 
     For lngIndex = LBound(varPages) To UBound(varPages)
         lngPageCount = lngPageCount + 1
-        strContent = BlueprintPageContent(CLng(varPages(lngIndex)))
+        strContent = BlueprintPageContent(CLng(varPages(lngIndex)), lngPageCount)
 
         If Len(strContent) > 0 Then
             Call BlueprintWalkContent(strContent, lngPageCount)
         End If
     Next lngIndex
 
-    Call BlueprintWritePrimitives(strFolder & strBase & "_bp_primitives.txt", strPdfPath)
-    Call BlueprintWriteBoxes(strFolder & strBase & "_bp_boxes.txt", strPdfPath)
-    Call BlueprintWriteText(strFolder & strBase & "_bp_text.txt", strPdfPath)
-    Call BlueprintWriteTable(strFolder & strBase & "_bp_table.txt", strPdfPath, varPages)
-    Call BlueprintWriteSummary(strFolder & strBase & "_bp_vba.txt", strPdfPath, lngPageCount)
+    ' Everything goes into one report file, section by section.
+    strReport = strFolder & strBase & "_blueprint.txt"
+    lngFile = BlueprintOpenNew(strReport)
 
-    MsgBox "Blueprint complete - " & CStr(lngPageCount) & " page(s), " & _
-           CStr(m_primCount) & " primitive(s), " & CStr(m_textCount) & " text run(s)." & _
-           vbCrLf & vbCrLf & "Reports written to:" & vbCrLf & strFolder, _
-           vbInformation
+    Call BlueprintEmit(lngFile, "ORACLE_BLUEPRINT")
+    Call BlueprintEmit(lngFile, "source|" & strPdfPath)
+    Call BlueprintEmit(lngFile, "pages|" & CStr(lngPageCount))
+    Call BlueprintEmit(lngFile, "primitives|" & CStr(m_primCount))
+    Call BlueprintEmit(lngFile, "textRuns|" & CStr(m_textCount))
+    Call BlueprintEmit(lngFile, "units|PDF points, origin bottom-left")
+    Call BlueprintEmit(lngFile, "")
+
+    Call BlueprintWriteDiagnostics(lngFile)
+    Call BlueprintWriteSummary(lngFile, lngPageCount)
+    Call BlueprintWriteTable(lngFile, varPages)
+    Call BlueprintWriteBoxes(lngFile)
+    Call BlueprintWritePrimitives(lngFile)
+    Call BlueprintWriteText(lngFile)
+
+    Close #lngFile
+
+    If m_primCount = 0 Then
+        MsgBox "Blueprint finished but found NO primitives. " & _
+               "Read the DIAGNOSTICS section of:" & vbCrLf & vbCrLf & strReport, _
+               vbExclamation
+    Else
+        MsgBox "Blueprint complete - " & CStr(lngPageCount) & " page(s), " & _
+               CStr(m_primCount) & " primitive(s), " & CStr(m_textCount) & " text run(s)." & _
+               vbCrLf & vbCrLf & strReport, _
+               vbInformation
+    End If
 
 ExitSub:
     Erase m_prim
@@ -974,7 +1006,7 @@ Private Function BlueprintPageObjectNumbers() As Variant
         strDict = BlueprintObjectDict(lngIndex)
 
         If InStr(strDict, "/Type") > 0 And InStr(strDict, "/Pages") > 0 Then
-            strKids = BlueprintExtractBracketed(strDict, "/Kids")
+            strKids = BlueprintKeyValueRaw(strDict, "/Kids")
 
             If Len(strKids) > 0 Then
                 varKids = BlueprintReferenceNumbers(strKids)
@@ -1095,45 +1127,157 @@ End Function
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-11
-' Parameters:    lngPageObjNumber As Long
+' Parameters:    lngPageObjNumber As Long, lngPageOrdinal As Long
 ' Returns:       String
 ' Description:   Returns the decoded content of one page, joining every part.
 '-------------------------------------------------------------------------------
-Private Function BlueprintPageContent(ByVal lngPageObjNumber As Long) As String
+Private Function BlueprintPageContent( _
+    ByVal lngPageObjNumber As Long, _
+    ByVal lngPageOrdinal As Long) As String
 
     Dim lngIndex As Long
     Dim lngObjIndex As Long
-    Dim strDict As String
     Dim strContents As String
+    Dim strDict As String
+    Dim strPart As String
     Dim strResult As String
     Dim varRefs As Variant
 
     lngObjIndex = BlueprintIndexOfObject(lngPageObjNumber)
 
     If lngObjIndex < 0 Then
+        Call BlueprintLogDiag("PAGE|" & CStr(lngPageOrdinal) & _
+            "|obj=" & CStr(lngPageObjNumber) & "|ERROR=page object not in index")
         Exit Function
     End If
 
     strDict = BlueprintObjectDict(lngObjIndex)
-    strContents = BlueprintExtractBracketed(strDict, "/Contents")
 
-    If Len(strContents) = 0 Then
-        strContents = BlueprintValueAfterKey(strDict, "/Contents")
-    End If
-
+    ' The value of /Contents is either a direct reference or an array of them.
+    ' It must be read immediately after the key: searching for the next "["
+    ' anywhere in the dictionary picks up /ProcSet or /Annots instead.
+    strContents = BlueprintKeyValueRaw(strDict, "/Contents")
     varRefs = BlueprintReferenceNumbers(strContents)
 
     If Not IsArray(varRefs) Then
+        Call BlueprintLogDiag("PAGE|" & CStr(lngPageOrdinal) & _
+            "|obj=" & CStr(lngPageObjNumber) & _
+            "|ERROR=no /Contents reference resolved" & _
+            "|rawValue=" & BlueprintSanitize(Left$(strContents, 80)))
         Exit Function
     End If
 
     For lngIndex = LBound(varRefs) To UBound(varRefs)
-        strResult = strResult & BlueprintStreamText(CLng(varRefs(lngIndex))) & vbLf
+        strPart = BlueprintStreamText(CLng(varRefs(lngIndex)), lngPageOrdinal)
+        strResult = strResult & strPart & vbLf
     Next lngIndex
+
+    Call BlueprintLogDiag("PAGE|" & CStr(lngPageOrdinal) & _
+        "|obj=" & CStr(lngPageObjNumber) & _
+        "|contentRefs=" & CStr(UBound(varRefs) - LBound(varRefs) + 1) & _
+        "|decodedChars=" & CStr(Len(strResult)))
 
     BlueprintPageContent = strResult
 
 End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    strDict As String, strKey As String
+' Returns:       String
+' Description:   Returns the value that directly follows one dictionary key,
+'                accepting an array only when it opens immediately after it.
+'-------------------------------------------------------------------------------
+Private Function BlueprintKeyValueRaw( _
+    ByVal strDict As String, _
+    ByVal strKey As String) As String
+
+    Dim lngClose As Long
+    Dim lngKey As Long
+    Dim lngPos As Long
+    Dim strChar As String
+
+    lngKey = InStr(strDict, strKey)
+
+    If lngKey = 0 Then
+        Exit Function
+    End If
+
+    lngPos = lngKey + Len(strKey)
+
+    Do While lngPos <= Len(strDict)
+        strChar = Mid$(strDict, lngPos, 1)
+
+        If strChar <> " " And strChar <> vbTab And _
+           strChar <> vbCr And strChar <> vbLf Then
+            Exit Do
+        End If
+
+        lngPos = lngPos + 1
+    Loop
+
+    If lngPos > Len(strDict) Then
+        Exit Function
+    End If
+
+    If Mid$(strDict, lngPos, 1) = "[" Then
+        lngClose = InStr(lngPos, strDict, "]")
+
+        If lngClose = 0 Then
+            Exit Function
+        End If
+
+        BlueprintKeyValueRaw = Mid$(strDict, lngPos + 1, lngClose - lngPos - 1)
+    Else
+        BlueprintKeyValueRaw = Mid$(strDict, lngPos, 48)
+    End If
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    strLine As String
+' Returns:       ---
+' Description:   Records one diagnostic line for the report.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintLogDiag(ByVal strLine As String)
+
+    If m_diagCount > UBound(m_diag) Then
+        Exit Sub
+    End If
+
+    m_diag(m_diagCount) = strLine
+    m_diagCount = m_diagCount + 1
+
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    lngFile As Long
+' Returns:       ---
+' Description:   Writes why each page did or did not yield a content stream.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintWriteDiagnostics(ByVal lngFile As Long)
+
+    Dim lngIndex As Long
+
+    Call BlueprintEmit(lngFile, "===== SECTION 1 - DIAGNOSTICS =====")
+    Call BlueprintEmit(lngFile, "read|Every page must report decodedChars > 0. " & _
+        "A zero there means the stream was never decoded and every counter below " & _
+        "is meaningless rather than small.")
+    Call BlueprintEmit(lngFile, "objectsIndexed|" & CStr(m_objCount))
+    Call BlueprintEmit(lngFile, "")
+
+    For lngIndex = 0 To m_diagCount - 1
+        Call BlueprintEmit(lngFile, "  " & m_diag(lngIndex))
+    Next lngIndex
+
+    Call BlueprintEmit(lngFile, "")
+
+End Sub
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -1161,11 +1305,13 @@ End Function
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-11
-' Parameters:    lngObjNumber As Long
+' Parameters:    lngObjNumber As Long, lngPageOrdinal As Long
 ' Returns:       String
 ' Description:   Returns one stream object fully decoded through its filter chain.
 '-------------------------------------------------------------------------------
-Private Function BlueprintStreamText(ByVal lngObjNumber As Long) As String
+Private Function BlueprintStreamText( _
+    ByVal lngObjNumber As Long, _
+    ByVal lngPageOrdinal As Long) As String
 
     Dim arrRaw() As Byte
     Dim arrStage() As Byte
@@ -1195,6 +1341,8 @@ Private Function BlueprintStreamText(ByVal lngObjNumber As Long) As String
     lngStream = InStr(strChunk, "stream")
 
     If lngStream = 0 Then
+        Call BlueprintLogDiag("  STREAM|page=" & CStr(lngPageOrdinal) & _
+            "|obj=" & CStr(lngObjNumber) & "|ERROR=no stream keyword")
         Exit Function
     End If
 
@@ -1223,6 +1371,11 @@ Private Function BlueprintStreamText(ByVal lngObjNumber As Long) As String
 
     ' Oracle uses /FlateDecode. modRawOraclePdfExport uses the ASCII85 plus
     ' Flate chain, so ASCII85 has to run first when it is declared.
+    Call BlueprintLogDiag("  STREAM|page=" & CStr(lngPageOrdinal) & _
+        "|obj=" & CStr(lngObjNumber) & _
+        "|rawBytes=" & CStr(UBound(arrRaw) + 1) & _
+        "|filter=" & BlueprintSanitize(BlueprintKeyValueRaw(strDict, "/Filter")))
+
     If InStr(strDict, "/ASCII85Decode") > 0 Then
         arrRaw = BlueprintAscii85Decode(arrRaw)
     End If
@@ -1239,6 +1392,9 @@ Private Function BlueprintStreamText(ByVal lngObjNumber As Long) As String
         If lngProduced > 0 Then
             ReDim Preserve arrStage(0 To lngProduced - 1)
             BlueprintStreamText = StrConv(arrStage, vbUnicode)
+        Else
+            Call BlueprintLogDiag("  STREAM|page=" & CStr(lngPageOrdinal) & _
+                "|obj=" & CStr(lngObjNumber) & "|ERROR=inflate produced 0 bytes")
         End If
     Else
         BlueprintStreamText = StrConv(arrRaw, vbUnicode)
@@ -1390,22 +1546,15 @@ End Function
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-11
-' Parameters:    strPath As String, strSource As String
+' Parameters:    lngFile As Long
 ' Returns:       ---
 ' Description:   Writes every primitive with its painting operator.
 '-------------------------------------------------------------------------------
-Private Sub BlueprintWritePrimitives( _
-    ByVal strPath As String, _
-    ByVal strSource As String)
+Private Sub BlueprintWritePrimitives(ByVal lngFile As Long)
 
-    Dim lngFile As Long
     Dim lngIndex As Long
 
-    lngFile = BlueprintOpenNew(strPath)
-
-    Call BlueprintEmit(lngFile, "ORACLE_BLUEPRINT_PRIMITIVES")
-    Call BlueprintEmit(lngFile, "source|" & strSource)
-    Call BlueprintEmit(lngFile, "units|PDF points, origin bottom-left")
+    Call BlueprintEmit(lngFile, "===== SECTION 5 - PRIMITIVES =====")
     Call BlueprintEmit(lngFile, "visibility|re + n is an invisible path; " & _
         "S strokes, f fills, B* fills and strokes")
     Call BlueprintEmit(lngFile, "")
@@ -1443,21 +1592,19 @@ Private Sub BlueprintWritePrimitives( _
         End If
     Next lngIndex
 
-    Close #lngFile
+    Call BlueprintEmit(lngFile, "")
 
 End Sub
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-11
-' Parameters:    strPath As String, strSource As String
+' Parameters:    lngFile As Long
 ' Returns:       ---
 ' Description:   Clusters rectangles into row bands so that invisible cell boxes
 '                become directly comparable between two PDFs.
 '-------------------------------------------------------------------------------
-Private Sub BlueprintWriteBoxes( _
-    ByVal strPath As String, _
-    ByVal strSource As String)
+Private Sub BlueprintWriteBoxes(ByVal lngFile As Long)
 
     Dim arrBandTop() As Double
     Dim arrBandBottom() As Double
@@ -1466,17 +1613,13 @@ Private Sub BlueprintWriteBoxes( _
     Dim dblTop As Double
     Dim lngBand As Long
     Dim lngBandCount As Long
-    Dim lngFile As Long
     Dim lngIndex As Long
     Dim lngPage As Long
     Dim lngPageMax As Long
     Dim strInvisible As String
     Dim strVisible As String
 
-    lngFile = BlueprintOpenNew(strPath)
-
-    Call BlueprintEmit(lngFile, "ORACLE_BLUEPRINT_BOXES")
-    Call BlueprintEmit(lngFile, "source|" & strSource)
+    Call BlueprintEmit(lngFile, "===== SECTION 4 - BOXES BY ROW BAND =====")
     Call BlueprintEmit(lngFile, "purpose|Compare INVISIBLE box X-lists between " & _
         "the Oracle original and the generated PDF. A band present in OLD but " & _
         "missing in NEW is a cell the parser can no longer delimit.")
@@ -1565,28 +1708,20 @@ Private Sub BlueprintWriteBoxes( _
         Call BlueprintEmit(lngFile, "")
     Next lngPage
 
-    Close #lngFile
-
 End Sub
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-11
-' Parameters:    strPath As String, strSource As String
+' Parameters:    lngFile As Long
 ' Returns:       ---
 ' Description:   Writes every text run with its resolved position and font.
 '-------------------------------------------------------------------------------
-Private Sub BlueprintWriteText( _
-    ByVal strPath As String, _
-    ByVal strSource As String)
+Private Sub BlueprintWriteText(ByVal lngFile As Long)
 
-    Dim lngFile As Long
     Dim lngIndex As Long
 
-    lngFile = BlueprintOpenNew(strPath)
-
-    Call BlueprintEmit(lngFile, "ORACLE_BLUEPRINT_TEXT")
-    Call BlueprintEmit(lngFile, "source|" & strSource)
+    Call BlueprintEmit(lngFile, "===== SECTION 6 - TEXT RUNS =====")
     Call BlueprintEmit(lngFile, "")
 
     For lngIndex = 0 To m_textCount - 1
@@ -1599,27 +1734,25 @@ Private Sub BlueprintWriteText( _
             "|value=" & BlueprintSanitize(m_text(lngIndex).TextValue))
     Next lngIndex
 
-    Close #lngFile
+    Call BlueprintEmit(lngFile, "")
 
 End Sub
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-11
-' Parameters:    strPath As String, strSource As String, lngPageCount As Long
+' Parameters:    lngFile As Long, lngPageCount As Long
 ' Returns:       ---
 ' Description:   Writes the counters that map onto the forensic report vocabulary
 '                plus paste-ready Array() constants for modRawOraclePdfExport.
 '-------------------------------------------------------------------------------
 Private Sub BlueprintWriteSummary( _
-    ByVal strPath As String, _
-    ByVal strSource As String, _
+    ByVal lngFile As Long, _
     ByVal lngPageCount As Long)
 
     Dim arrX() As Double
     Dim lngBoxInvisible As Long
     Dim lngBoxVisible As Long
-    Dim lngFile As Long
     Dim lngIndex As Long
     Dim lngMlPainted As Long
     Dim lngMlVertical As Long
@@ -1627,8 +1760,6 @@ Private Sub BlueprintWriteSummary( _
     Dim lngReInvisible As Long
     Dim lngXCount As Long
     Dim strLine As String
-
-    lngFile = BlueprintOpenNew(strPath)
 
     For lngIndex = 0 To m_primCount - 1
         If m_prim(lngIndex).Source = "m/l" Then
@@ -1656,10 +1787,7 @@ Private Sub BlueprintWriteSummary( _
         End If
     Next lngIndex
 
-    Call BlueprintEmit(lngFile, "ORACLE_BLUEPRINT_SUMMARY")
-    Call BlueprintEmit(lngFile, "source|" & strSource)
-    Call BlueprintEmit(lngFile, "pages|" & CStr(lngPageCount))
-    Call BlueprintEmit(lngFile, "")
+    Call BlueprintEmit(lngFile, "===== SECTION 2 - COUNTERS =====")
     Call BlueprintEmit(lngFile, "COUNTERS")
     Call BlueprintEmit(lngFile, "  painted_ml      |" & CStr(lngMlPainted) & _
         "   (compare with PAINTED_PRIMITIVES *_ml)")
@@ -1694,13 +1822,12 @@ Private Sub BlueprintWriteSummary( _
 
     Call BlueprintEmit(lngFile, "HOW_TO_READ")
     Call BlueprintEmit(lngFile, "  1|Run this module on OLD and on the generated PDF.")
-    Call BlueprintEmit(lngFile, "  2|Diff the two _bp_boxes.txt files. Any band whose " & _
+    Call BlueprintEmit(lngFile, "  2|Diff SECTION 4 of both reports. Any band whose " & _
         "INVISIBLE_X list is populated in OLD and empty in NEW is a cell boundary " & _
         "the Oracle original declares and the generator does not.")
-    Call BlueprintEmit(lngFile, "  3|Diff the two _bp_vba.txt counters against the " & _
+    Call BlueprintEmit(lngFile, "  3|Diff the COUNTERS blocks against the " & _
         "PAINTED_PRIMITIVES and RE_N_CAPTURE lines of the forensic report.")
-
-    Close #lngFile
+    Call BlueprintEmit(lngFile, "")
 
 End Sub
 
@@ -1944,15 +2071,14 @@ End Sub
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-11
-' Parameters:    strPath As String, strSource As String, varPages As Variant
+' Parameters:    lngFile As Long, varPages As Variant
 ' Returns:       ---
 ' Description:   Reconstructs the full table specification: page box, font
 '                resources, rule grid, row bands, per-cell geometry and the
 '                padding actually used by each cell.
 '-------------------------------------------------------------------------------
 Private Sub BlueprintWriteTable( _
-    ByVal strPath As String, _
-    ByVal strSource As String, _
+    ByVal lngFile As Long, _
     ByVal varPages As Variant)
 
     Const METHOD_NAME As String = "BlueprintWriteTable"
@@ -1964,7 +2090,6 @@ Private Sub BlueprintWriteTable( _
     Dim errDescription As String
     Dim errNumber As Long
     Dim lngBand As Long
-    Dim lngFile As Long
     Dim lngHCount As Long
     Dim lngPage As Long
     Dim lngPageMax As Long
@@ -1972,10 +2097,7 @@ Private Sub BlueprintWriteTable( _
 
     On Error GoTo ErrorHandler
 
-    lngFile = BlueprintOpenNew(strPath)
-
-    Call BlueprintEmit(lngFile, "ORACLE_BLUEPRINT_TABLE")
-    Call BlueprintEmit(lngFile, "source|" & strSource)
+    Call BlueprintEmit(lngFile, "===== SECTION 3 - TABLE SPECIFICATION =====")
     Call BlueprintEmit(lngFile, "note|PDF stores glyph positions, not cells. " & _
         "Column and row boundaries below are reconstructed from the rule grid; " & _
         "alignment is INFERRED from the measured left and right padding.")
@@ -2039,8 +2161,7 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "path;page", _
-        strPath, _
+        "page", _
         lngPage
 
     errorManager.save
@@ -2393,7 +2514,7 @@ Private Function BlueprintPageMediaBox(ByVal lngPageObjNumber As Long) As String
         Exit Function
     End If
 
-    strBox = BlueprintExtractBracketed(BlueprintObjectDict(lngObjIndex), "/MediaBox")
+    strBox = BlueprintKeyValueRaw(BlueprintObjectDict(lngObjIndex), "/MediaBox")
 
     If Len(Trim$(strBox)) > 0 Then
         BlueprintPageMediaBox = Trim$(strBox)
