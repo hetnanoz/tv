@@ -36,6 +36,7 @@ Private Const COORD_TOLERANCE As Double = 0.05
 Private Const MAX_PRIMITIVES As Long = 60000
 Private Const MAX_TEXTS As Long = 40000
 Private Const RECT_MIN_SIDE As Double = 2#
+Private Const MAX_OBJECT_NUMBER_DIGITS As Long = 9
 
 Private Type tPrimitive
     PageNo As Long
@@ -83,6 +84,7 @@ Private m_textCount As Long
 
 Private m_diag() As String
 Private m_diagCount As Long
+Private m_step As String
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -172,8 +174,10 @@ Public Sub OracleBlueprintExtract( _
 
     strBase = BlueprintFileBaseName(strPdfPath)
 
+    m_step = "READ_BYTES"
     m_pdf = BlueprintReadBytes(strPdfPath)
-    Call BlueprintBuildObjectIndex
+
+    m_step = "BUILD_OBJECT_INDEX"
 
     m_primCount = 0
     m_textCount = 0
@@ -182,6 +186,9 @@ Public Sub OracleBlueprintExtract( _
     ReDim m_text(0 To MAX_TEXTS - 1)
     ReDim m_diag(0 To 1023)
 
+    Call BlueprintBuildObjectIndex
+
+    m_step = "PAGE_OBJECT_LIST"
     varPages = BlueprintPageObjectNumbers()
 
     If Not IsArray(varPages) Then
@@ -190,33 +197,21 @@ Public Sub OracleBlueprintExtract( _
 
     For lngIndex = LBound(varPages) To UBound(varPages)
         lngPageCount = lngPageCount + 1
+
+        m_step = "PAGE_" & CStr(lngPageCount) & "_CONTENT"
         strContent = BlueprintPageContent(CLng(varPages(lngIndex)), lngPageCount)
 
         If Len(strContent) > 0 Then
+            m_step = "PAGE_" & CStr(lngPageCount) & "_WALK"
             Call BlueprintWalkContent(strContent, lngPageCount)
         End If
     Next lngIndex
 
     ' Everything goes into one report file, section by section.
+    m_step = "WRITE_REPORT"
     strReport = strFolder & strBase & "_blueprint.txt"
-    lngFile = BlueprintOpenNew(strReport)
 
-    Call BlueprintEmit(lngFile, "ORACLE_BLUEPRINT")
-    Call BlueprintEmit(lngFile, "source|" & strPdfPath)
-    Call BlueprintEmit(lngFile, "pages|" & CStr(lngPageCount))
-    Call BlueprintEmit(lngFile, "primitives|" & CStr(m_primCount))
-    Call BlueprintEmit(lngFile, "textRuns|" & CStr(m_textCount))
-    Call BlueprintEmit(lngFile, "units|PDF points, origin bottom-left")
-    Call BlueprintEmit(lngFile, "")
-
-    Call BlueprintWriteDiagnostics(lngFile)
-    Call BlueprintWriteSummary(lngFile, lngPageCount)
-    Call BlueprintWriteTable(lngFile, varPages)
-    Call BlueprintWriteBoxes(lngFile)
-    Call BlueprintWritePrimitives(lngFile)
-    Call BlueprintWriteText(lngFile)
-
-    Close #lngFile
+    Call BlueprintWriteReport(strReport, strPdfPath, lngPageCount, varPages)
 
     If m_primCount = 0 Then
         MsgBox "Blueprint finished but found NO primitives. " & _
@@ -238,17 +233,78 @@ ErrorHandler:
     errNumber = VBA.Err.Number
     errDescription = VBA.Err.Description
 
+    ' Record where the run stopped and still write whatever was collected, so
+    ' the report always explains the failure instead of leaving no output.
+    Call BlueprintLogDiag("FATAL|step=" & m_step & _
+        "|err=" & CStr(errNumber) & "|desc=" & BlueprintSanitize(errDescription))
+
+    On Error Resume Next
+
+    If Len(strReport) = 0 Then
+        strReport = strFolder & strBase & "_blueprint.txt"
+    End If
+
+    Call BlueprintWriteReport(strReport, strPdfPath, lngPageCount, varPages)
+
+    MsgBox "Blueprint stopped at step " & m_step & _
+           " with error " & CStr(errNumber) & " (" & errDescription & ")." & _
+           vbCrLf & vbCrLf & "Partial report and DIAGNOSTICS written to:" & _
+           vbCrLf & strReport, _
+           vbExclamation
+
+    On Error GoTo 0
+
     errorManager.addError _
         CLASS_NAME, _
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "pdfPath;outFolder", _
+        "pdfPath;step", _
         strPdfPath, _
-        strOutFolder
+        m_step
 
     errorManager.save
     Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    strReport As String, strSource As String, lngPageCount As Long, varPages As Variant
+' Returns:       ---
+' Description:   Writes the whole report. Each section is guarded so that one
+'                failing section cannot suppress the rest of the output.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintWriteReport( _
+    ByVal strReport As String, _
+    ByVal strSource As String, _
+    ByVal lngPageCount As Long, _
+    ByVal varPages As Variant)
+
+    Dim lngFile As Long
+
+    lngFile = BlueprintOpenNew(strReport)
+
+    Call BlueprintEmit(lngFile, "ORACLE_BLUEPRINT")
+    Call BlueprintEmit(lngFile, "source|" & strSource)
+    Call BlueprintEmit(lngFile, "lastStep|" & m_step)
+    Call BlueprintEmit(lngFile, "pages|" & CStr(lngPageCount))
+    Call BlueprintEmit(lngFile, "primitives|" & CStr(m_primCount))
+    Call BlueprintEmit(lngFile, "textRuns|" & CStr(m_textCount))
+    Call BlueprintEmit(lngFile, "units|PDF points, origin bottom-left")
+    Call BlueprintEmit(lngFile, "")
+
+    On Error Resume Next
+    Call BlueprintWriteDiagnostics(lngFile)
+    Call BlueprintWriteSummary(lngFile, lngPageCount)
+    Call BlueprintWriteTable(lngFile, varPages)
+    Call BlueprintWriteBoxes(lngFile)
+    Call BlueprintWritePrimitives(lngFile)
+    Call BlueprintWriteText(lngFile)
+    On Error GoTo 0
+
+    Close #lngFile
+
 End Sub
 
 '===============================================================================
@@ -897,11 +953,17 @@ Private Sub BlueprintBuildObjectIndex()
 
                     lngNumStart = lngPos + 1
 
-                    If lngNumEnd >= lngNumStart Then
+                    ' A digit run longer than a real object number comes from
+                    ' binary stream data, not from an object header. Converting it
+                    ' would exceed Long and raise an overflow.
+                    If lngNumEnd >= lngNumStart And _
+                       lngNumEnd - lngNumStart < MAX_OBJECT_NUMBER_DIGITS Then
+
                         ' Read ONLY the object-number digits. Val() strips blanks,
                         ' so Val("11 0 ") returns 110 rather than 11 and every
                         ' /Kids and /Contents lookup then misses.
-                        lngNumber = Val(BlueprintBytesToText(lngNumStart, lngNumEnd))
+                        lngNumber = BlueprintSafeLong( _
+                            BlueprintBytesToText(lngNumStart, lngNumEnd))
 
                         If lngNumber > 0 Then
                             If m_objCount > UBound(m_objNum) Then
@@ -920,6 +982,26 @@ Private Sub BlueprintBuildObjectIndex()
     Next lngIndex
 
 End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    strValue As String
+' Returns:       Long
+' Description:   Converts digits to Long, returning zero instead of overflowing.
+'-------------------------------------------------------------------------------
+Private Function BlueprintSafeLong(ByVal strValue As String) As Long
+
+    Dim dblValue As Double
+
+    BlueprintSafeLong = 0
+    dblValue = Val(Trim$(strValue))
+
+    If dblValue >= 1# And dblValue <= 2147483647# Then
+        BlueprintSafeLong = CLng(dblValue)
+    End If
+
+End Function
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -1146,7 +1228,7 @@ Private Function BlueprintReferenceNumbers(ByVal strValue As String) As Variant
 
     For lngIndex = LBound(arrParts) To UBound(arrParts)
         If UCase$(Trim$(CStr(arrParts(lngIndex)))) = "R" And lngIndex >= 2 Then
-            arrResult(lngCount) = CLng(Val(CStr(arrParts(lngIndex - 2))))
+            arrResult(lngCount) = BlueprintSafeLong(CStr(arrParts(lngIndex - 2)))
             lngCount = lngCount + 1
         End If
     Next lngIndex
@@ -1171,6 +1253,8 @@ Private Function BlueprintPageContent( _
     ByVal lngPageObjNumber As Long, _
     ByVal lngPageOrdinal As Long) As String
 
+    Dim errDescription As String
+    Dim errNumber As Long
     Dim lngIndex As Long
     Dim lngObjIndex As Long
     Dim strContents As String
@@ -1179,12 +1263,14 @@ Private Function BlueprintPageContent( _
     Dim strResult As String
     Dim varRefs As Variant
 
+    On Error GoTo ErrorHandler
+
     lngObjIndex = BlueprintIndexOfObject(lngPageObjNumber)
 
     If lngObjIndex < 0 Then
         Call BlueprintLogDiag("PAGE|" & CStr(lngPageOrdinal) & _
             "|obj=" & CStr(lngPageObjNumber) & "|ERROR=page object not in index")
-        Exit Function
+        GoTo ExitFunction
     End If
 
     strDict = BlueprintObjectDict(lngObjIndex)
@@ -1200,7 +1286,7 @@ Private Function BlueprintPageContent( _
             "|obj=" & CStr(lngPageObjNumber) & _
             "|ERROR=no /Contents reference resolved" & _
             "|rawValue=" & BlueprintSanitize(Left$(strContents, 80)))
-        Exit Function
+        GoTo ExitFunction
     End If
 
     For lngIndex = LBound(varRefs) To UBound(varRefs)
@@ -1215,6 +1301,19 @@ Private Function BlueprintPageContent( _
 
     BlueprintPageContent = strResult
 
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    Call BlueprintLogDiag("PAGE|" & CStr(lngPageOrdinal) & _
+        "|obj=" & CStr(lngPageObjNumber) & _
+        "|ERROR=" & CStr(errNumber) & " " & BlueprintSanitize(errDescription))
+
+    BlueprintPageContent = strResult
+    Resume ExitFunction
 End Function
 
 '-------------------------------------------------------------------------------
@@ -1381,6 +1480,8 @@ Private Function BlueprintStreamText( _
     ByVal lngObjNumber As Long, _
     ByVal lngPageOrdinal As Long) As String
 
+    Dim errDescription As String
+    Dim errNumber As Long
     Dim arrRaw() As Byte
     Dim arrStage() As Byte
     Dim lngDataEnd As Long
@@ -1393,10 +1494,14 @@ Private Function BlueprintStreamText( _
     Dim strChunk As String
     Dim strDict As String
 
+    On Error GoTo ErrorHandler
+
     lngObjIndex = BlueprintIndexOfObject(lngObjNumber)
 
     If lngObjIndex < 0 Then
-        Exit Function
+        Call BlueprintLogDiag("  STREAM|page=" & CStr(lngPageOrdinal) & _
+            "|obj=" & CStr(lngObjNumber) & "|ERROR=stream object not in index")
+        GoTo ExitFunction
     End If
 
     strDict = BlueprintObjectDict(lngObjIndex)
@@ -1411,7 +1516,7 @@ Private Function BlueprintStreamText( _
     If lngStream = 0 Then
         Call BlueprintLogDiag("  STREAM|page=" & CStr(lngPageOrdinal) & _
             "|obj=" & CStr(lngObjNumber) & "|ERROR=no stream keyword")
-        Exit Function
+        GoTo ExitFunction
     End If
 
     lngDataStart = m_objPos(lngObjIndex) + lngStream + 5
@@ -1427,7 +1532,9 @@ Private Function BlueprintStreamText( _
     lngEndStream = BlueprintFindEndStream(lngDataStart)
 
     If lngEndStream <= lngDataStart Then
-        Exit Function
+        Call BlueprintLogDiag("  STREAM|page=" & CStr(lngPageOrdinal) & _
+            "|obj=" & CStr(lngObjNumber) & "|ERROR=no endstream keyword")
+        GoTo ExitFunction
     End If
 
     lngDataEnd = lngEndStream - 1
@@ -1468,6 +1575,18 @@ Private Function BlueprintStreamText( _
         BlueprintStreamText = StrConv(arrRaw, vbUnicode)
     End If
 
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    Call BlueprintLogDiag("  STREAM|page=" & CStr(lngPageOrdinal) & _
+        "|obj=" & CStr(lngObjNumber) & _
+        "|ERROR=" & CStr(errNumber) & " " & BlueprintSanitize(errDescription))
+
+    Resume ExitFunction
 End Function
 
 '-------------------------------------------------------------------------------
