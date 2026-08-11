@@ -18,8 +18,9 @@
 '                                        geometry and measured padding
 '                 SECTION 4 BOXES        rectangles clustered into row bands,
 '                                        invisible ones listed separately
-'                 SECTION 5 PRIMITIVES   every primitive with its paint operator
-'                 SECTION 6 TEXT RUNS    text with resolved coordinates
+'                 SECTION 5 PRIMITIVES   every primitive with paint + clip operator
+'                 SECTION 6 TEXT RUNS    text with resolved coordinates + active clip
+'                 SECTION 7 CLIP PATHS   W/W* classification and nearest-text evidence
 '
 ' Dependencies: InflateStream, exposed as Public by the existing modPdfReport
 '               module (imported as modpdfinflate). No references, no external
@@ -30,6 +31,7 @@
 Option Explicit
 
 Private Const CLASS_NAME As String = "modOracleBlueprint"
+Private Const BLUEPRINT_VERSION As String = "V2_CLIP_AWARE"
 
 Private Const BAND_TOLERANCE As Double = 1.5
 Private Const COORD_TOLERANCE As Double = 0.05
@@ -42,6 +44,10 @@ Private Type tPrimitive
     PageNo As Long
     Source As String
     Paint As String
+    ClipOperator As String
+    GraphicsDepth As Long
+    PathTokenIndex As Long
+    PaintTokenIndex As Long
     X1 As Double
     Y1 As Double
     X2 As Double
@@ -63,12 +69,22 @@ Private Type tTextRun
     FontName As String
     FontSize As Double
     TextValue As String
+    TokenIndex As Long
+    GraphicsDepth As Long
+    ClipActive As Boolean
+    ClipOperator As String
+    ClipSetToken As Long
+    ClipSummary As String
 End Type
 
 Private Type tGraphicsState
     LineWidth As Double
     FillGray As String
     StrokeGray As String
+    ClipActive As Boolean
+    ClipOperator As String
+    ClipSetToken As Long
+    ClipSummary As String
 End Type
 
 Private m_pdf() As Byte
@@ -136,7 +152,7 @@ End Sub
 ' Creation date: 2026-08-11
 ' Parameters:    strPdfPath As String, strOutFolder As String
 ' Returns:       ---
-' Description:   Reads one PDF and writes the four blueprint report files.
+' Description:   Reads one PDF and writes the full report plus the short digest.
 '-------------------------------------------------------------------------------
 Public Sub OracleBlueprintExtract( _
     ByVal strPdfPath As String, _
@@ -287,7 +303,7 @@ Private Sub BlueprintWriteReport( _
 
     lngFile = BlueprintOpenNew(strReport)
 
-    Call BlueprintEmit(lngFile, "ORACLE_BLUEPRINT")
+    Call BlueprintEmit(lngFile, "ORACLE_BLUEPRINT_" & BLUEPRINT_VERSION)
     Call BlueprintEmit(lngFile, "source|" & strSource)
     Call BlueprintEmit(lngFile, "lastStep|" & m_step)
     Call BlueprintEmit(lngFile, "pages|" & CStr(lngPageCount))
@@ -303,6 +319,7 @@ Private Sub BlueprintWriteReport( _
     Call BlueprintWriteBoxes(lngFile)
     Call BlueprintWritePrimitives(lngFile)
     Call BlueprintWriteText(lngFile)
+    Call BlueprintWriteClipForensics(lngFile)
     On Error GoTo 0
 
     Close #lngFile
@@ -378,6 +395,7 @@ Private Sub BlueprintWalkContent( _
     Dim lngPathCount As Long
     Dim strFontName As String
     Dim strKind As String
+    Dim strPendingClip As String
     Dim strPendingText As String
     Dim strToken As String
 
@@ -470,7 +488,9 @@ Private Sub BlueprintWalkContent( _
                                 dblCurY, _
                                 dblOperand(lngOperandCount - 2), _
                                 dblOperand(lngOperandCount - 1), _
-                                gsCurrent)
+                                gsCurrent, _
+                                lngIndex, _
+                                lngStackTop + 1)
 
                             dblCurX = dblOperand(lngOperandCount - 2)
                             dblCurY = dblOperand(lngOperandCount - 1)
@@ -486,14 +506,27 @@ Private Sub BlueprintWalkContent( _
                                 dblOperand(lngOperandCount - 3), _
                                 dblOperand(lngOperandCount - 2), _
                                 dblOperand(lngOperandCount - 1), _
-                                gsCurrent)
+                                gsCurrent, _
+                                lngIndex, _
+                                lngStackTop + 1)
                         End If
+
+                    Case "W", "W*"
+                        ' W/W* does not consume the current path. It marks that
+                        ' path as the next clipping path; the following painting
+                        ' operator (normally n) terminates it.
+                        strPendingClip = strToken
 
                     Case "S", "s", "f", "F", "f*", "B", "B*", "b", "b*", "n"
                         Call BlueprintFlushPath( _
                             pathBuffer, _
                             lngPathCount, _
-                            strToken)
+                            strToken, _
+                            strPendingClip, _
+                            lngIndex, _
+                            gsCurrent)
+
+                        strPendingClip = vbNullString
 
                     Case "BT"
                         blnInText = True
@@ -529,7 +562,10 @@ Private Sub BlueprintWalkContent( _
                                 dblLineY, _
                                 strFontName, _
                                 dblFontSize, _
-                                strPendingText)
+                                strPendingText, _
+                                lngIndex, _
+                                lngStackTop + 1, _
+                                gsCurrent)
                         End If
 
                         strPendingText = vbNullString
@@ -574,7 +610,9 @@ Private Sub BlueprintPushSegment( _
     ByVal dblY1 As Double, _
     ByVal dblX2 As Double, _
     ByVal dblY2 As Double, _
-    ByRef gsCurrent As tGraphicsState)
+    ByRef gsCurrent As tGraphicsState, _
+    ByVal lngTokenIndex As Long, _
+    ByVal lngGraphicsDepth As Long)
 
     If lngPathCount > UBound(pathBuffer) Then
         ReDim Preserve pathBuffer(0 To lngPathCount + 511)
@@ -582,6 +620,8 @@ Private Sub BlueprintPushSegment( _
 
     pathBuffer(lngPathCount).PageNo = lngPageNo
     pathBuffer(lngPathCount).Source = "m/l"
+    pathBuffer(lngPathCount).GraphicsDepth = lngGraphicsDepth
+    pathBuffer(lngPathCount).PathTokenIndex = lngTokenIndex
     pathBuffer(lngPathCount).X1 = dblX1
     pathBuffer(lngPathCount).Y1 = dblY1
     pathBuffer(lngPathCount).X2 = dblX2
@@ -617,7 +657,9 @@ Private Sub BlueprintPushRectangle( _
     ByVal dblY As Double, _
     ByVal dblWidth As Double, _
     ByVal dblHeight As Double, _
-    ByRef gsCurrent As tGraphicsState)
+    ByRef gsCurrent As tGraphicsState, _
+    ByVal lngTokenIndex As Long, _
+    ByVal lngGraphicsDepth As Long)
 
     If lngPathCount > UBound(pathBuffer) Then
         ReDim Preserve pathBuffer(0 To lngPathCount + 511)
@@ -625,6 +667,8 @@ Private Sub BlueprintPushRectangle( _
 
     pathBuffer(lngPathCount).PageNo = lngPageNo
     pathBuffer(lngPathCount).Source = "re"
+    pathBuffer(lngPathCount).GraphicsDepth = lngGraphicsDepth
+    pathBuffer(lngPathCount).PathTokenIndex = lngTokenIndex
     pathBuffer(lngPathCount).RectX = dblX
     pathBuffer(lngPathCount).RectY = dblY
     pathBuffer(lngPathCount).RectW = dblWidth
@@ -659,14 +703,37 @@ End Sub
 Private Sub BlueprintFlushPath( _
     ByRef pathBuffer() As tPrimitive, _
     ByRef lngPathCount As Long, _
-    ByVal strPaint As String)
+    ByVal strPaint As String, _
+    ByVal strClipOperator As String, _
+    ByVal lngTokenIndex As Long, _
+    ByRef gsCurrent As tGraphicsState)
 
     Dim lngIndex As Long
+    Dim strClipSummary As String
+
+    If Len(strClipOperator) > 0 And lngPathCount > 0 Then
+        strClipSummary = BlueprintBufferedPathSummary( _
+            pathBuffer, _
+            lngPathCount, _
+            strClipOperator)
+
+        ' Keep the most recently applied clip signature. The effective PDF clip
+        ' is an intersection of all active clips, but retaining only the latest
+        ' signature keeps the forensic output bounded while q/Q still restores
+        ' the correct active-state scope.
+        gsCurrent.ClipSummary = strClipSummary
+
+        gsCurrent.ClipActive = True
+        gsCurrent.ClipOperator = strClipOperator
+        gsCurrent.ClipSetToken = lngTokenIndex
+    End If
 
     For lngIndex = 0 To lngPathCount - 1
         If m_primCount < MAX_PRIMITIVES Then
             m_prim(m_primCount) = pathBuffer(lngIndex)
             m_prim(m_primCount).Paint = strPaint
+            m_prim(m_primCount).ClipOperator = strClipOperator
+            m_prim(m_primCount).PaintTokenIndex = lngTokenIndex
             m_primCount = m_primCount + 1
         End If
     Next lngIndex
@@ -674,6 +741,61 @@ Private Sub BlueprintFlushPath( _
     lngPathCount = 0
 
 End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    pathBuffer() As tPrimitive, lngPathCount As Long, strClipOperator As String
+' Returns:       String
+' Description:   Builds a compact signature of the path that W/W* turns into a
+'                clipping path. The signature is also carried into later text
+'                runs through the graphics-state stack.
+'-------------------------------------------------------------------------------
+Private Function BlueprintBufferedPathSummary( _
+    ByRef pathBuffer() As tPrimitive, _
+    ByVal lngPathCount As Long, _
+    ByVal strClipOperator As String) As String
+
+    Const MAX_PARTS As Long = 6
+    Dim lngIndex As Long
+    Dim lngLimit As Long
+    Dim strResult As String
+
+    strResult = strClipOperator & ":"
+    lngLimit = lngPathCount
+
+    If lngLimit > MAX_PARTS Then
+        lngLimit = MAX_PARTS
+    End If
+
+    For lngIndex = 0 To lngLimit - 1
+        If lngIndex > 0 Then
+            strResult = strResult & ";"
+        End If
+
+        If pathBuffer(lngIndex).Source = "re" Then
+            strResult = strResult & _
+                "re[" & BlueprintNumText(pathBuffer(lngIndex).RectX) & "," & _
+                BlueprintNumText(pathBuffer(lngIndex).RectY) & "," & _
+                BlueprintNumText(pathBuffer(lngIndex).RectW) & "," & _
+                BlueprintNumText(pathBuffer(lngIndex).RectH) & "]"
+        Else
+            strResult = strResult & _
+                "ml[" & BlueprintNumText(pathBuffer(lngIndex).X1) & "," & _
+                BlueprintNumText(pathBuffer(lngIndex).Y1) & ">" & _
+                BlueprintNumText(pathBuffer(lngIndex).X2) & "," & _
+                BlueprintNumText(pathBuffer(lngIndex).Y2) & "]"
+        End If
+    Next lngIndex
+
+    If lngPathCount > lngLimit Then
+        strResult = strResult & ";+" & CStr(lngPathCount - lngLimit) & " more"
+    End If
+
+    BlueprintBufferedPathSummary = strResult
+
+End Function
+
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -688,7 +810,10 @@ Private Sub BlueprintAddText( _
     ByVal dblY As Double, _
     ByVal strFontName As String, _
     ByVal dblFontSize As Double, _
-    ByVal strValue As String)
+    ByVal strValue As String, _
+    ByVal lngTokenIndex As Long, _
+    ByVal lngGraphicsDepth As Long, _
+    ByRef gsCurrent As tGraphicsState)
 
     If m_textCount >= MAX_TEXTS Then
         Exit Sub
@@ -700,6 +825,12 @@ Private Sub BlueprintAddText( _
     m_text(m_textCount).FontName = strFontName
     m_text(m_textCount).FontSize = dblFontSize
     m_text(m_textCount).TextValue = strValue
+    m_text(m_textCount).TokenIndex = lngTokenIndex
+    m_text(m_textCount).GraphicsDepth = lngGraphicsDepth
+    m_text(m_textCount).ClipActive = gsCurrent.ClipActive
+    m_text(m_textCount).ClipOperator = gsCurrent.ClipOperator
+    m_text(m_textCount).ClipSetToken = gsCurrent.ClipSetToken
+    m_text(m_textCount).ClipSummary = gsCurrent.ClipSummary
     m_textCount = m_textCount + 1
 
 End Sub
@@ -1831,8 +1962,8 @@ Private Sub BlueprintWritePrimitives(ByVal lngFile As Long)
     Dim lngIndex As Long
 
     Call BlueprintEmit(lngFile, "===== SECTION 5 - PRIMITIVES =====")
-    Call BlueprintEmit(lngFile, "visibility|re + n is an invisible path; " & _
-        "S strokes, f fills, B* fills and strokes")
+    Call BlueprintEmit(lngFile, "visibility|re + n is a non-painted path; W/W* before n " & _
+        "makes it an active clipping path, not a plain invisible rectangle")
     Call BlueprintEmit(lngFile, "")
 
     For lngIndex = 0 To m_primCount - 1
@@ -1841,6 +1972,11 @@ Private Sub BlueprintWritePrimitives(ByVal lngFile As Long)
                 "PRIM|page=" & CStr(m_prim(lngIndex).PageNo) & _
                 "|src=re" & _
                 "|paint=" & m_prim(lngIndex).Paint & _
+                "|clip=" & BlueprintNullLabel(m_prim(lngIndex).ClipOperator) & _
+                "|class=" & BlueprintPrimitiveClass(m_prim(lngIndex)) & _
+                "|gsDepth=" & CStr(m_prim(lngIndex).GraphicsDepth) & _
+                "|pathTok=" & CStr(m_prim(lngIndex).PathTokenIndex) & _
+                "|paintTok=" & CStr(m_prim(lngIndex).PaintTokenIndex) & _
                 "|visible=" & BlueprintVisibility(m_prim(lngIndex).Paint) & _
                 "|shape=" & m_prim(lngIndex).Orientation & _
                 "|x=" & BlueprintNumText(m_prim(lngIndex).RectX) & _
@@ -1857,6 +1993,11 @@ Private Sub BlueprintWritePrimitives(ByVal lngFile As Long)
                 "PRIM|page=" & CStr(m_prim(lngIndex).PageNo) & _
                 "|src=m/l" & _
                 "|paint=" & m_prim(lngIndex).Paint & _
+                "|clip=" & BlueprintNullLabel(m_prim(lngIndex).ClipOperator) & _
+                "|class=" & BlueprintPrimitiveClass(m_prim(lngIndex)) & _
+                "|gsDepth=" & CStr(m_prim(lngIndex).GraphicsDepth) & _
+                "|pathTok=" & CStr(m_prim(lngIndex).PathTokenIndex) & _
+                "|paintTok=" & CStr(m_prim(lngIndex).PaintTokenIndex) & _
                 "|visible=" & BlueprintVisibility(m_prim(lngIndex).Paint) & _
                 "|shape=" & m_prim(lngIndex).Orientation & _
                 "|x1=" & BlueprintNumText(m_prim(lngIndex).X1) & _
@@ -1892,7 +2033,10 @@ Private Sub BlueprintWriteBoxes(ByVal lngFile As Long)
     Dim lngIndex As Long
     Dim lngPage As Long
     Dim lngPageMax As Long
+    Dim strClipWN As String
+    Dim strClipWStarN As String
     Dim strInvisible As String
+    Dim strPlainN As String
     Dim strVisible As String
 
     Call BlueprintEmit(lngFile, "===== SECTION 4 - BOXES BY ROW BAND =====")
@@ -1945,6 +2089,9 @@ Private Sub BlueprintWriteBoxes(ByVal lngFile As Long)
         For lngBand = 0 To lngBandCount - 1
             strVisible = vbNullString
             strInvisible = vbNullString
+            strPlainN = vbNullString
+            strClipWN = vbNullString
+            strClipWStarN = vbNullString
 
             For lngIndex = 0 To m_primCount - 1
                 If m_prim(lngIndex).PageNo = lngPage And _
@@ -1960,6 +2107,24 @@ Private Sub BlueprintWriteBoxes(ByVal lngFile As Long)
                                 BlueprintNumText(m_prim(lngIndex).RectX) & ".." & _
                                 BlueprintNumText(m_prim(lngIndex).RectX + _
                                     m_prim(lngIndex).RectW) & " "
+
+                            Select Case BlueprintPrimitiveClass(m_prim(lngIndex))
+                                Case "PLAIN_RE_N"
+                                    strPlainN = strPlainN & _
+                                        BlueprintNumText(m_prim(lngIndex).RectX) & ".." & _
+                                        BlueprintNumText(m_prim(lngIndex).RectX + _
+                                            m_prim(lngIndex).RectW) & " "
+                                Case "CLIP_RE_W_N"
+                                    strClipWN = strClipWN & _
+                                        BlueprintNumText(m_prim(lngIndex).RectX) & ".." & _
+                                        BlueprintNumText(m_prim(lngIndex).RectX + _
+                                            m_prim(lngIndex).RectW) & " "
+                                Case "CLIP_RE_WSTAR_N"
+                                    strClipWStarN = strClipWStarN & _
+                                        BlueprintNumText(m_prim(lngIndex).RectX) & ".." & _
+                                        BlueprintNumText(m_prim(lngIndex).RectX + _
+                                            m_prim(lngIndex).RectW) & " "
+                            End Select
                         Else
                             strVisible = strVisible & _
                                 BlueprintNumText(m_prim(lngIndex).RectX) & ".." & _
@@ -1977,8 +2142,11 @@ Private Sub BlueprintWriteBoxes(ByVal lngFile As Long)
                 "|height=" & BlueprintNumText(arrBandTop(lngBand) - _
                     arrBandBottom(lngBand)))
 
-            Call BlueprintEmit(lngFile, "    INVISIBLE_X|" & Trim$(strInvisible))
-            Call BlueprintEmit(lngFile, "    VISIBLE_X  |" & Trim$(strVisible))
+            Call BlueprintEmit(lngFile, "    INVISIBLE_X |" & Trim$(strInvisible))
+            Call BlueprintEmit(lngFile, "    PLAIN_RE_N_X|" & Trim$(strPlainN))
+            Call BlueprintEmit(lngFile, "    CLIP_W_N_X  |" & Trim$(strClipWN))
+            Call BlueprintEmit(lngFile, "    CLIP_WSTAR_N_X|" & Trim$(strClipWStarN))
+            Call BlueprintEmit(lngFile, "    VISIBLE_X   |" & Trim$(strVisible))
         Next lngBand
 
         Call BlueprintEmit(lngFile, "")
@@ -2007,12 +2175,214 @@ Private Sub BlueprintWriteText(ByVal lngFile As Long)
             "|y=" & BlueprintNumText(m_text(lngIndex).Y) & _
             "|font=" & m_text(lngIndex).FontName & _
             "|size=" & BlueprintNumText(m_text(lngIndex).FontSize) & _
+            "|token=" & CStr(m_text(lngIndex).TokenIndex) & _
+            "|gsDepth=" & CStr(m_text(lngIndex).GraphicsDepth) & _
+            "|clipActive=" & BlueprintBoolText(m_text(lngIndex).ClipActive) & _
+            "|clipOp=" & BlueprintNullLabel(m_text(lngIndex).ClipOperator) & _
+            "|clipSetTok=" & CStr(m_text(lngIndex).ClipSetToken) & _
+            "|clipSummary=" & BlueprintSanitize(m_text(lngIndex).ClipSummary) & _
             "|value=" & BlueprintSanitize(m_text(lngIndex).TextValue))
     Next lngIndex
 
     Call BlueprintEmit(lngFile, "")
 
 End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    lngFile As Long
+' Returns:       ---
+' Description:   Writes clip-aware evidence. This is the key section for deciding
+'                whether Oracle's apparent "re n" rectangles are plain invisible
+'                paths or real W/W* clipping paths used to delimit text cells.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintWriteClipForensics(ByVal lngFile As Long)
+
+    Dim blnCarriesToText As Boolean
+    Dim blnDirectBeforeText As Boolean
+    Dim lngAllClip As Long
+    Dim lngClipOther As Long
+    Dim lngClipWN As Long
+    Dim lngClipWStarN As Long
+    Dim lngIndex As Long
+    Dim lngNextText As Long
+    Dim lngPlainN As Long
+    Dim lngReNTotal As Long
+    Dim lngTextClipped As Long
+    Dim strClass As String
+    Dim strLine As String
+
+    For lngIndex = 0 To m_primCount - 1
+        If Len(m_prim(lngIndex).ClipOperator) > 0 Then
+            lngAllClip = lngAllClip + 1
+        End If
+
+        If m_prim(lngIndex).Source = "re" And m_prim(lngIndex).Paint = "n" Then
+            lngReNTotal = lngReNTotal + 1
+            strClass = BlueprintPrimitiveClass(m_prim(lngIndex))
+
+            Select Case strClass
+                Case "PLAIN_RE_N"
+                    lngPlainN = lngPlainN + 1
+                Case "CLIP_RE_W_N"
+                    lngClipWN = lngClipWN + 1
+                Case "CLIP_RE_WSTAR_N"
+                    lngClipWStarN = lngClipWStarN + 1
+                Case Else
+                    lngClipOther = lngClipOther + 1
+            End Select
+        End If
+    Next lngIndex
+
+    For lngIndex = 0 To m_textCount - 1
+        If m_text(lngIndex).ClipActive Then
+            lngTextClipped = lngTextClipped + 1
+        End If
+    Next lngIndex
+
+    Call BlueprintEmit(lngFile, "===== SECTION 7 - CLIP PATH FORENSICS =====")
+    Call BlueprintEmit(lngFile, "purpose|Separate plain re n from re W n / re W* n. " & _
+        "PDF clipping is part of graphics state and survives until Q restores the prior state.")
+    Call BlueprintEmit(lngFile, "COUNTS|re_n_total=" & CStr(lngReNTotal) & _
+        "|plain_re_n=" & CStr(lngPlainN) & _
+        "|clip_re_W_n=" & CStr(lngClipWN) & _
+        "|clip_re_Wstar_n=" & CStr(lngClipWStarN) & _
+        "|clip_other_n=" & CStr(lngClipOther) & _
+        "|all_clip_subpaths=" & CStr(lngAllClip) & _
+        "|texts_with_active_clip=" & CStr(lngTextClipped))
+    Call BlueprintEmit(lngFile, "classification|PLAIN_RE_N = re ... n without W/W*. " & _
+        "CLIP_RE_W_N / CLIP_RE_WSTAR_N = the same rectangle also changes the clipping path.")
+    Call BlueprintEmit(lngFile, "")
+
+    For lngIndex = 0 To m_primCount - 1
+        If m_prim(lngIndex).Source = "re" And _
+           (m_prim(lngIndex).Paint = "n" Or Len(m_prim(lngIndex).ClipOperator) > 0) Then
+
+            lngNextText = BlueprintFindNextTextForPrimitive(lngIndex)
+            blnDirectBeforeText = False
+            blnCarriesToText = False
+
+            If lngNextText >= 0 Then
+                blnDirectBeforeText = BlueprintIsLastPathBeforeText(lngIndex, lngNextText)
+
+                If m_text(lngNextText).ClipActive Then
+                    blnCarriesToText = _
+                        (m_text(lngNextText).ClipSetToken >= m_prim(lngIndex).PaintTokenIndex)
+                End If
+            End If
+
+            strLine = _
+                "CLIPPATH|page=" & CStr(m_prim(lngIndex).PageNo) & _
+                "|class=" & BlueprintPrimitiveClass(m_prim(lngIndex)) & _
+                "|clipOp=" & BlueprintNullLabel(m_prim(lngIndex).ClipOperator) & _
+                "|paint=" & m_prim(lngIndex).Paint & _
+                "|x=" & BlueprintNumText(m_prim(lngIndex).RectX) & _
+                "|y=" & BlueprintNumText(m_prim(lngIndex).RectY) & _
+                "|w=" & BlueprintNumText(m_prim(lngIndex).RectW) & _
+                "|h=" & BlueprintNumText(m_prim(lngIndex).RectH) & _
+                "|x2=" & BlueprintNumText(m_prim(lngIndex).RectX + m_prim(lngIndex).RectW) & _
+                "|y2=" & BlueprintNumText(m_prim(lngIndex).RectY + m_prim(lngIndex).RectH) & _
+                "|gsDepth=" & CStr(m_prim(lngIndex).GraphicsDepth) & _
+                "|pathTok=" & CStr(m_prim(lngIndex).PathTokenIndex) & _
+                "|paintTok=" & CStr(m_prim(lngIndex).PaintTokenIndex)
+
+            If lngNextText >= 0 Then
+                strLine = strLine & _
+                    "|nextTextTok=" & CStr(m_text(lngNextText).TokenIndex) & _
+                    "|tokenGap=" & CStr(m_text(lngNextText).TokenIndex - _
+                        m_prim(lngIndex).PaintTokenIndex) & _
+                    "|directBeforeText=" & BlueprintBoolText(blnDirectBeforeText) & _
+                    "|clipCarriesToText=" & BlueprintBoolText(blnCarriesToText) & _
+                    "|nextTextGsDepth=" & CStr(m_text(lngNextText).GraphicsDepth) & _
+                    "|nextTextClipActive=" & BlueprintBoolText(m_text(lngNextText).ClipActive) & _
+                    "|nextTextClipOp=" & BlueprintNullLabel(m_text(lngNextText).ClipOperator) & _
+                    "|nextTextX=" & BlueprintNumText(m_text(lngNextText).X) & _
+                    "|nextTextY=" & BlueprintNumText(m_text(lngNextText).Y) & _
+                    "|nextTextFont=" & m_text(lngNextText).FontName & _
+                    "|nextTextSize=" & BlueprintNumText(m_text(lngNextText).FontSize) & _
+                    "|nextText=" & BlueprintSanitize(m_text(lngNextText).TextValue)
+            Else
+                strLine = strLine & "|nextText=(none)"
+            End If
+
+            Call BlueprintEmit(lngFile, strLine)
+        End If
+    Next lngIndex
+
+    Call BlueprintEmit(lngFile, "")
+
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    lngPrimitiveIndex As Long
+' Returns:       Long
+' Description:   Finds the first later text-show operator on the same page.
+'-------------------------------------------------------------------------------
+Private Function BlueprintFindNextTextForPrimitive( _
+    ByVal lngPrimitiveIndex As Long) As Long
+
+    Dim lngBestToken As Long
+    Dim lngIndex As Long
+    Dim lngPaintToken As Long
+    Dim lngPageNo As Long
+
+    BlueprintFindNextTextForPrimitive = -1
+    lngBestToken = 2147483647
+    lngPageNo = m_prim(lngPrimitiveIndex).PageNo
+    lngPaintToken = m_prim(lngPrimitiveIndex).PaintTokenIndex
+
+    For lngIndex = 0 To m_textCount - 1
+        If m_text(lngIndex).PageNo = lngPageNo Then
+            If m_text(lngIndex).TokenIndex > lngPaintToken And _
+               m_text(lngIndex).TokenIndex < lngBestToken Then
+
+                lngBestToken = m_text(lngIndex).TokenIndex
+                BlueprintFindNextTextForPrimitive = lngIndex
+            End If
+        End If
+    Next lngIndex
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    lngPrimitiveIndex As Long, lngTextIndex As Long
+' Returns:       Boolean
+' Description:   TRUE when no later completed path exists between this primitive
+'                and the selected text show. All subpaths sharing the same paint
+'                token are considered the same immediately preceding path.
+'-------------------------------------------------------------------------------
+Private Function BlueprintIsLastPathBeforeText( _
+    ByVal lngPrimitiveIndex As Long, _
+    ByVal lngTextIndex As Long) As Boolean
+
+    Dim lngIndex As Long
+    Dim lngPaintToken As Long
+    Dim lngPageNo As Long
+    Dim lngTextToken As Long
+
+    BlueprintIsLastPathBeforeText = True
+    lngPageNo = m_prim(lngPrimitiveIndex).PageNo
+    lngPaintToken = m_prim(lngPrimitiveIndex).PaintTokenIndex
+    lngTextToken = m_text(lngTextIndex).TokenIndex
+
+    For lngIndex = 0 To m_primCount - 1
+        If m_prim(lngIndex).PageNo = lngPageNo Then
+            If m_prim(lngIndex).PaintTokenIndex > lngPaintToken And _
+               m_prim(lngIndex).PaintTokenIndex < lngTextToken Then
+
+                BlueprintIsLastPathBeforeText = False
+                Exit Function
+            End If
+        End If
+    Next lngIndex
+
+End Function
+
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -2034,6 +2404,10 @@ Private Sub BlueprintWriteSummary( _
     Dim lngMlVertical As Long
     Dim lngRePainted As Long
     Dim lngReInvisible As Long
+    Dim lngRePlainN As Long
+    Dim lngReClipWN As Long
+    Dim lngReClipWStarN As Long
+    Dim lngClipOther As Long
     Dim lngXCount As Long
     Dim strLine As String
 
@@ -2049,6 +2423,17 @@ Private Sub BlueprintWriteSummary( _
         Else
             If m_prim(lngIndex).Paint = "n" Then
                 lngReInvisible = lngReInvisible + 1
+
+                Select Case BlueprintPrimitiveClass(m_prim(lngIndex))
+                    Case "PLAIN_RE_N"
+                        lngRePlainN = lngRePlainN + 1
+                    Case "CLIP_RE_W_N"
+                        lngReClipWN = lngReClipWN + 1
+                    Case "CLIP_RE_WSTAR_N"
+                        lngReClipWStarN = lngReClipWStarN + 1
+                    Case Else
+                        lngClipOther = lngClipOther + 1
+                End Select
 
                 If m_prim(lngIndex).Orientation = "BOX" Then
                     lngBoxInvisible = lngBoxInvisible + 1
@@ -2071,7 +2456,11 @@ Private Sub BlueprintWriteSummary( _
     Call BlueprintEmit(lngFile, "  painted_re      |" & CStr(lngRePainted) & _
         "   (compare with PAINTED_PRIMITIVES *_re)")
     Call BlueprintEmit(lngFile, "  invisible_re_n  |" & CStr(lngReInvisible) & _
-        "   (compare with RE_N_CAPTURE segments)")
+        "   (legacy union: plain n + clip W/W* n)")
+    Call BlueprintEmit(lngFile, "  plain_re_n      |" & CStr(lngRePlainN))
+    Call BlueprintEmit(lngFile, "  clip_re_W_n     |" & CStr(lngReClipWN))
+    Call BlueprintEmit(lngFile, "  clip_re_Wstar_n |" & CStr(lngReClipWStarN))
+    Call BlueprintEmit(lngFile, "  clip_other_n    |" & CStr(lngClipOther))
     Call BlueprintEmit(lngFile, "  boxes_visible   |" & CStr(lngBoxVisible))
     Call BlueprintEmit(lngFile, "  boxes_invisible |" & CStr(lngBoxInvisible))
     Call BlueprintEmit(lngFile, "")
@@ -2098,11 +2487,12 @@ Private Sub BlueprintWriteSummary( _
 
     Call BlueprintEmit(lngFile, "HOW_TO_READ")
     Call BlueprintEmit(lngFile, "  1|Run this module on OLD and on the generated PDF.")
-    Call BlueprintEmit(lngFile, "  2|Diff SECTION 4 of both reports. Any band whose " & _
-        "INVISIBLE_X list is populated in OLD and empty in NEW is a cell boundary " & _
-        "the Oracle original declares and the generator does not.")
-    Call BlueprintEmit(lngFile, "  3|Diff the COUNTERS blocks against the " & _
-        "PAINTED_PRIMITIVES and RE_N_CAPTURE lines of the forensic report.")
+    Call BlueprintEmit(lngFile, "  2|Diff SECTION 4. INVISIBLE_X is retained as a legacy " & _
+        "union, but PLAIN_RE_N_X / CLIP_W_N_X / CLIP_WSTAR_N_X are the decisive lists.")
+    Call BlueprintEmit(lngFile, "  3|Diff SECTION 7. It reports the exact W/W* path, " & _
+        "graphics-state depth and whether it is the last path immediately before text.")
+    Call BlueprintEmit(lngFile, "  4|A large OLD-versus-NEW difference in CLIP_* with " & _
+        "matching visible m/l geometry is a stronger DOXIS topology signal than re n count alone.")
     Call BlueprintEmit(lngFile, "")
 
 End Sub
@@ -2226,6 +2616,71 @@ Private Function BlueprintVisibility(ByVal strPaint As String) As String
         BlueprintVisibility = "NO"
     Else
         BlueprintVisibility = "YES"
+    End If
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    prim As tPrimitive
+' Returns:       String
+' Description:   Classifies path semantics, distinguishing plain re n from
+'                clipping rectangles terminated by n.
+'-------------------------------------------------------------------------------
+Private Function BlueprintPrimitiveClass( _
+    ByRef prim As tPrimitive) As String
+
+    If prim.Source = "re" And prim.Paint = "n" Then
+        Select Case prim.ClipOperator
+            Case "W"
+                BlueprintPrimitiveClass = "CLIP_RE_W_N"
+            Case "W*"
+                BlueprintPrimitiveClass = "CLIP_RE_WSTAR_N"
+            Case Else
+                BlueprintPrimitiveClass = "PLAIN_RE_N"
+        End Select
+    ElseIf Len(prim.ClipOperator) > 0 Then
+        BlueprintPrimitiveClass = _
+            "CLIP_" & Replace(UCase$(prim.Source), "/", "_") & "_" & _
+            Replace(prim.ClipOperator, "*", "STAR") & "_" & UCase$(prim.Paint)
+    Else
+        BlueprintPrimitiveClass = _
+            "PLAIN_" & Replace(UCase$(prim.Source), "/", "_") & "_" & UCase$(prim.Paint)
+    End If
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    blnValue As Boolean
+' Returns:       String
+' Description:   Stable TRUE/FALSE text for report output.
+'-------------------------------------------------------------------------------
+Private Function BlueprintBoolText(ByVal blnValue As Boolean) As String
+
+    If blnValue Then
+        BlueprintBoolText = "TRUE"
+    Else
+        BlueprintBoolText = "FALSE"
+    End If
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    strValue As String
+' Returns:       String
+' Description:   Prints explicit NONE instead of an empty report field.
+'-------------------------------------------------------------------------------
+Private Function BlueprintNullLabel(ByVal strValue As String) As String
+
+    If Len(strValue) = 0 Then
+        BlueprintNullLabel = "NONE"
+    Else
+        BlueprintNullLabel = strValue
     End If
 
 End Function
@@ -3154,7 +3609,7 @@ Private Sub BlueprintWriteDigest( _
 
     lngFile = BlueprintOpenNew(strPath)
 
-    Call BlueprintEmit(lngFile, "ORACLE_BLUEPRINT_DIGEST")
+    Call BlueprintEmit(lngFile, "ORACLE_BLUEPRINT_DIGEST_" & BLUEPRINT_VERSION)
     Call BlueprintEmit(lngFile, "source|" & strSource)
     Call BlueprintEmit(lngFile, "status|" & IIf(m_primCount > 0, "OK", "NO PRIMITIVES") & _
         " (lastStep=" & m_step & ")")
@@ -3187,9 +3642,24 @@ Private Sub BlueprintWriteDigest( _
                          BlueprintTally("re", "HORIZONTAL_RULE", False)))
     Call BlueprintEmit(lngFile, "  invisible re n     |" & _
         CStr(BlueprintTally("re", "", True)) & _
-        "   boxes=" & CStr(BlueprintTally("re", "BOX", True)))
-    Call BlueprintEmit(lngFile, "  compare with|PAINTED_PRIMITIVES *_ml and *_re, " & _
-        "RE_N_CAPTURE segments")
+        "   boxes=" & CStr(BlueprintTally("re", "BOX", True)) & _
+        "   (legacy union)")
+    Call BlueprintEmit(lngFile, "  plain re n         |" & _
+        CStr(BlueprintTallyClass("PLAIN_RE_N")))
+    Call BlueprintEmit(lngFile, "  clip re W n        |" & _
+        CStr(BlueprintTallyClass("CLIP_RE_W_N")))
+    Call BlueprintEmit(lngFile, "  clip re W* n       |" & _
+        CStr(BlueprintTallyClass("CLIP_RE_WSTAR_N")))
+    Call BlueprintEmit(lngFile, "  clip any source    |" & _
+        CStr(BlueprintTallyAnyClip()))
+    Call BlueprintEmit(lngFile, "  clip direct->text  |" & _
+        CStr(BlueprintDirectClipBeforeTextCount()))
+    Call BlueprintEmit(lngFile, "  clip carries->text |" & _
+        CStr(BlueprintClipCarriesToTextCount()))
+    Call BlueprintEmit(lngFile, "  texts active clip  |" & _
+        CStr(BlueprintTextClipCount()))
+    Call BlueprintEmit(lngFile, "")
+    Call BlueprintWriteDigestClipPatterns(lngFile)
     Call BlueprintEmit(lngFile, "")
 
     '--- distinct vertical rule X --------------------------------------------
@@ -3245,14 +3715,15 @@ Private Sub BlueprintWriteDigest( _
 
     Call BlueprintEmit(lngFile, "")
     Call BlueprintEmit(lngFile, "CHECKLIST")
-    Call BlueprintEmit(lngFile, "  1|Run on OLD and on the generated PDF, then diff " & _
-        "these two short files only.")
-    Call BlueprintEmit(lngFile, "  2|A PATTERN whose INVISIBLE line is populated in " & _
-        "OLD and empty in NEW is a cell boundary the generator does not declare.")
-    Call BlueprintEmit(lngFile, "  3|The COUNTS block must match the forensic report. " & _
-        "A mismatch means one of the two parsers is wrong, not the PDF.")
-    Call BlueprintEmit(lngFile, "  4|The full per-primitive detail stays in the long " & _
-        "report; open it only for a pattern that actually differs.")
+    Call BlueprintEmit(lngFile, "  1|Run on OLD and on CURRENT first; BETTER is optional behavioural evidence.")
+    Call BlueprintEmit(lngFile, "  2|Compare PLAIN_RE_N / CLIP_RE_W_N / CLIP_RE_WSTAR_N. " & _
+        "Do not treat every re n as semantically identical.")
+    Call BlueprintEmit(lngFile, "  3|Compare ROW PATTERN plain_n/clip_w_n/clip_wstar_n lists. " & _
+        "This directly tests whether Oracle declares cell clipping that CURRENT lacks.")
+    Call BlueprintEmit(lngFile, "  4|If clip counts differ, open SECTION 7 of the long report. " & _
+        "Use directBeforeText, clipCarriesToText and nextText to identify the affected fields.")
+    Call BlueprintEmit(lngFile, "  5|If clip counts match too, the missing-clip theory is rejected " & _
+        "and the next investigation remains text-stream/operator grouping.")
 
     Close #lngFile
 
@@ -3289,6 +3760,180 @@ End Function
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-11
+' Parameters:    strClass As String
+' Returns:       Long
+' Description:   Counts primitives by the clip-aware semantic class.
+'-------------------------------------------------------------------------------
+Private Function BlueprintTallyClass(ByVal strClass As String) As Long
+
+    Dim lngIndex As Long
+
+    For lngIndex = 0 To m_primCount - 1
+        If BlueprintPrimitiveClass(m_prim(lngIndex)) = strClass Then
+            BlueprintTallyClass = BlueprintTallyClass + 1
+        End If
+    Next lngIndex
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    ---
+' Returns:       Long
+' Description:   Counts every subpath that had W or W* before its terminating
+'                paint/no-paint operator, regardless of source geometry.
+'-------------------------------------------------------------------------------
+Private Function BlueprintTallyAnyClip() As Long
+
+    Dim lngIndex As Long
+
+    For lngIndex = 0 To m_primCount - 1
+        If Len(m_prim(lngIndex).ClipOperator) > 0 Then
+            BlueprintTallyAnyClip = BlueprintTallyAnyClip + 1
+        End If
+    Next lngIndex
+
+End Function
+
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    ---
+' Returns:       Long
+' Description:   Counts text-show operations executed while a clipping path is
+'                active in the current q/Q graphics-state scope.
+'-------------------------------------------------------------------------------
+Private Function BlueprintTextClipCount() As Long
+
+    Dim lngIndex As Long
+
+    For lngIndex = 0 To m_textCount - 1
+        If m_text(lngIndex).ClipActive Then
+            BlueprintTextClipCount = BlueprintTextClipCount + 1
+        End If
+    Next lngIndex
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    ---
+' Returns:       Long
+' Description:   Counts clip rectangles that are the last completed path before
+'                the next text-show operation on the same page.
+'-------------------------------------------------------------------------------
+Private Function BlueprintDirectClipBeforeTextCount() As Long
+
+    Dim lngIndex As Long
+    Dim lngNextText As Long
+
+    For lngIndex = 0 To m_primCount - 1
+        If m_prim(lngIndex).Source = "re" And _
+           Len(m_prim(lngIndex).ClipOperator) > 0 Then
+
+            lngNextText = BlueprintFindNextTextForPrimitive(lngIndex)
+
+            If lngNextText >= 0 Then
+                If BlueprintIsLastPathBeforeText(lngIndex, lngNextText) Then
+                    BlueprintDirectClipBeforeTextCount = _
+                        BlueprintDirectClipBeforeTextCount + 1
+                End If
+            End If
+        End If
+    Next lngIndex
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    ---
+' Returns:       Long
+' Description:   Counts clip rectangles whose clip state is still active at the
+'                first later text-show operation.
+'-------------------------------------------------------------------------------
+Private Function BlueprintClipCarriesToTextCount() As Long
+
+    Dim lngIndex As Long
+    Dim lngNextText As Long
+
+    For lngIndex = 0 To m_primCount - 1
+        If m_prim(lngIndex).Source = "re" And _
+           Len(m_prim(lngIndex).ClipOperator) > 0 Then
+
+            lngNextText = BlueprintFindNextTextForPrimitive(lngIndex)
+
+            If lngNextText >= 0 Then
+                If m_text(lngNextText).ClipActive And _
+                   m_text(lngNextText).ClipSetToken >= _
+                        m_prim(lngIndex).PaintTokenIndex Then
+
+                    BlueprintClipCarriesToTextCount = _
+                        BlueprintClipCarriesToTextCount + 1
+                End If
+            End If
+        End If
+    Next lngIndex
+
+End Function
+
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    lngFile As Long
+' Returns:       ---
+' Description:   Collapses re n rectangles into compact clip-aware geometry
+'                patterns. Absolute Y is intentionally omitted so repeated
+'                transaction rows collapse to a small, comparable list.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintWriteDigestClipPatterns(ByVal lngFile As Long)
+
+    Dim arrCount() As Long
+    Dim arrKey() As String
+    Dim lngIndex As Long
+    Dim lngKeyCount As Long
+    Dim strClass As String
+    Dim strKey As String
+
+    ReDim arrKey(0 To 1023)
+    ReDim arrCount(0 To 1023)
+
+    For lngIndex = 0 To m_primCount - 1
+        If m_prim(lngIndex).Source = "re" And m_prim(lngIndex).Paint = "n" Then
+            strClass = BlueprintPrimitiveClass(m_prim(lngIndex))
+
+            strKey = _
+                "class=" & strClass & _
+                "|x=" & BlueprintNumText(m_prim(lngIndex).RectX) & _
+                "|w=" & BlueprintNumText(m_prim(lngIndex).RectW) & _
+                "|h=" & BlueprintNumText(m_prim(lngIndex).RectH)
+
+            Call BlueprintCountKey(arrKey, arrCount, lngKeyCount, strKey)
+        End If
+    Next lngIndex
+
+    Call BlueprintEmit(lngFile, "CLIP RECT PATTERNS  (Y collapsed)")
+
+    If lngKeyCount = 0 Then
+        Call BlueprintEmit(lngFile, "  (none)")
+    Else
+        For lngIndex = 0 To lngKeyCount - 1
+            Call BlueprintEmit(lngFile, _
+                "  CLIPRECT|" & arrKey(lngIndex) & _
+                "|count=" & CStr(arrCount(lngIndex)))
+        Next lngIndex
+    End If
+
+End Sub
+
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
 ' Parameters:    lngPageNo As Long, dblBottom As Double, dblTop As Double
 ' Returns:       String
 ' Description:   Builds the comparable signature of one row band: its height,
@@ -3302,7 +3947,11 @@ Private Function BlueprintBandSignature( _
     Dim arrColumn() As Double
     Dim lngColumnCount As Long
     Dim lngIndex As Long
+    Dim strClass As String
+    Dim strClipWN As String
+    Dim strClipWStarN As String
     Dim strInvisible As String
+    Dim strPlainN As String
 
     Call BlueprintCollectBandColumns( _
         lngPageNo, dblBottom, dblTop, arrColumn, lngColumnCount)
@@ -3319,6 +3968,26 @@ Private Function BlueprintBandSignature( _
                 strInvisible = strInvisible & _
                     BlueprintNumText(m_prim(lngIndex).RectX) & ".." & _
                     BlueprintNumText(m_prim(lngIndex).RectX + m_prim(lngIndex).RectW) & " "
+
+                strClass = BlueprintPrimitiveClass(m_prim(lngIndex))
+
+                Select Case strClass
+                    Case "PLAIN_RE_N"
+                        strPlainN = strPlainN & _
+                            BlueprintNumText(m_prim(lngIndex).RectX) & ".." & _
+                            BlueprintNumText(m_prim(lngIndex).RectX + _
+                                m_prim(lngIndex).RectW) & " "
+                    Case "CLIP_RE_W_N"
+                        strClipWN = strClipWN & _
+                            BlueprintNumText(m_prim(lngIndex).RectX) & ".." & _
+                            BlueprintNumText(m_prim(lngIndex).RectX + _
+                                m_prim(lngIndex).RectW) & " "
+                    Case "CLIP_RE_WSTAR_N"
+                        strClipWStarN = strClipWStarN & _
+                            BlueprintNumText(m_prim(lngIndex).RectX) & ".." & _
+                            BlueprintNumText(m_prim(lngIndex).RectX + _
+                                m_prim(lngIndex).RectW) & " "
+                End Select
             End If
         End If
     Next lngIndex
@@ -3330,7 +3999,10 @@ Private Function BlueprintBandSignature( _
     BlueprintBandSignature = _
         "height=" & BlueprintNumText(dblTop - dblBottom) & _
         "|columns=" & BlueprintDoubleList(arrColumn, lngColumnCount) & _
-        "|invisible=" & Trim$(strInvisible)
+        "|invisible=" & Trim$(strInvisible) & _
+        "|plain_n=" & Trim$(strPlainN) & _
+        "|clip_w_n=" & Trim$(strClipWN) & _
+        "|clip_wstar_n=" & Trim$(strClipWStarN)
 
 End Function
 
@@ -3433,3 +4105,4 @@ Private Function BlueprintCountedList( _
     BlueprintCountedList = strResult
 
 End Function
+
