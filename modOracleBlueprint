@@ -220,7 +220,9 @@ Public Sub OracleBlueprintExtract( _
     Else
         MsgBox "Blueprint complete - " & CStr(lngPageCount) & " page(s), " & _
                CStr(m_primCount) & " primitive(s), " & CStr(m_textCount) & " text run(s)." & _
-               vbCrLf & vbCrLf & strReport, _
+               vbCrLf & vbCrLf & "Start here:" & vbCrLf & _
+               BlueprintDigestPath(strReport) & vbCrLf & vbCrLf & _
+               "Full detail:" & vbCrLf & strReport, _
                vbInformation
     End If
 
@@ -305,7 +307,37 @@ Private Sub BlueprintWriteReport( _
 
     Close #lngFile
 
+    ' The digest is a second, much shorter file next to the full report.
+    On Error Resume Next
+    Call BlueprintWriteDigest( _
+        BlueprintDigestPath(strReport), _
+        strSource, _
+        lngPageCount, _
+        varPages)
+    On Error GoTo 0
+
 End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    strReport As String
+' Returns:       String
+' Description:   Derives the digest file name from the full report file name.
+'-------------------------------------------------------------------------------
+Private Function BlueprintDigestPath(ByVal strReport As String) As String
+
+    Dim lngDot As Long
+
+    lngDot = InStrRev(strReport, ".")
+
+    If lngDot > 1 Then
+        BlueprintDigestPath = Left$(strReport, lngDot - 1) & "_SHORT.txt"
+    Else
+        BlueprintDigestPath = strReport & "_SHORT.txt"
+    End If
+
+End Function
 
 '===============================================================================
 ' CONTENT STREAM WALKER
@@ -3084,5 +3116,320 @@ Private Function BlueprintMaxLong( _
     Else
         BlueprintMaxLong = lngRight
     End If
+
+End Function
+
+'===============================================================================
+' DIGEST
+'===============================================================================
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    strPath As String, strSource As String, lngPageCount As Long, varPages As Variant
+' Returns:       ---
+' Description:   Writes the short report. Repeated structures are collapsed into
+'                one entry per distinct pattern with an occurrence count, so the
+'                whole document fits on a screen or two.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintWriteDigest( _
+    ByVal strPath As String, _
+    ByVal strSource As String, _
+    ByVal lngPageCount As Long, _
+    ByVal varPages As Variant)
+
+    Dim arrCount() As Long
+    Dim arrHRule() As Double
+    Dim arrKey() As String
+    Dim dblBottom As Double
+    Dim dblTop As Double
+    Dim lngBand As Long
+    Dim lngFile As Long
+    Dim lngHCount As Long
+    Dim lngIndex As Long
+    Dim lngKeyCount As Long
+    Dim lngPage As Long
+    Dim lngPageMax As Long
+    Dim strSignature As String
+
+    lngFile = BlueprintOpenNew(strPath)
+
+    Call BlueprintEmit(lngFile, "ORACLE_BLUEPRINT_DIGEST")
+    Call BlueprintEmit(lngFile, "source|" & strSource)
+    Call BlueprintEmit(lngFile, "status|" & IIf(m_primCount > 0, "OK", "NO PRIMITIVES") & _
+        " (lastStep=" & m_step & ")")
+    Call BlueprintEmit(lngFile, "pages|" & CStr(lngPageCount) & _
+        "|primitives|" & CStr(m_primCount) & _
+        "|textRuns|" & CStr(m_textCount))
+
+    If IsArray(varPages) Then
+        If UBound(varPages) >= 0 Then
+            Call BlueprintEmit(lngFile, "mediaBox|" & _
+                BlueprintPageMediaBox(CLng(varPages(0))))
+            Call BlueprintEmit(lngFile, "fonts|" & _
+                BlueprintFontResources(CLng(varPages(0))))
+        End If
+    End If
+
+    Call BlueprintEmit(lngFile, "metadata|" & BlueprintInfoDictionary())
+    Call BlueprintEmit(lngFile, "")
+
+    '--- counters ------------------------------------------------------------
+    Call BlueprintEmit(lngFile, "COUNTS  (whole document)")
+    Call BlueprintEmit(lngFile, "  painted m/l        |" & _
+        CStr(BlueprintTally("m/l", "", False)) & _
+        "   vertical=" & CStr(BlueprintTally("m/l", "VERTICAL", False)) & _
+        " horizontal=" & CStr(BlueprintTally("m/l", "HORIZONTAL", False)))
+    Call BlueprintEmit(lngFile, "  painted re         |" & _
+        CStr(BlueprintTally("re", "", False)) & _
+        "   boxes=" & CStr(BlueprintTally("re", "BOX", False)) & _
+        " rules=" & CStr(BlueprintTally("re", "VERTICAL_RULE", False) + _
+                         BlueprintTally("re", "HORIZONTAL_RULE", False)))
+    Call BlueprintEmit(lngFile, "  invisible re n     |" & _
+        CStr(BlueprintTally("re", "", True)) & _
+        "   boxes=" & CStr(BlueprintTally("re", "BOX", True)))
+    Call BlueprintEmit(lngFile, "  compare with|PAINTED_PRIMITIVES *_ml and *_re, " & _
+        "RE_N_CAPTURE segments")
+    Call BlueprintEmit(lngFile, "")
+
+    '--- distinct vertical rule X --------------------------------------------
+    lngKeyCount = 0
+    ReDim arrKey(0 To 255)
+    ReDim arrCount(0 To 255)
+
+    For lngIndex = 0 To m_primCount - 1
+        If m_prim(lngIndex).Source = "m/l" And _
+           m_prim(lngIndex).Paint <> "n" And _
+           m_prim(lngIndex).Orientation = "VERTICAL" Then
+
+            Call BlueprintCountKey(arrKey, arrCount, lngKeyCount, _
+                BlueprintNumText(m_prim(lngIndex).X1))
+        End If
+    Next lngIndex
+
+    Call BlueprintEmit(lngFile, "VERTICAL RULE X  (painted m/l, value x occurrences)")
+    Call BlueprintEmit(lngFile, "  " & BlueprintCountedList(arrKey, arrCount, lngKeyCount))
+    Call BlueprintEmit(lngFile, "")
+
+    '--- row band patterns, collapsed ----------------------------------------
+    lngPageMax = BlueprintMaxPage()
+    lngKeyCount = 0
+    ReDim arrKey(0 To 255)
+    ReDim arrCount(0 To 255)
+
+    For lngPage = 1 To lngPageMax
+        Call BlueprintCollectHorizontalRules(lngPage, arrHRule, lngHCount)
+
+        For lngBand = 0 To lngHCount - 2
+            dblBottom = arrHRule(lngBand)
+            dblTop = arrHRule(lngBand + 1)
+
+            If dblTop - dblBottom >= 4# Then
+                strSignature = BlueprintBandSignature(lngPage, dblBottom, dblTop)
+
+                If Len(strSignature) > 0 Then
+                    Call BlueprintCountKey(arrKey, arrCount, lngKeyCount, strSignature)
+                End If
+            End If
+        Next lngBand
+    Next lngPage
+
+    Call BlueprintEmit(lngFile, "ROW PATTERNS  (identical bands collapsed)")
+
+    For lngIndex = 0 To lngKeyCount - 1
+        Call BlueprintEmit(lngFile, "")
+        Call BlueprintEmit(lngFile, "  PATTERN " & Chr$(65 + lngIndex) & _
+            "  occurrences=" & CStr(arrCount(lngIndex)))
+        Call BlueprintEmitSignature(lngFile, arrKey(lngIndex))
+    Next lngIndex
+
+    Call BlueprintEmit(lngFile, "")
+    Call BlueprintEmit(lngFile, "CHECKLIST")
+    Call BlueprintEmit(lngFile, "  1|Run on OLD and on the generated PDF, then diff " & _
+        "these two short files only.")
+    Call BlueprintEmit(lngFile, "  2|A PATTERN whose INVISIBLE line is populated in " & _
+        "OLD and empty in NEW is a cell boundary the generator does not declare.")
+    Call BlueprintEmit(lngFile, "  3|The COUNTS block must match the forensic report. " & _
+        "A mismatch means one of the two parsers is wrong, not the PDF.")
+    Call BlueprintEmit(lngFile, "  4|The full per-primitive detail stays in the long " & _
+        "report; open it only for a pattern that actually differs.")
+
+    Close #lngFile
+
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    strSource As String, strShape As String, blnInvisible As Boolean
+' Returns:       Long
+' Description:   Counts primitives of one class. An empty shape counts them all.
+'-------------------------------------------------------------------------------
+Private Function BlueprintTally( _
+    ByVal strSource As String, _
+    ByVal strShape As String, _
+    ByVal blnInvisible As Boolean) As Long
+
+    Dim lngIndex As Long
+
+    For lngIndex = 0 To m_primCount - 1
+        If m_prim(lngIndex).Source = strSource Then
+            If (m_prim(lngIndex).Paint = "n") = blnInvisible Then
+                If Len(strShape) = 0 Then
+                    BlueprintTally = BlueprintTally + 1
+                ElseIf m_prim(lngIndex).Orientation = strShape Then
+                    BlueprintTally = BlueprintTally + 1
+                End If
+            End If
+        End If
+    Next lngIndex
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    lngPageNo As Long, dblBottom As Double, dblTop As Double
+' Returns:       String
+' Description:   Builds the comparable signature of one row band: its height,
+'                its column boundaries and its invisible box spans.
+'-------------------------------------------------------------------------------
+Private Function BlueprintBandSignature( _
+    ByVal lngPageNo As Long, _
+    ByVal dblBottom As Double, _
+    ByVal dblTop As Double) As String
+
+    Dim arrColumn() As Double
+    Dim lngColumnCount As Long
+    Dim lngIndex As Long
+    Dim strInvisible As String
+
+    Call BlueprintCollectBandColumns( _
+        lngPageNo, dblBottom, dblTop, arrColumn, lngColumnCount)
+
+    For lngIndex = 0 To m_primCount - 1
+        If m_prim(lngIndex).PageNo = lngPageNo And _
+           m_prim(lngIndex).Source = "re" And _
+           m_prim(lngIndex).Paint = "n" And _
+           m_prim(lngIndex).Orientation = "BOX" Then
+
+            If m_prim(lngIndex).RectY >= dblBottom - BAND_TOLERANCE And _
+               m_prim(lngIndex).RectY + m_prim(lngIndex).RectH <= dblTop + BAND_TOLERANCE Then
+
+                strInvisible = strInvisible & _
+                    BlueprintNumText(m_prim(lngIndex).RectX) & ".." & _
+                    BlueprintNumText(m_prim(lngIndex).RectX + m_prim(lngIndex).RectW) & " "
+            End If
+        End If
+    Next lngIndex
+
+    If lngColumnCount = 0 And Len(strInvisible) = 0 Then
+        Exit Function
+    End If
+
+    BlueprintBandSignature = _
+        "height=" & BlueprintNumText(dblTop - dblBottom) & _
+        "|columns=" & BlueprintDoubleList(arrColumn, lngColumnCount) & _
+        "|invisible=" & Trim$(strInvisible)
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    lngFile As Long, strSignature As String
+' Returns:       ---
+' Description:   Prints one band signature as three labelled lines.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintEmitSignature( _
+    ByVal lngFile As Long, _
+    ByVal strSignature As String)
+
+    Dim arrParts As Variant
+    Dim lngIndex As Long
+    Dim strLabel As String
+    Dim strValue As String
+
+    arrParts = Split(strSignature, "|")
+
+    For lngIndex = LBound(arrParts) To UBound(arrParts)
+        strLabel = CStr(arrParts(lngIndex))
+        strValue = vbNullString
+
+        If InStr(strLabel, "=") > 0 Then
+            strValue = Mid$(strLabel, InStr(strLabel, "=") + 1)
+            strLabel = Left$(strLabel, InStr(strLabel, "=") - 1)
+        End If
+
+        If Len(Trim$(strValue)) = 0 Then
+            strValue = "(none)"
+        End If
+
+        Call BlueprintEmit(lngFile, "    " & _
+            UCase$(strLabel) & Space$(BlueprintMaxLong(10 - Len(strLabel), 1)) & strValue)
+    Next lngIndex
+
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    arrKey() As String, arrCount() As Long, lngCount As Long, strKey As String
+' Returns:       ---
+' Description:   Increments the occurrence count of one key, adding it if new.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintCountKey( _
+    ByRef arrKey() As String, _
+    ByRef arrCount() As Long, _
+    ByRef lngCount As Long, _
+    ByVal strKey As String)
+
+    Dim lngIndex As Long
+
+    For lngIndex = 0 To lngCount - 1
+        If arrKey(lngIndex) = strKey Then
+            arrCount(lngIndex) = arrCount(lngIndex) + 1
+            Exit Sub
+        End If
+    Next lngIndex
+
+    If lngCount > UBound(arrKey) Then
+        Exit Sub
+    End If
+
+    arrKey(lngCount) = strKey
+    arrCount(lngCount) = 1
+    lngCount = lngCount + 1
+
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    arrKey() As String, arrCount() As Long, lngCount As Long
+' Returns:       String
+' Description:   Formats counted keys as "value x occurrences" separated by bars.
+'-------------------------------------------------------------------------------
+Private Function BlueprintCountedList( _
+    ByRef arrKey() As String, _
+    ByRef arrCount() As Long, _
+    ByVal lngCount As Long) As String
+
+    Dim lngIndex As Long
+    Dim strResult As String
+
+    For lngIndex = 0 To lngCount - 1
+        If lngIndex > 0 Then
+            strResult = strResult & " | "
+        End If
+
+        strResult = strResult & arrKey(lngIndex) & " x" & CStr(arrCount(lngIndex))
+    Next lngIndex
+
+    If Len(strResult) = 0 Then
+        strResult = "(none)"
+    End If
+
+    BlueprintCountedList = strResult
 
 End Function
