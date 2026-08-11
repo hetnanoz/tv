@@ -100,6 +100,8 @@ Public Type tPdfDocument
     FileSize As Long
     ObjectCount As Long
     XrefKind As String
+    ProducerValue As String
+    CreatorValue As String
     PageCount As Long
     Pages() As tPdfPage
     Lines() As tPdfLine
@@ -581,6 +583,8 @@ Private Sub LoadPdfDocument( _
     pdfDoc.PdfVersion = DetectPdfVersion
     pdfDoc.ObjectCount = m_objCount
     pdfDoc.XrefKind = DetectXrefKind
+    pdfDoc.ProducerValue = DoxisV182DocumentInfoValue("/Producer")
+    pdfDoc.CreatorValue = DoxisV182DocumentInfoValue("/Creator")
     ReDim pdfDoc.Pages(1 To 8)
     ReDim pdfDoc.Lines(0 To 2047)
     ReDim pdfDoc.NoPaintLines(0 To 2047)
@@ -10607,15 +10611,15 @@ Public Sub RunPdfDoxisTopologyBrowse()
     On Error GoTo ErrorHandler
 
     strOldPdfPath = SelectPdfFile( _
-        "V18 DOXIS - Select OLD Oracle reference PDF")
+        "V18.2 DOXIS - Select OLD Oracle reference PDF")
     If Len(strOldPdfPath) = 0 Then GoTo ExitSub
 
     strBetterPdfPath = SelectPdfFile( _
-        "V18 DOXIS - Select BETTER-PARSING intermediate PDF (not assumed perfect)")
+        "V18.2 DOXIS - Select BETTER-PARSING intermediate PDF (not assumed perfect)")
     If Len(strBetterPdfPath) = 0 Then GoTo ExitSub
 
     strCurrentPdfPath = SelectPdfFile( _
-        "V18 DOXIS - Select CURRENT PDF (client parses this version worse)")
+        "V18.2 DOXIS - Select CURRENT PDF (client parses this version worse)")
     If Len(strCurrentPdfPath) = 0 Then GoTo ExitSub
 
     strDetailPath = BuildDoxisTopologyDetailOutputPath( _
@@ -10634,17 +10638,17 @@ Public Sub RunPdfDoxisTopologyBrowse()
         strSuperShortPath) Then
 
         Err.Raise ERR_BASE + 40, METHOD_NAME, _
-            "The V18 DOXIS transaction-anchored forensic could not be completed."
+            "The V18.2 DOXIS transaction-anchored forensic could not be completed."
     End If
 
     MsgBox _
-        "V18 DOXIS transaction-anchored forensic completed." & vbCrLf & vbCrLf & _
+        "V18.2 DOXIS transaction-anchored forensic completed." & vbCrLf & vbCrLf & _
         "SEND THIS FILE FIRST:" & vbCrLf & strSuperShortPath & vbCrLf & vbCrLf & _
         "Detailed transaction forensic:" & vbCrLf & strDetailPath & vbCrLf & vbCrLf & _
         "Input order: OLD Oracle -> BETTER-PARSING intermediate -> CURRENT." & vbCrLf & _
         "BETTER-PARSING is evidence only and is NOT assumed to be correct.", _
         vbInformation, _
-        "Oracle / DOXIS forensic V18"
+        "Oracle / DOXIS forensic V18.2"
 
 ExitSub:
     Exit Sub
@@ -10666,7 +10670,7 @@ ErrorHandler:
         strSuperShortPath
 
     errorManager.save
-    errorManager.display "The V18 DOXIS forensic failed."
+    errorManager.display "The V18.2 DOXIS forensic failed."
     Resume ExitSub
 End Sub
 
@@ -10774,7 +10778,7 @@ Private Sub WriteDoxisTopologyReports( _
     lngDetailFile = FreeFile
     Open detailOutputPath For Output Access Write As #lngDetailFile
 
-    Print #lngDetailFile, "ORACLE_DOXIS_TRANSACTION_ANCHORED_FORENSIC_V18_1"
+    Print #lngDetailFile, "ORACLE_DOXIS_TRANSACTION_ANCHORED_FORENSIC_V18_2"
     Print #lngDetailFile, "OLD_ORACLE|" & oldDoc.PdfPath
     Print #lngDetailFile, "BETTER_PARSING|" & betterDoc.PdfPath
     Print #lngDetailFile, "CURRENT|" & currentDoc.PdfPath
@@ -10783,17 +10787,17 @@ Private Sub WriteDoxisTopologyReports( _
     Print #lngDetailFile, _
         "IMPORTANT|BETTER_PARSING_IS_NOT_ASSUMED_CORRECT=TRUE|It is behavioural evidence because the client said it extracted ISIN/currency better."
     Print #lngDetailFile, _
-        "V18_CHANGE|Target pairing no longer uses page+Y. It is anchored by BOTTOM_TRANSAKTIONSNR and each document uses its own page/top/bottom row coordinates."
+        "V18_2_CHANGE|Target pairing is transaction-number anchored. Blocking comparisons use OLD Oracle as gold standard; BETTER is behavioural evidence. Separator top intrusion is checked at 0.01pt."
     Print #lngDetailFile, _
-        "FONT_MODEL|Semantic BaseFont names are decoded from PDF #xx name escapes; raw alias/BaseFont/object/resource serialization is reported separately."
+        "FONT_MODEL|Semantic BaseFont names decode PDF #xx escapes. V18.2 also compares raw font core without alias, so /F1 versus /F2 alone cannot create a false font break."
     Print #lngDetailFile, _
-        "ISIN_MODEL|TOP_ISIN gets a fixed x=639 predicted-cut count plus nearest-separator risk. A CURRENT cut count lower than BETTER is treated as a regression."
+        "ISIN_MODEL|TOP_ISIN gets fixed x=639 cut count plus separator risk. A cut is blocking only when CURRENT is worse than OLD Oracle; BETTER remains a behavioural control."
     Print #lngDetailFile, _
-        "SEPARATOR_MODEL|x=468 and x=639 are compared relative to the matched transaction row, so pagination and slot changes do not create false differences."
+        "SEPARATOR_MODEL|x=468 and x=639 are compared relative to the matched transaction. V18.2 flags OLD=BETTER/CURRENT-different primitive changes and >0.01pt top-row intrusion."
     Print #lngDetailFile, _
         "GLOBAL_X_HYPOTHESIS|Also tests a deliberately naive parser model that projects vertical paths onto X and ignores row ownership. This is a diagnostic hypothesis, not an asserted DOXISLoader specification."
     Print #lngDetailFile, _
-        "INVISIBLE_RE_N|Paths created by re and terminated by n are now captured separately. They are not painted, but their vertical edges are checked as possible parser-facing boundaries."
+        "INVISIBLE_RE_N|re n paths are captured separately, but blocking comparisons are CURRENT versus OLD. BETTER having zero such paths no longer fires automatically."
     Print #lngDetailFile, _
         "TARGETS|TOP_ISIN;TOP_SCHLUSSTAG;TOP_VALUTATAG;TOP_FONDSBEZEICHNUNG;TOP_WERTPAPIERBEZEICHNUNG;TOP_NOMINALE_STUECKE;TOP_STUECKZINSEN;TOP_WHG_NOMINALE;BOTTOM_ABWICKLUNGSPROVISION;BOTTOM_WHG_MAKLER;BOTTOM_WHG_STEUERN;BOTTOM_WHG_ABWICKLUNG;BOTTOM_WHG_SPESEN;BOTTOM_WHG_ABRECH"
     Print #lngDetailFile, ""
@@ -10884,10 +10888,26 @@ Private Sub DoxisV18WriteDocumentHeader( _
         "|BETTER=" & betterDoc.XrefKind & _
         "|CURRENT=" & currentDoc.XrefKind
     Print #fileNo, _
+        "PRODUCER|OLD=" & SanitizeReportText(oldDoc.ProducerValue) & _
+        "|BETTER=" & SanitizeReportText(betterDoc.ProducerValue) & _
+        "|CURRENT=" & SanitizeReportText(currentDoc.ProducerValue)
+    Print #fileNo, _
+        "CREATOR|OLD=" & SanitizeReportText(oldDoc.CreatorValue) & _
+        "|BETTER=" & SanitizeReportText(betterDoc.CreatorValue) & _
+        "|CURRENT=" & SanitizeReportText(currentDoc.CreatorValue)
+    Print #fileNo, _
+        "PAINTED_PRIMITIVE_PROFILE" & _
+        "|OLD_ml=" & CStr(DoxisV182CountPaintedPrimitive(oldDoc, "m/l")) & _
+        "|OLD_re=" & CStr(DoxisV182CountPaintedPrimitive(oldDoc, "re")) & _
+        "|BETTER_ml=" & CStr(DoxisV182CountPaintedPrimitive(betterDoc, "m/l")) & _
+        "|BETTER_re=" & CStr(DoxisV182CountPaintedPrimitive(betterDoc, "re")) & _
+        "|CURRENT_ml=" & CStr(DoxisV182CountPaintedPrimitive(currentDoc, "m/l")) & _
+        "|CURRENT_re=" & CStr(DoxisV182CountPaintedPrimitive(currentDoc, "re"))
+    Print #fileNo, _
         "NO_PAINT_PATHS|OLD=" & CStr(oldDoc.NoPaintLineCount) & _
         "|BETTER=" & CStr(betterDoc.NoPaintLineCount) & _
         "|CURRENT=" & CStr(currentDoc.NoPaintLineCount) & _
-        "|meaning=segments from paths terminated by n; re edges are classified separately below"
+        "|meaning=segments from paths terminated by n; OLD is the comparison basis for blocking re-n regressions"
     Print #fileNo, _
         "RE_N_VERTICAL_TARGETS|x468 OLD=" & CStr(DoxisV181CountNoPaintReVerticalAtX(oldDoc, 468#)) & _
         " BETTER=" & CStr(DoxisV181CountNoPaintReVerticalAtX(betterDoc, 468#)) & _
@@ -11097,8 +11117,8 @@ Private Sub DoxisV18CompareTransactionSet( _
             dictIssueCounts, _
             dictIssuePriorities, _
             dictIssueSamples, _
-            "DOXIS_V18_NO_BETTER_TRANSACTION_ANCHORS", _
-            3, _
+            "DOXIS_V18_2_NO_BETTER_TRANSACTION_ANCHORS", _
+            2, _
             "The BETTER-PARSING PDF contains no detectable BOTTOM_TRANSAKTIONSNR anchors.")
         Exit Sub
     End If
@@ -11113,13 +11133,23 @@ Private Sub DoxisV18CompareTransactionSet( _
                 "tx=" & DoxisV18AnchorDisplay(CStr(betterAnchors(strAnchorId))) & _
                 "|betterPage=" & CStr(DoxisV18AnchorPage(CStr(betterAnchors(strAnchorId))))
 
-            Call DoxisAddIssue( _
-                dictIssueCounts, _
-                dictIssuePriorities, _
-                dictIssueSamples, _
-                "DOXIS_V18_TRANSACTION_ANCHOR_MISSING_CURRENT", _
-                3, _
-                strSample)
+            If oldAnchors.Exists(strAnchorId) Then
+                Call DoxisAddIssue( _
+                    dictIssueCounts, _
+                    dictIssuePriorities, _
+                    dictIssueSamples, _
+                    "DOXIS_V18_2_TRANSACTION_ANCHOR_MISSING_CURRENT_VS_OLD", _
+                    3, _
+                    strSample & "|OLD_hasAnchor=TRUE")
+            Else
+                Call DoxisAddIssue( _
+                    dictIssueCounts, _
+                    dictIssuePriorities, _
+                    dictIssueSamples, _
+                    "DOXIS_V18_2_TRANSACTION_ANCHOR_MISSING_CURRENT", _
+                    1, _
+                    strSample & "|OLD_hasAnchor=FALSE")
+            End If
 
             Print #fileNo, _
                 "TRANSACTION_MISSING_CURRENT" & _
@@ -11399,12 +11429,14 @@ Private Sub DoxisV18CompareTargetText( _
     Dim lngCurrentIndex As Long
     Dim lngOldCut As Long
     Dim lngOldIndex As Long
+    Dim strBetterFontCore As String
     Dim strBetterFontRaw As String
     Dim strBetterFontRawFull As String
     Dim strBetterFontSemantic As String
     Dim strBetterLine As String
     Dim strBetterSnapshot As String
     Dim strBetterValue As String
+    Dim strCurrentFontCore As String
     Dim strCurrentFontRaw As String
     Dim strCurrentFontRawFull As String
     Dim strCurrentFontSemantic As String
@@ -11412,6 +11444,7 @@ Private Sub DoxisV18CompareTargetText( _
     Dim strCurrentSnapshot As String
     Dim strCurrentValue As String
     Dim strFamily As String
+    Dim strOldFontCore As String
     Dim strOldFontRaw As String
     Dim strOldFontRawFull As String
     Dim strOldFontSemantic As String
@@ -11456,19 +11489,38 @@ Private Sub DoxisV18CompareTargetText( _
     strBetterValue = betterDoc.Texts(lngBetterIndex).TextValue
 
     If lngCurrentIndex < 0 Then
-        strFamily = "DOXIS_V18_TARGET_TEXT_MISSING_CURRENT_" & role
-        strSample = _
-            "tx=" & anchorId & _
-            "|role=" & role & _
-            "|text=" & SanitizeReportText(strBetterValue)
+        If lngOldIndex >= 0 Then
+            strFamily = "DOXIS_V18_2_TARGET_TEXT_MISSING_CURRENT_VS_OLD_" & role
+            strSample = _
+                "tx=" & anchorId & _
+                "|role=" & role & _
+                "|OLD=" & SanitizeReportText(oldDoc.Texts(lngOldIndex).TextValue) & _
+                "|BETTER=" & SanitizeReportText(strBetterValue) & _
+                "|CURRENT=(missing)|comparisonBasis=OLD_ORACLE"
 
-        Call DoxisAddIssue( _
-            dictIssueCounts, _
-            dictIssuePriorities, _
-            dictIssueSamples, _
-            strFamily, _
-            3, _
-            strSample)
+            Call DoxisAddIssue( _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples, _
+                strFamily, _
+                3, _
+                strSample)
+        Else
+            strFamily = "DOXIS_V18_2_TARGET_TEXT_MISSING_CURRENT_" & role
+            strSample = _
+                "tx=" & anchorId & _
+                "|role=" & role & _
+                "|BETTER=" & SanitizeReportText(strBetterValue) & _
+                "|CURRENT=(missing)|comparisonBasis=BETTER_FALLBACK_OLD_MISSING"
+
+            Call DoxisAddIssue( _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples, _
+                strFamily, _
+                1, _
+                strSample)
+        End If
 
         Print #fileNo, _
             "FIELD_MISSING_CURRENT" & _
@@ -11566,6 +11618,16 @@ Private Sub DoxisV18CompareTargetText( _
         DoxisV18AnchorPage(currentAnchor), _
         lngCurrentIndex)
 
+    strBetterFontCore = DoxisV182TextRawFontCore( _
+        betterDoc, _
+        DoxisV18AnchorPage(betterAnchor), _
+        lngBetterIndex)
+
+    strCurrentFontCore = DoxisV182TextRawFontCore( _
+        currentDoc, _
+        DoxisV18AnchorPage(currentAnchor), _
+        lngCurrentIndex)
+
     If lngOldIndex >= 0 Then
         strOldFontSemantic = DoxisV18TextSemanticFont( _
             oldDoc, _
@@ -11581,10 +11643,16 @@ Private Sub DoxisV18CompareTargetText( _
             oldDoc, _
             DoxisV18AnchorPage(oldAnchor), _
             lngOldIndex)
+
+        strOldFontCore = DoxisV182TextRawFontCore( _
+            oldDoc, _
+            DoxisV18AnchorPage(oldAnchor), _
+            lngOldIndex)
     Else
         strOldFontSemantic = "MISSING"
         strOldFontRaw = "MISSING"
         strOldFontRawFull = "MISSING"
+        strOldFontCore = "MISSING"
     End If
 
     Print #fileNo, _
@@ -11633,6 +11701,14 @@ Private Sub DoxisV18CompareTargetText( _
         "|CURRENT=" & strCurrentFontRawFull
 
     Print #fileNo, _
+        "FIELD_FONT_RAW_CORE" & _
+        "|tx=" & anchorId & _
+        "|role=" & role & _
+        "|OLD=" & strOldFontCore & _
+        "|BETTER=" & strBetterFontCore & _
+        "|CURRENT=" & strCurrentFontCore
+
+    Print #fileNo, _
         "FIELD_TOPOLOGY" & _
         "|tx=" & anchorId & _
         "|role=" & role & _
@@ -11662,15 +11738,46 @@ Private Sub DoxisV18CompareTargetText( _
         GoTo ExitSub
     End If
 
-    If dblCurrentRisk > dblBetterRisk + 0.01 Then
-        strFamily = "DOXIS_V18_CUT_RISK_WORSE_" & role
+    If lngOldIndex >= 0 Then
+        If DoxisV18ComparableText(role, strOldValue) = _
+           DoxisV18ComparableText(role, strCurrentValue) Then
+
+            If dblCurrentRisk > dblOldRisk + 0.01 Then
+                strFamily = "DOXIS_V18_2_CUT_RISK_WORSE_VS_OLD_" & role
+                strSample = _
+                    "tx=" & anchorId & _
+                    "|text=" & SanitizeReportText(strCurrentValue) & _
+                    "|riskOld=" & NumTxt(dblOldRisk) & _
+                    "|riskBetter=" & NumTxt(dblBetterRisk) & _
+                    "|riskCurrent=" & NumTxt(dblCurrentRisk) & _
+                    "|OLD_LINE=" & strOldLine & _
+                    "|BETTER_LINE=" & strBetterLine & _
+                    "|CURRENT_LINE=" & strCurrentLine & _
+                    "|comparisonBasis=OLD_ORACLE"
+
+                Call DoxisAddIssue( _
+                    dictIssueCounts, _
+                    dictIssuePriorities, _
+                    dictIssueSamples, _
+                    strFamily, _
+                    3, _
+                    strSample)
+            End If
+        Else
+            Print #fileNo, _
+                "CUT_RISK_OLD_VALUE_MISMATCH" & _
+                "|tx=" & anchorId & _
+                "|role=" & role & _
+                "|ACTION=No blocking cut-risk comparison against OLD for this occurrence."
+        End If
+    ElseIf dblCurrentRisk > dblBetterRisk + 0.01 Then
+        strFamily = "DOXIS_V18_2_CUT_RISK_WORSE_" & role
         strSample = _
             "tx=" & anchorId & _
             "|text=" & SanitizeReportText(strCurrentValue) & _
             "|riskBetter=" & NumTxt(dblBetterRisk) & _
             "|riskCurrent=" & NumTxt(dblCurrentRisk) & _
-            "|BETTER_LINE=" & strBetterLine & _
-            "|CURRENT_LINE=" & strCurrentLine
+            "|comparisonBasis=BETTER_FALLBACK_OLD_MISSING"
 
         Call DoxisAddIssue( _
             dictIssueCounts, _
@@ -11709,44 +11816,111 @@ Private Sub DoxisV18CompareTargetText( _
             "|BETTER=" & CStr(lngBetterCut) & _
             "|CURRENT=" & CStr(lngCurrentCut)
 
-        If lngCurrentCut < lngBetterCut Then
+        If lngOldIndex >= 0 Then
+            If DoxisV182CutIsWorse(lngCurrentCut, lngOldCut) Then
+                strSample = _
+                    "tx=" & anchorId & _
+                    "|text=" & SanitizeReportText(strCurrentValue) & _
+                    "|oldCutAfterChars=" & CStr(lngOldCut) & _
+                    "|betterCutAfterChars=" & CStr(lngBetterCut) & _
+                    "|currentCutAfterChars=" & CStr(lngCurrentCut) & _
+                    "|x=639|comparisonBasis=OLD_ORACLE"
+
+                Call DoxisAddIssue( _
+                    dictIssueCounts, _
+                    dictIssuePriorities, _
+                    dictIssueSamples, _
+                    "DOXIS_V18_2_ISIN_FIXED_X639_CUT_WORSE_VS_OLD", _
+                    3, _
+                    strSample)
+            End If
+        ElseIf DoxisV182CutIsWorse(lngCurrentCut, lngBetterCut) Then
             strSample = _
                 "tx=" & anchorId & _
                 "|text=" & SanitizeReportText(strCurrentValue) & _
                 "|betterCutAfterChars=" & CStr(lngBetterCut) & _
                 "|currentCutAfterChars=" & CStr(lngCurrentCut) & _
-                "|x=639"
+                "|x=639|comparisonBasis=BETTER_FALLBACK_OLD_MISSING"
 
             Call DoxisAddIssue( _
                 dictIssueCounts, _
                 dictIssuePriorities, _
                 dictIssueSamples, _
-                "DOXIS_V18_ISIN_FIXED_X639_CUT_WORSE", _
+                "DOXIS_V18_2_ISIN_FIXED_X639_CUT_WORSE", _
                 3, _
                 strSample)
         End If
     End If
 
-    If strBetterFontSemantic <> strCurrentFontSemantic Then
-        Call DoxisAddIssue( _
-            dictIssueCounts, _
-            dictIssuePriorities, _
-            dictIssueSamples, _
-            "DOXIS_V18_SEMANTIC_FONT_CHANGED_" & role, _
-            2, _
-            "tx=" & anchorId & _
-            "|BETTER=" & strBetterFontSemantic & _
-            "|CURRENT=" & strCurrentFontSemantic)
-    ElseIf strBetterFontRaw <> strCurrentFontRaw Then
-        Call DoxisAddIssue( _
-            dictIssueCounts, _
-            dictIssuePriorities, _
-            dictIssueSamples, _
-            "DOXIS_V18_FONT_SERIALIZATION_CHANGED_" & role, _
-            DoxisV18FontSerializationPriority(role), _
-            "tx=" & anchorId & _
-            "|BETTER=" & strBetterFontRaw & _
-            "|CURRENT=" & strCurrentFontRaw)
+    If lngOldIndex >= 0 Then
+        If strCurrentFontSemantic <> strOldFontSemantic Then
+            Call DoxisAddIssue( _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples, _
+                "DOXIS_V18_2_SEMANTIC_FONT_CURRENT_DIFFERS_OLD_" & role, _
+                DoxisV182FontRegressionPriority( _
+                    role, _
+                    (strBetterFontSemantic = strOldFontSemantic)), _
+                "tx=" & anchorId & _
+                "|OLD=" & strOldFontSemantic & _
+                "|BETTER=" & strBetterFontSemantic & _
+                "|CURRENT=" & strCurrentFontSemantic & _
+                "|comparisonBasis=OLD_ORACLE")
+        ElseIf strCurrentFontCore <> strOldFontCore Then
+            Call DoxisAddIssue( _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples, _
+                "DOXIS_V18_2_FONT_SERIALIZATION_CURRENT_DIFFERS_OLD_" & role, _
+                DoxisV182FontRegressionPriority( _
+                    role, _
+                    (strBetterFontCore = strOldFontCore)), _
+                "tx=" & anchorId & _
+                "|OLD_CORE=" & strOldFontCore & _
+                "|BETTER_CORE=" & strBetterFontCore & _
+                "|CURRENT_CORE=" & strCurrentFontCore & _
+                "|OLD_ALIAS_RAW=" & strOldFontRaw & _
+                "|BETTER_ALIAS_RAW=" & strBetterFontRaw & _
+                "|CURRENT_ALIAS_RAW=" & strCurrentFontRaw & _
+                "|comparisonBasis=OLD_ORACLE")
+        ElseIf strBetterFontSemantic <> strOldFontSemantic Or _
+               strBetterFontCore <> strOldFontCore Then
+
+            Print #fileNo, _
+                "TRIAD_FONT_SIGNAL" & _
+                "|tx=" & anchorId & _
+                "|role=" & role & _
+                "|classification=CURRENT_MATCHES_OLD_FONT_BETTER_DIFFERS" & _
+                "|OLD_SEMANTIC=" & strOldFontSemantic & _
+                "|BETTER_SEMANTIC=" & strBetterFontSemantic & _
+                "|CURRENT_SEMANTIC=" & strCurrentFontSemantic & _
+                "|interpretation=Do not change CURRENT font only because BETTER differs."
+        End If
+    Else
+        If strBetterFontSemantic <> strCurrentFontSemantic Then
+            Call DoxisAddIssue( _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples, _
+                "DOXIS_V18_2_SEMANTIC_FONT_CHANGED_" & role, _
+                2, _
+                "tx=" & anchorId & _
+                "|BETTER=" & strBetterFontSemantic & _
+                "|CURRENT=" & strCurrentFontSemantic & _
+                "|comparisonBasis=BETTER_FALLBACK_OLD_MISSING")
+        ElseIf strBetterFontCore <> strCurrentFontCore Then
+            Call DoxisAddIssue( _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples, _
+                "DOXIS_V18_2_FONT_SERIALIZATION_CHANGED_" & role, _
+                DoxisV18FontSerializationPriority(role), _
+                "tx=" & anchorId & _
+                "|BETTER_CORE=" & strBetterFontCore & _
+                "|CURRENT_CORE=" & strCurrentFontCore & _
+                "|comparisonBasis=BETTER_FALLBACK_OLD_MISSING")
+        End If
     End If
 
     If lngOldIndex >= 0 Then
@@ -11766,15 +11940,15 @@ Private Sub DoxisV18CompareTargetText( _
         End If
 
         If strOldFontSemantic = strCurrentFontSemantic And _
-           strOldFontRaw = strCurrentFontRaw And _
-           strBetterFontRaw <> strCurrentFontRaw Then
+           strOldFontCore = strCurrentFontCore And _
+           strBetterFontCore <> strCurrentFontCore Then
 
             Print #fileNo, _
                 "TRIAD_FONT_SIGNAL" & _
                 "|tx=" & anchorId & _
                 "|role=" & role & _
-                "|classification=CURRENT_MATCHES_OLD_FONT_SERIALIZATION_BUT_CLIENT_REPORTS_WORSE" & _
-                "|interpretation=Font serialization alone is not sufficient; inspect separator/operator interaction."
+                "|classification=CURRENT_MATCHES_OLD_FONT_CORE_BETTER_DIFFERS" & _
+                "|interpretation=Do not treat BETTER alias/raw differences as a required font fix."
         End If
     End If
 
@@ -11857,6 +12031,10 @@ Private Sub DoxisV18CompareAnchorSeparator( _
     ByVal dictIssuePriorities As Object, _
     ByVal dictIssueSamples As Object)
 
+    Dim blnBetterMatchesOld As Boolean
+    Dim dblBetterTopRel As Double
+    Dim dblCurrentTopRel As Double
+    Dim dblOldTopRel As Double
     Dim lngBetterLine As Long
     Dim lngCurrentLine As Long
     Dim lngOldLine As Long
@@ -11908,6 +12086,40 @@ Private Sub DoxisV18CompareAnchorSeparator( _
         strOldPrimitive = "MISSING"
     End If
 
+    If lngBetterLine >= 0 Then
+        dblBetterTopRel = _
+            MaxDouble( _
+                betterDoc.Lines(lngBetterLine).Y1, _
+                betterDoc.Lines(lngBetterLine).Y2) - _
+            DoxisV18AnchorBottomY(betterAnchor)
+    End If
+
+    If lngCurrentLine >= 0 Then
+        dblCurrentTopRel = _
+            MaxDouble( _
+                currentDoc.Lines(lngCurrentLine).Y1, _
+                currentDoc.Lines(lngCurrentLine).Y2) - _
+            DoxisV18AnchorBottomY(currentAnchor)
+    End If
+
+    If lngOldLine >= 0 Then
+        dblOldTopRel = _
+            MaxDouble( _
+                oldDoc.Lines(lngOldLine).Y1, _
+                oldDoc.Lines(lngOldLine).Y2) - _
+            DoxisV18AnchorBottomY(oldAnchor)
+    End If
+
+    Print #fileNo, _
+        "SEPARATOR_TOP_REL" & _
+        "|tx=" & anchorId & _
+        "|x=" & NumTxt(targetX) & _
+        "|OLD=" & DoxisV18OptionalNumberByIndex(lngOldLine, dblOldTopRel) & _
+        "|BETTER=" & DoxisV18OptionalNumberByIndex(lngBetterLine, dblBetterTopRel) & _
+        "|CURRENT=" & DoxisV18OptionalNumberByIndex(lngCurrentLine, dblCurrentTopRel) & _
+        "|CURRENT_MINUS_OLD=" & _
+            DoxisV182OptionalDelta(lngOldLine, lngCurrentLine, dblCurrentTopRel - dblOldTopRel)
+
     Print #fileNo, _
         "SEPARATOR_RELATIVE" & _
         "|tx=" & anchorId & _
@@ -11925,50 +12137,136 @@ Private Sub DoxisV18CompareAnchorSeparator( _
         "|BETTER=" & strBetterPrimitive & _
         "|CURRENT=" & strCurrentPrimitive
 
-    If strBetter <> strCurrent Then
-        strSample = _
-            "tx=" & anchorId & _
-            "|affectedRole=" & affectedRole & _
-            "|OLD=" & strOld & _
-            "|BETTER=" & strBetter & _
-            "|CURRENT=" & strCurrent
-
-        If strBetterPrimitive <> strCurrentPrimitive Then
-            strFamily = _
-                "DOXIS_V18_SEPARATOR_PRIMITIVE_CHANGED_X" & _
-                Replace(NumTxt(targetX), ".", "_")
-
-            Call DoxisAddIssue( _
-                dictIssueCounts, _
-                dictIssuePriorities, _
-                dictIssueSamples, _
-                strFamily, _
-                2, _
-                strSample)
-        Else
-            strFamily = _
-                "DOXIS_V18_SEPARATOR_GEOMETRY_CHANGED_X" & _
-                Replace(NumTxt(targetX), ".", "_")
-
-            Call DoxisAddIssue( _
-                dictIssueCounts, _
-                dictIssuePriorities, _
-                dictIssueSamples, _
-                strFamily, _
-                1, _
-                strSample)
-        End If
-    End If
-
     If Len(oldAnchor) > 0 Then
-        If strCurrent = strOld And strBetter <> strOld Then
+        blnBetterMatchesOld = _
+            (strBetter = strOld And strBetterPrimitive = strOldPrimitive)
+
+        If lngOldLine >= 0 And lngBetterLine >= 0 And lngCurrentLine >= 0 Then
+            If Abs(dblBetterTopRel - dblOldTopRel) <= 0.01 And _
+               dblCurrentTopRel > dblOldTopRel + 0.01 Then
+
+                strFamily = _
+                    "DOXIS_V18_2_ROW_INTRUSION_REGRESSION_X" & _
+                    Replace(NumTxt(targetX), ".", "_")
+
+                strSample = _
+                    "tx=" & anchorId & _
+                    "|affectedRole=" & affectedRole & _
+                    "|OLD_topRel=" & NumTxt(dblOldTopRel) & _
+                    "|BETTER_topRel=" & NumTxt(dblBetterTopRel) & _
+                    "|CURRENT_topRel=" & NumTxt(dblCurrentTopRel) & _
+                    "|CURRENT_extraIntoTop=" & _
+                        NumTxt(dblCurrentTopRel - dblOldTopRel) & _
+                    "|threshold=0.01|comparisonBasis=OLD_ORACLE"
+
+                Call DoxisAddIssue( _
+                    dictIssueCounts, _
+                    dictIssuePriorities, _
+                    dictIssueSamples, _
+                    strFamily, _
+                    3, _
+                    strSample)
+            End If
+        End If
+
+        If strCurrent <> strOld Or strCurrentPrimitive <> strOldPrimitive Then
+            strSample = _
+                "tx=" & anchorId & _
+                "|affectedRole=" & affectedRole & _
+                "|OLD=" & strOld & _
+                "|BETTER=" & strBetter & _
+                "|CURRENT=" & strCurrent & _
+                "|OLD_PRIMITIVE=" & strOldPrimitive & _
+                "|BETTER_PRIMITIVE=" & strBetterPrimitive & _
+                "|CURRENT_PRIMITIVE=" & strCurrentPrimitive & _
+                "|comparisonBasis=OLD_ORACLE"
+
+            If strCurrentPrimitive <> strOldPrimitive Then
+                If blnBetterMatchesOld Then
+                    strFamily = _
+                        "DOXIS_V18_2_TRIAD_SEPARATOR_PRIMITIVE_REGRESSION_X" & _
+                        Replace(NumTxt(targetX), ".", "_")
+
+                    Call DoxisAddIssue( _
+                        dictIssueCounts, _
+                        dictIssuePriorities, _
+                        dictIssueSamples, _
+                        strFamily, _
+                        3, _
+                        strSample)
+                Else
+                    strFamily = _
+                        "DOXIS_V18_2_SEPARATOR_PRIMITIVE_CURRENT_DIFFERS_OLD_X" & _
+                        Replace(NumTxt(targetX), ".", "_")
+
+                    Call DoxisAddIssue( _
+                        dictIssueCounts, _
+                        dictIssuePriorities, _
+                        dictIssueSamples, _
+                        strFamily, _
+                        2, _
+                        strSample)
+                End If
+            Else
+                If blnBetterMatchesOld Then
+                    strFamily = _
+                        "DOXIS_V18_2_TRIAD_SEPARATOR_GEOMETRY_REGRESSION_X" & _
+                        Replace(NumTxt(targetX), ".", "_")
+
+                    Call DoxisAddIssue( _
+                        dictIssueCounts, _
+                        dictIssuePriorities, _
+                        dictIssueSamples, _
+                        strFamily, _
+                        3, _
+                        strSample)
+                Else
+                    strFamily = _
+                        "DOXIS_V18_2_SEPARATOR_GEOMETRY_CURRENT_DIFFERS_OLD_X" & _
+                        Replace(NumTxt(targetX), ".", "_")
+
+                    Call DoxisAddIssue( _
+                        dictIssueCounts, _
+                        dictIssuePriorities, _
+                        dictIssueSamples, _
+                        strFamily, _
+                        2, _
+                        strSample)
+                End If
+            End If
+        ElseIf strBetter <> strOld Or strBetterPrimitive <> strOldPrimitive Then
             Print #fileNo, _
                 "TRIAD_SEPARATOR_SIGNAL" & _
                 "|tx=" & anchorId & _
                 "|x=" & NumTxt(targetX) & _
-                "|classification=CURRENT_MATCHES_OLD_SEPARATOR_RELATIVE_TO_TRANSACTION" & _
-                "|interpretation=If CURRENT still parses worse, exact Oracle geometry is not sufficient by itself."
+                "|classification=CURRENT_MATCHES_OLD_SEPARATOR_BETTER_DIFFERS" & _
+                "|interpretation=Do not move or reserialize CURRENT only because BETTER differs."
         End If
+    ElseIf strBetter <> strCurrent Then
+        strSample = _
+            "tx=" & anchorId & _
+            "|affectedRole=" & affectedRole & _
+            "|BETTER=" & strBetter & _
+            "|CURRENT=" & strCurrent & _
+            "|comparisonBasis=BETTER_FALLBACK_OLD_MISSING"
+
+        If strBetterPrimitive <> strCurrentPrimitive Then
+            strFamily = _
+                "DOXIS_V18_2_SEPARATOR_PRIMITIVE_CHANGED_X" & _
+                Replace(NumTxt(targetX), ".", "_")
+        Else
+            strFamily = _
+                "DOXIS_V18_2_SEPARATOR_GEOMETRY_CHANGED_X" & _
+                Replace(NumTxt(targetX), ".", "_")
+        End If
+
+        Call DoxisAddIssue( _
+            dictIssueCounts, _
+            dictIssuePriorities, _
+            dictIssueSamples, _
+            strFamily, _
+            2, _
+            strSample)
     End If
 End Sub
 
@@ -12046,17 +12344,70 @@ Private Sub DoxisV181CompareNoPaintTargetX( _
         "|BETTER=" & strBetter & _
         "|CURRENT=" & strCurrent
 
-    If strBetter <> strCurrent Then
+    If Len(oldAnchor) > 0 Then
+        If strCurrent <> strOld Then
+            strFamily = _
+                "DOXIS_V18_2_INVISIBLE_RE_N_CURRENT_DIFFERS_OLD_X" & _
+                Replace(NumTxt(targetX), ".", "_")
+
+            strSample = _
+                "tx=" & anchorId & _
+                "|affectedRole=" & affectedRole & _
+                "|OLD=" & strOld & _
+                "|BETTER=" & strBetter & _
+                "|CURRENT=" & strCurrent & _
+                "|comparisonBasis=OLD_ORACLE"
+
+            Call DoxisAddIssue( _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples, _
+                strFamily, _
+                2, _
+                strSample)
+        End If
+
+        If lngCurrentCount > lngOldCount Then
+            strFamily = _
+                "DOXIS_V18_2_INVISIBLE_RE_N_ADDED_VS_OLD_X" & _
+                Replace(NumTxt(targetX), ".", "_")
+
+            strSample = _
+                "tx=" & anchorId & _
+                "|affectedRole=" & affectedRole & _
+                "|OLD_count=" & CStr(lngOldCount) & _
+                "|BETTER_count=" & CStr(lngBetterCount) & _
+                "|CURRENT_count=" & CStr(lngCurrentCount) & _
+                "|comparisonBasis=OLD_ORACLE"
+
+            Call DoxisAddIssue( _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples, _
+                strFamily, _
+                3, _
+                strSample)
+        End If
+
+        If strCurrent = strOld And strBetter <> strOld Then
+            Print #fileNo, _
+                "TRIAD_INVISIBLE_RE_N_SIGNAL" & _
+                "|tx=" & anchorId & _
+                "|x=" & NumTxt(targetX) & _
+                "|classification=CURRENT_MATCHES_OLD_BETTER_DIFFERS" & _
+                "|interpretation=BETTER having fewer/no re-n paths is not by itself a parser-regression proof."
+        End If
+    ElseIf strBetter <> strCurrent Then
         strFamily = _
-            "DOXIS_V18_1_INVISIBLE_RE_N_CHANGED_X" & _
+            "DOXIS_V18_2_INVISIBLE_RE_N_CHANGED_X" & _
             Replace(NumTxt(targetX), ".", "_")
 
         strSample = _
             "tx=" & anchorId & _
             "|affectedRole=" & affectedRole & _
-            "|OLD=" & strOld & _
             "|BETTER=" & strBetter & _
-            "|CURRENT=" & strCurrent
+            "|CURRENT=" & strCurrent & _
+            "|comparisonBasis=BETTER_FALLBACK_OLD_MISSING"
 
         Call DoxisAddIssue( _
             dictIssueCounts, _
@@ -12064,27 +12415,6 @@ Private Sub DoxisV181CompareNoPaintTargetX( _
             dictIssueSamples, _
             strFamily, _
             2, _
-            strSample)
-    End If
-
-    If lngCurrentCount > lngBetterCount Then
-        strFamily = _
-            "DOXIS_V18_1_INVISIBLE_RE_N_ADDED_X" & _
-            Replace(NumTxt(targetX), ".", "_")
-
-        strSample = _
-            "tx=" & anchorId & _
-            "|affectedRole=" & affectedRole & _
-            "|BETTER_count=" & CStr(lngBetterCount) & _
-            "|CURRENT_count=" & CStr(lngCurrentCount) & _
-            "|interpretation=Current has more invisible re n vertical edges at this X on the transaction page."
-
-        Call DoxisAddIssue( _
-            dictIssueCounts, _
-            dictIssuePriorities, _
-            dictIssueSamples, _
-            strFamily, _
-            3, _
             strSample)
     End If
 End Sub
@@ -12241,6 +12571,8 @@ Private Sub DoxisV181CompareGlobalProjectionRole( _
             lngOldCut, lngOldHiddenCut)
     Else
         strOld = "MISSING"
+        lngOldCut = -1
+        lngOldHiddenCut = -1
     End If
 
     If strBetter <> "NO_TEXT" Or strCurrent <> "NO_TEXT" Then
@@ -12253,15 +12585,16 @@ Private Sub DoxisV181CompareGlobalProjectionRole( _
             "|CURRENT=" & strCurrent
     End If
 
-    If lngCurrentCut >= 0 Then
-        If lngBetterCut < 0 Or lngCurrentCut < lngBetterCut Then
-            strFamily = "DOXIS_V18_1_GLOBAL_VISIBLE_X_CUT_WORSE_" & role
+    If Len(oldAnchor) > 0 Then
+        If DoxisV182CutIsWorse(lngCurrentCut, lngOldCut) Then
+            strFamily = "DOXIS_V18_2_GLOBAL_VISIBLE_X_CUT_WORSE_VS_OLD_" & role
             strSample = _
                 "tx=" & anchorId & _
                 "|role=" & role & _
-                "|BETTER_cutAfter=" & CStr(lngBetterCut) & _
-                "|CURRENT_cutAfter=" & CStr(lngCurrentCut) & _
                 "|OLD_cutAfter=" & DoxisV181OptionalCut(lngOldCut) & _
+                "|BETTER_cutAfter=" & DoxisV181OptionalCut(lngBetterCut) & _
+                "|CURRENT_cutAfter=" & DoxisV181OptionalCut(lngCurrentCut) & _
+                "|comparisonBasis=OLD_ORACLE" & _
                 "|hypothesis=vertical visible paths projected globally on X, row ownership ignored"
 
             Call DoxisAddIssue( _
@@ -12272,18 +12605,53 @@ Private Sub DoxisV181CompareGlobalProjectionRole( _
                 DoxisV181ProjectionPriority(role), _
                 strSample)
         End If
-    End If
 
-    If lngCurrentHiddenCut >= 0 Then
-        If lngBetterHiddenCut < 0 Or lngCurrentHiddenCut < lngBetterHiddenCut Then
-            strFamily = "DOXIS_V18_1_GLOBAL_INVISIBLE_RE_N_CUT_WORSE_" & role
+        If DoxisV182CutIsWorse(lngCurrentHiddenCut, lngOldHiddenCut) Then
+            strFamily = "DOXIS_V18_2_GLOBAL_INVISIBLE_RE_N_CUT_WORSE_VS_OLD_" & role
             strSample = _
                 "tx=" & anchorId & _
                 "|role=" & role & _
-                "|BETTER_hiddenCutAfter=" & CStr(lngBetterHiddenCut) & _
-                "|CURRENT_hiddenCutAfter=" & CStr(lngCurrentHiddenCut) & _
                 "|OLD_hiddenCutAfter=" & DoxisV181OptionalCut(lngOldHiddenCut) & _
+                "|BETTER_hiddenCutAfter=" & DoxisV181OptionalCut(lngBetterHiddenCut) & _
+                "|CURRENT_hiddenCutAfter=" & DoxisV181OptionalCut(lngCurrentHiddenCut) & _
+                "|comparisonBasis=OLD_ORACLE" & _
                 "|hypothesis=invisible re n vertical edges projected globally on X"
+
+            Call DoxisAddIssue( _
+                dictIssueCounts, _
+                dictIssuePriorities, _
+                dictIssueSamples, _
+                strFamily, _
+                DoxisV181ProjectionPriority(role), _
+                strSample)
+        End If
+
+        If lngCurrentCut = lngOldCut And lngBetterCut <> lngOldCut Then
+            Print #fileNo, _
+                "GLOBAL_X_TRIAD_SIGNAL" & _
+                "|tx=" & anchorId & _
+                "|role=" & role & _
+                "|visible=CURRENT_MATCHES_OLD_BETTER_DIFFERS"
+        End If
+
+        If lngCurrentHiddenCut = lngOldHiddenCut And _
+           lngBetterHiddenCut <> lngOldHiddenCut Then
+
+            Print #fileNo, _
+                "GLOBAL_X_TRIAD_SIGNAL" & _
+                "|tx=" & anchorId & _
+                "|role=" & role & _
+                "|invisible=CURRENT_MATCHES_OLD_BETTER_DIFFERS"
+        End If
+    Else
+        If DoxisV182CutIsWorse(lngCurrentCut, lngBetterCut) Then
+            strFamily = "DOXIS_V18_2_GLOBAL_VISIBLE_X_CUT_WORSE_" & role
+            strSample = _
+                "tx=" & anchorId & _
+                "|role=" & role & _
+                "|BETTER_cutAfter=" & DoxisV181OptionalCut(lngBetterCut) & _
+                "|CURRENT_cutAfter=" & DoxisV181OptionalCut(lngCurrentCut) & _
+                "|comparisonBasis=BETTER_FALLBACK_OLD_MISSING"
 
             Call DoxisAddIssue( _
                 dictIssueCounts, _
@@ -12591,6 +12959,210 @@ Private Function DoxisV18FixedCutCount( _
         pdfDoc.Texts(textIndex).FontSize, _
         pdfDoc.Texts(textIndex).X, _
         separatorX)
+End Function
+
+Private Function DoxisV182OptionalDelta( _
+    ByVal oldIndex As Long, _
+    ByVal currentIndex As Long, _
+    ByVal deltaValue As Double) As String
+
+    If oldIndex < 0 Or currentIndex < 0 Then
+        DoxisV182OptionalDelta = "NA"
+    Else
+        DoxisV182OptionalDelta = NumTxt(deltaValue)
+    End If
+End Function
+
+Private Function DoxisV182CutIsWorse( _
+    ByVal currentCut As Long, _
+    ByVal referenceCut As Long) As Boolean
+
+    If currentCut < 0 Then Exit Function
+
+    If referenceCut < 0 Then
+        DoxisV182CutIsWorse = True
+    Else
+        DoxisV182CutIsWorse = (currentCut < referenceCut)
+    End If
+End Function
+
+Private Function DoxisV182FontRegressionPriority( _
+    ByVal role As String, _
+    ByVal betterMatchesOld As Boolean) As Long
+
+    If betterMatchesOld Then
+        If role = "TOP_ISIN" Or _
+           InStr(1, role, "WHG", vbBinaryCompare) > 0 Then
+
+            DoxisV182FontRegressionPriority = 3
+        Else
+            DoxisV182FontRegressionPriority = 2
+        End If
+    Else
+        DoxisV182FontRegressionPriority = _
+            DoxisV18FontSerializationPriority(role)
+
+        If DoxisV182FontRegressionPriority < 1 Then
+            DoxisV182FontRegressionPriority = 1
+        End If
+    End If
+End Function
+
+Private Function DoxisV182TextRawFontCore( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal pageNo As Long, _
+    ByVal textIndex As Long) As String
+
+    Dim strBase As String
+    Dim strDescriptor As String
+    Dim strEncoding As String
+    Dim strEntry As String
+    Dim strSubtype As String
+    Dim strWidths As String
+
+    If textIndex < 0 Or textIndex >= pdfDoc.TextCount Then
+        DoxisV182TextRawFontCore = "MISSING"
+        Exit Function
+    End If
+
+    strEntry = DoxisV18RawFontEntry( _
+        pdfDoc, _
+        pageNo, _
+        pdfDoc.Texts(textIndex).FontName)
+
+    If Len(strEntry) = 0 Then
+        DoxisV182TextRawFontCore = _
+            "raw=(unresolved)" & _
+            "|size=" & NumTxt(pdfDoc.Texts(textIndex).FontSize)
+        Exit Function
+    End If
+
+    strBase = DoxisV18PipeField(strEntry, "base")
+    strSubtype = DoxisV18PipeField(strEntry, "subtype")
+    strEncoding = DoxisV18PipeField(strEntry, "encoding")
+    strWidths = DoxisV18PipeField(strEntry, "widths")
+    strDescriptor = DoxisV18PipeField(strEntry, "descriptor")
+
+    DoxisV182TextRawFontCore = _
+        "baseRaw=" & strBase & _
+        "|subtypeRaw=" & strSubtype & _
+        "|encodingRaw=" & strEncoding & _
+        "|widths=" & strWidths & _
+        "|descriptorChecksum=" & FontTextChecksum(strDescriptor) & _
+        "|size=" & NumTxt(pdfDoc.Texts(textIndex).FontSize)
+End Function
+
+Private Function DoxisV182CountPaintedPrimitive( _
+    ByRef pdfDoc As tPdfDocument, _
+    ByVal sourceOperator As String) As Long
+
+    Dim lngIndex As Long
+
+    For lngIndex = 0 To pdfDoc.LineCount - 1
+        If LCase$(Trim$(pdfDoc.Lines(lngIndex).SourceOperator)) = _
+           LCase$(Trim$(sourceOperator)) Then
+
+            If LCase$(Trim$(pdfDoc.Lines(lngIndex).PaintOperator)) <> "n" Then
+                DoxisV182CountPaintedPrimitive = _
+                    DoxisV182CountPaintedPrimitive + 1
+            End If
+        End If
+    Next lngIndex
+End Function
+
+Private Function DoxisV182DocumentInfoValue( _
+    ByVal keyName As String) As String
+
+    Dim blnEscaped As Boolean
+    Dim lngDepth As Long
+    Dim lngIndex As Long
+    Dim lngLength As Long
+    Dim lngPos As Long
+    Dim lngStart As Long
+    Dim strChar As String
+    Dim strPdf As String
+    Dim strValue As String
+
+    DoxisV182DocumentInfoValue = "(absent)"
+
+    On Error GoTo ExitFunction
+
+    lngLength = UBound(m_pdf) + 1
+    If lngLength <= 0 Then GoTo ExitFunction
+
+    strPdf = ByteArrayText(m_pdf, lngLength)
+    lngPos = InStrRev(strPdf, keyName, -1, vbBinaryCompare)
+    If lngPos <= 0 Then GoTo ExitFunction
+
+    lngIndex = lngPos + Len(keyName)
+
+    Do While lngIndex <= Len(strPdf)
+        strChar = Mid$(strPdf, lngIndex, 1)
+        If strChar <> " " And strChar <> vbTab And _
+           strChar <> vbCr And strChar <> vbLf Then Exit Do
+        lngIndex = lngIndex + 1
+    Loop
+
+    If lngIndex > Len(strPdf) Then GoTo ExitFunction
+
+    strChar = Mid$(strPdf, lngIndex, 1)
+
+    If strChar = "(" Then
+        lngStart = lngIndex + 1
+        lngDepth = 1
+        lngIndex = lngStart
+
+        Do While lngIndex <= Len(strPdf)
+            strChar = Mid$(strPdf, lngIndex, 1)
+
+            If blnEscaped Then
+                blnEscaped = False
+            ElseIf strChar = "\" Then
+                blnEscaped = True
+            ElseIf strChar = "(" Then
+                lngDepth = lngDepth + 1
+            ElseIf strChar = ")" Then
+                lngDepth = lngDepth - 1
+                If lngDepth = 0 Then Exit Do
+            End If
+
+            lngIndex = lngIndex + 1
+        Loop
+
+        If lngIndex > lngStart Then
+            strValue = Mid$(strPdf, lngStart, lngIndex - lngStart)
+        End If
+    ElseIf strChar = "<" Then
+        lngStart = lngIndex
+        lngIndex = InStr(lngStart + 1, strPdf, ">", vbBinaryCompare)
+
+        If lngIndex > lngStart Then
+            strValue = Mid$(strPdf, lngStart, lngIndex - lngStart + 1)
+        End If
+    Else
+        lngStart = lngIndex
+
+        Do While lngIndex <= Len(strPdf)
+            strChar = Mid$(strPdf, lngIndex, 1)
+
+            If strChar = " " Or strChar = vbTab Or _
+               strChar = vbCr Or strChar = vbLf Or _
+               strChar = "/" Or strChar = ">" Then Exit Do
+
+            lngIndex = lngIndex + 1
+        Loop
+
+        If lngIndex > lngStart Then
+            strValue = Mid$(strPdf, lngStart, lngIndex - lngStart)
+        End If
+    End If
+
+    If Len(strValue) > 0 Then
+        DoxisV182DocumentInfoValue = _
+            RegressionLimitText(SanitizeReportText(strValue), 300)
+    End If
+
+ExitFunction:
 End Function
 
 Private Function DoxisV18TextSemanticFont( _
@@ -13281,7 +13853,7 @@ Private Sub DoxisWriteSuperShortReport( _
     lngFile = FreeFile
     Open outputPath For Output Access Write As #lngFile
 
-    Print #lngFile, "ORACLE_DOXIS_TRANSACTION_ANCHORED_SUPER_SHORT_V18_1"
+    Print #lngFile, "ORACLE_DOXIS_TRANSACTION_ANCHORED_SUPER_SHORT_V18_2"
     Print #lngFile, "OLD_ORACLE|" & oldDoc.PdfPath
     Print #lngFile, "BETTER_PARSING|" & betterDoc.PdfPath
     Print #lngFile, "CURRENT|" & currentDoc.PdfPath
@@ -13296,11 +13868,26 @@ Private Sub DoxisWriteSuperShortReport( _
         "|BETTER=" & CStr(betterAnchors.Count) & _
         "|CURRENT=" & CStr(currentAnchors.Count)
     Print #lngFile, _
-        "MODEL|Transaction-number anchored. Page/Y slot movement is excluded. V18.1 additionally tests global-X projection with row ownership deliberately ignored and captures invisible re n paths."
+        "MODEL|Transaction-number anchored. OLD Oracle is the gold standard. BETTER is behavioural evidence only. V18.2 also tests 0.01pt row overlap, primitive serialization, global-X projection and invisible re n paths."
     Print #lngFile, _
-        "ISIN|Fixed x=639 predictedCutAfterChars plus global visible/invisible-X projection are compared BETTER vs CURRENT; only a worse CURRENT signal is blocking."
+        "ISIN|Fixed x=639 and global visible/invisible-X cuts are blocking only when CURRENT is worse than OLD Oracle; BETTER is shown as a behavioural control."
     Print #lngFile, _
-        "IMPORTANT|BETTER_PARSING_IS_NOT_A_GOLD_STANDARD=TRUE|It is used only because client behaviour says it parsed ISIN/currency better."
+        "IMPORTANT|BETTER_PARSING_IS_NOT_A_GOLD_STANDARD=TRUE|A BETTER-only difference is not a blocker unless OLD supports the same direction."
+    Print #lngFile, _
+        "PROVENANCE|PRODUCER_OLD=" & SanitizeReportText(oldDoc.ProducerValue) & _
+        "|PRODUCER_BETTER=" & SanitizeReportText(betterDoc.ProducerValue) & _
+        "|PRODUCER_CURRENT=" & SanitizeReportText(currentDoc.ProducerValue) & _
+        "|CREATOR_OLD=" & SanitizeReportText(oldDoc.CreatorValue) & _
+        "|CREATOR_BETTER=" & SanitizeReportText(betterDoc.CreatorValue) & _
+        "|CREATOR_CURRENT=" & SanitizeReportText(currentDoc.CreatorValue)
+    Print #lngFile, _
+        "PAINTED_PRIMITIVES" & _
+        "|OLD_ml=" & CStr(DoxisV182CountPaintedPrimitive(oldDoc, "m/l")) & _
+        "|OLD_re=" & CStr(DoxisV182CountPaintedPrimitive(oldDoc, "re")) & _
+        "|BETTER_ml=" & CStr(DoxisV182CountPaintedPrimitive(betterDoc, "m/l")) & _
+        "|BETTER_re=" & CStr(DoxisV182CountPaintedPrimitive(betterDoc, "re")) & _
+        "|CURRENT_ml=" & CStr(DoxisV182CountPaintedPrimitive(currentDoc, "m/l")) & _
+        "|CURRENT_re=" & CStr(DoxisV182CountPaintedPrimitive(currentDoc, "re"))
     Print #lngFile, _
         "RE_N_CAPTURE|OLD_segments=" & CStr(oldDoc.NoPaintLineCount) & _
         "|BETTER_segments=" & CStr(betterDoc.NoPaintLineCount) & _
@@ -13322,7 +13909,7 @@ Private Sub DoxisWriteSuperShortReport( _
         End If
 
         Print #lngFile, _
-            "NEXT|No transaction-anchored geometry/font-serialization regression was found. If client behaviour still differs, inspect content-stream operator ordering and the DOXISLoader extraction profile/configuration."
+            "NEXT|No CURRENT-vs-OLD parser-facing regression was found. If client behaviour still differs, inspect post-processing/provenance and the DOXISLoader extraction profile/configuration."
         GoTo ExitSub
     End If
 
@@ -13359,17 +13946,19 @@ Private Sub DoxisWriteSuperShortReport( _
     Print #lngFile, ""
     Print #lngFile, "INTERPRETATION_PRIORITY"
     Print #lngFile, _
-        "1|GLOBAL_VISIBLE_X_CUT_WORSE_TOP_ISIN/SCHLUSSTAG or ISIN_FIXED_X639_CUT_WORSE: supports the global-X separator hypothesis rather than row-overlap."
+        "1|TRIAD_SEPARATOR_PRIMITIVE_REGRESSION_X468/X639: strongest signal when OLD=BETTER and CURRENT alone changes m/l versus re and/or the exact Y span."
     Print #lngFile, _
-        "2|GLOBAL_INVISIBLE_RE_N_CUT_WORSE_* or INVISIBLE_RE_N_ADDED_X468/X639: invisible rectangle edges are a concrete parser-facing difference worth fixing before fonts."
+        "2|ROW_INTRUSION_REGRESSION_X468/X639: direct transaction-anchored check catches >0.01pt CURRENT top-span growth, including the observed 0.04pt class."
     Print #lngFile, _
-        "3|FONT_SERIALIZATION_CHANGED_TOP_ISIN/WHG with semantic font unchanged: suspect raw alias/BaseFont #xx encoding/widths/descriptor/operator interaction, not visual font choice."
+        "3|FONT_*_CURRENT_DIFFERS_OLD: inspect BaseFont literal versus #xx serialization and size only when CURRENT truly differs from OLD; alias-only differences are excluded from raw-core comparison."
     Print #lngFile, _
-        "4|If CURRENT matches OLD geometry but BETTER has fewer global-X/re-n collisions, BETTER may reveal parser tolerance. If all three match, ask Helaba which DOXISLoader extraction profile/preprocessor is used."
+        "4|GLOBAL_INVISIBLE_RE_N_* is blocking only versus OLD. BETTER having zero re-n paths no longer creates a false regression by itself."
+    Print #lngFile, _
+        "5|PROVENANCE/PAINTED_PRIMITIVES: if CURRENT says re while the VBA source emits m/l, different Producer/Creator or a radically changed primitive profile supports post-processing/wrong-build rather than a geometry formula bug."
 
     Print #lngFile, ""
     Print #lngFile, _
-        "NEXT|Send this SUPER_SHORT first. If it names TOP_ISIN/WHG/x468/x639, use the V18.1 DETAIL report for the exact matched transaction, relative separator signature, decoded semantic font, raw font serialization and cut count."
+        "NEXT|Send this V18.2 SUPER_SHORT first. Use DETAIL only for families that remain CRITICAL/HIGH after OLD-based filtering."
 
 ExitSub:
     If lngFile <> 0 Then Close #lngFile
@@ -13408,7 +13997,7 @@ Private Function BuildDoxisTopologyDetailOutputPath( _
         FileBaseName(betterPdfPath) & _
         "_VS_" & _
         FileBaseName(currentPdfPath) & _
-        "_DOXIS_V18_1_DETAIL.txt"
+        "_DOXIS_V18_2_DETAIL.txt"
 End Function
 
 Private Function BuildDoxisTopologySuperShortOutputPath( _
@@ -13428,5 +14017,5 @@ Private Function BuildDoxisTopologySuperShortOutputPath( _
         FileBaseName(betterPdfPath) & _
         "_VS_" & _
         FileBaseName(currentPdfPath) & _
-        "_DOXIS_V18_1_SUPER_SHORT.txt"
+        "_DOXIS_V18_2_SUPER_SHORT.txt"
 End Function
