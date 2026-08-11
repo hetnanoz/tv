@@ -1,4 +1,3 @@
-Attribute VB_Name = "modOracleBlueprint"
 '-------------------------------------------------------------------------------
 ' Module:       modOracleBlueprint
 ' Purpose:      Paint-aware extractor for the original Oracle Reports PDF.
@@ -83,15 +82,44 @@ Private m_textCount As Long
 ' Creation date: 2026-08-11
 ' Parameters:    ---
 ' Returns:       ---
-' Description:   Runs the blueprint extraction for one PDF. Edit both constants.
+' Description:   Asks for the PDF and writes every report next to the chosen file.
 '-------------------------------------------------------------------------------
 Public Sub RunOracleBlueprint()
 
-    Const SRC_PDF As String = "C:\Temp\old_Helaba_oracle.pdf"
-    Const OUT_FOLDER As String = "C:\Temp"
+    Const METHOD_NAME As String = "RunOracleBlueprint"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim varSelection As Variant
 
-    Call OracleBlueprintExtract(SRC_PDF, OUT_FOLDER)
+    On Error GoTo ErrorHandler
 
+    varSelection = Application.GetOpenFilename( _
+        FileFilter:="PDF files (*.pdf), *.pdf", _
+        Title:="Select the PDF to analyse")
+
+    If VarType(varSelection) = vbBoolean Then
+        GoTo ExitSub
+    End If
+
+    ' An empty output folder makes the extractor write next to the source file.
+    Call OracleBlueprintExtract(CStr(varSelection), vbNullString)
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitSub
 End Sub
 
 '-------------------------------------------------------------------------------
@@ -123,6 +151,12 @@ Public Sub OracleBlueprintExtract( _
     End If
 
     strFolder = strOutFolder
+
+    ' Default to the folder the source PDF was picked from.
+    If Len(Trim$(strFolder)) = 0 Then
+        strFolder = Left$(strPdfPath, InStrRev(strPdfPath, "\"))
+    End If
+
     If Right$(strFolder, 1) <> "\" Then
         strFolder = strFolder & "\"
     End If
@@ -155,11 +189,12 @@ Public Sub OracleBlueprintExtract( _
     Call BlueprintWritePrimitives(strFolder & strBase & "_bp_primitives.txt", strPdfPath)
     Call BlueprintWriteBoxes(strFolder & strBase & "_bp_boxes.txt", strPdfPath)
     Call BlueprintWriteText(strFolder & strBase & "_bp_text.txt", strPdfPath)
+    Call BlueprintWriteTable(strFolder & strBase & "_bp_table.txt", strPdfPath, varPages)
     Call BlueprintWriteSummary(strFolder & strBase & "_bp_vba.txt", strPdfPath, lngPageCount)
 
     MsgBox "Blueprint complete - " & CStr(lngPageCount) & " page(s), " & _
            CStr(m_primCount) & " primitive(s), " & CStr(m_textCount) & " text run(s)." & _
-           vbCrLf & vbCrLf & strFolder & strBase & "_bp_*.txt", _
+           vbCrLf & vbCrLf & "Reports written to:" & vbCrLf & strFolder, _
            vbInformation
 
 ExitSub:
@@ -1901,3 +1936,788 @@ Private Sub BlueprintEmit( _
     Print #lngFile, strLine
 
 End Sub
+
+'===============================================================================
+' TABLE SPECIFICATION
+'===============================================================================
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    strPath As String, strSource As String, varPages As Variant
+' Returns:       ---
+' Description:   Reconstructs the full table specification: page box, font
+'                resources, rule grid, row bands, per-cell geometry and the
+'                padding actually used by each cell.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintWriteTable( _
+    ByVal strPath As String, _
+    ByVal strSource As String, _
+    ByVal varPages As Variant)
+
+    Const METHOD_NAME As String = "BlueprintWriteTable"
+    Dim arrHRule() As Double
+    Dim arrVRule() As Double
+    Dim dblBandBottom As Double
+    Dim dblBandTop As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngBand As Long
+    Dim lngFile As Long
+    Dim lngHCount As Long
+    Dim lngPage As Long
+    Dim lngPageMax As Long
+    Dim lngVCount As Long
+
+    On Error GoTo ErrorHandler
+
+    lngFile = BlueprintOpenNew(strPath)
+
+    Call BlueprintEmit(lngFile, "ORACLE_BLUEPRINT_TABLE")
+    Call BlueprintEmit(lngFile, "source|" & strSource)
+    Call BlueprintEmit(lngFile, "note|PDF stores glyph positions, not cells. " & _
+        "Column and row boundaries below are reconstructed from the rule grid; " & _
+        "alignment is INFERRED from the measured left and right padding.")
+    Call BlueprintEmit(lngFile, "")
+
+    Call BlueprintEmit(lngFile, "DOCUMENT_METADATA")
+    Call BlueprintEmit(lngFile, "  " & BlueprintInfoDictionary())
+    Call BlueprintEmit(lngFile, "")
+
+    lngPageMax = BlueprintMaxPage()
+
+    For lngPage = 1 To lngPageMax
+        Call BlueprintEmit(lngFile, "PAGE|" & CStr(lngPage))
+
+        If IsArray(varPages) Then
+            If lngPage - 1 <= UBound(varPages) Then
+                Call BlueprintEmit(lngFile, "  MEDIABOX|" & _
+                    BlueprintPageMediaBox(CLng(varPages(lngPage - 1))))
+                Call BlueprintEmit(lngFile, "  FONTS|" & _
+                    BlueprintFontResources(CLng(varPages(lngPage - 1))))
+            End If
+        End If
+
+        Call BlueprintCollectHorizontalRules(lngPage, arrHRule, lngHCount)
+        Call BlueprintCollectVerticalRules(lngPage, arrVRule, lngVCount)
+
+        Call BlueprintEmit(lngFile, "  H_RULE_Y|count=" & CStr(lngHCount) & "|" & _
+            BlueprintDoubleList(arrHRule, lngHCount))
+        Call BlueprintEmit(lngFile, "  V_RULE_X|count=" & CStr(lngVCount) & "|" & _
+            BlueprintDoubleList(arrVRule, lngVCount))
+        Call BlueprintEmit(lngFile, "")
+
+        ' Every pair of neighbouring horizontal rules forms one candidate row.
+        For lngBand = 0 To lngHCount - 2
+            dblBandBottom = arrHRule(lngBand)
+            dblBandTop = arrHRule(lngBand + 1)
+
+            If dblBandTop - dblBandBottom >= 4# Then
+                Call BlueprintEmitRowBand( _
+                    lngFile, _
+                    lngPage, _
+                    dblBandBottom, _
+                    dblBandTop)
+            End If
+        Next lngBand
+
+        Call BlueprintEmit(lngFile, "")
+    Next lngPage
+
+    Close #lngFile
+
+ExitSub:
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "path;page", _
+        strPath, _
+        lngPage
+
+    errorManager.save
+    Resume ExitSub
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    lngFile As Long, lngPageNo As Long, dblBottom As Double, dblTop As Double
+' Returns:       ---
+' Description:   Writes one row band with its columns, cell text and padding.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintEmitRowBand( _
+    ByVal lngFile As Long, _
+    ByVal lngPageNo As Long, _
+    ByVal dblBottom As Double, _
+    ByVal dblTop As Double)
+
+    Dim arrColumn() As Double
+    Dim dblLeftPad As Double
+    Dim dblRightPad As Double
+    Dim dblTextWidth As Double
+    Dim lngColumn As Long
+    Dim lngColumnCount As Long
+    Dim lngTextIndex As Long
+    Dim strAlign As String
+
+    Call BlueprintCollectBandColumns( _
+        lngPageNo, _
+        dblBottom, _
+        dblTop, _
+        arrColumn, _
+        lngColumnCount)
+
+    Call BlueprintEmit(lngFile, _
+        "  BAND|y=" & BlueprintNumText(dblBottom) & ".." & BlueprintNumText(dblTop) & _
+        "|height=" & BlueprintNumText(dblTop - dblBottom) & _
+        "|columns=" & CStr(BlueprintMaxLong(lngColumnCount - 1, 0)))
+
+    Call BlueprintEmit(lngFile, "    COLUMN_X|" & _
+        BlueprintDoubleList(arrColumn, lngColumnCount))
+
+    For lngColumn = 0 To lngColumnCount - 2
+        lngTextIndex = BlueprintFindCellText( _
+            lngPageNo, _
+            arrColumn(lngColumn), _
+            arrColumn(lngColumn + 1), _
+            dblBottom, _
+            dblTop)
+
+        If lngTextIndex >= 0 Then
+            dblTextWidth = BlueprintEstimateWidth( _
+                m_text(lngTextIndex).TextValue, _
+                m_text(lngTextIndex).FontName, _
+                m_text(lngTextIndex).FontSize)
+
+            dblLeftPad = m_text(lngTextIndex).X - arrColumn(lngColumn)
+            dblRightPad = arrColumn(lngColumn + 1) - _
+                (m_text(lngTextIndex).X + dblTextWidth)
+
+            If Abs(dblLeftPad - dblRightPad) <= 1.5 Then
+                strAlign = "CENTER?"
+            ElseIf dblLeftPad < dblRightPad Then
+                strAlign = "LEFT?"
+            Else
+                strAlign = "RIGHT?"
+            End If
+
+            Call BlueprintEmit(lngFile, _
+                "    CELL|col=" & CStr(lngColumn + 1) & _
+                "|x=" & BlueprintNumText(arrColumn(lngColumn)) & _
+                "|w=" & BlueprintNumText(arrColumn(lngColumn + 1) - arrColumn(lngColumn)) & _
+                "|textX=" & BlueprintNumText(m_text(lngTextIndex).X) & _
+                "|baseline=" & BlueprintNumText(m_text(lngTextIndex).Y) & _
+                "|leftPad=" & BlueprintNumText(dblLeftPad) & _
+                "|rightPad=" & BlueprintNumText(dblRightPad) & _
+                "|align=" & strAlign & _
+                "|font=" & m_text(lngTextIndex).FontName & _
+                "|size=" & BlueprintNumText(m_text(lngTextIndex).FontSize) & _
+                "|value=" & BlueprintSanitize(m_text(lngTextIndex).TextValue))
+        Else
+            Call BlueprintEmit(lngFile, _
+                "    CELL|col=" & CStr(lngColumn + 1) & _
+                "|x=" & BlueprintNumText(arrColumn(lngColumn)) & _
+                "|w=" & BlueprintNumText(arrColumn(lngColumn + 1) - arrColumn(lngColumn)) & _
+                "|value=(empty)")
+        End If
+    Next lngColumn
+
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    lngPageNo As Long, arrY() As Double, lngCount As Long
+' Returns:       ---
+' Description:   Collects the distinct Y of every horizontal rule and box edge.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintCollectHorizontalRules( _
+    ByVal lngPageNo As Long, _
+    ByRef arrY() As Double, _
+    ByRef lngCount As Long)
+
+    Dim lngIndex As Long
+
+    lngCount = 0
+    ReDim arrY(0 To 1023)
+
+    For lngIndex = 0 To m_primCount - 1
+        If m_prim(lngIndex).PageNo = lngPageNo And m_prim(lngIndex).Paint <> "n" Then
+
+            If m_prim(lngIndex).Source = "m/l" Then
+                If m_prim(lngIndex).Orientation = "HORIZONTAL" Then
+                    Call BlueprintAddDistinct(arrY, lngCount, m_prim(lngIndex).Y1)
+                End If
+            Else
+                Call BlueprintAddDistinct(arrY, lngCount, m_prim(lngIndex).RectY)
+                Call BlueprintAddDistinct(arrY, lngCount, _
+                    m_prim(lngIndex).RectY + m_prim(lngIndex).RectH)
+            End If
+        End If
+    Next lngIndex
+
+    Call BlueprintSortDoubles(arrY, lngCount)
+
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    lngPageNo As Long, arrX() As Double, lngCount As Long
+' Returns:       ---
+' Description:   Collects the distinct X of every vertical rule and box edge.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintCollectVerticalRules( _
+    ByVal lngPageNo As Long, _
+    ByRef arrX() As Double, _
+    ByRef lngCount As Long)
+
+    Dim lngIndex As Long
+
+    lngCount = 0
+    ReDim arrX(0 To 1023)
+
+    For lngIndex = 0 To m_primCount - 1
+        If m_prim(lngIndex).PageNo = lngPageNo And m_prim(lngIndex).Paint <> "n" Then
+
+            If m_prim(lngIndex).Source = "m/l" Then
+                If m_prim(lngIndex).Orientation = "VERTICAL" Then
+                    Call BlueprintAddDistinct(arrX, lngCount, m_prim(lngIndex).X1)
+                End If
+            Else
+                Call BlueprintAddDistinct(arrX, lngCount, m_prim(lngIndex).RectX)
+                Call BlueprintAddDistinct(arrX, lngCount, _
+                    m_prim(lngIndex).RectX + m_prim(lngIndex).RectW)
+            End If
+        End If
+    Next lngIndex
+
+    Call BlueprintSortDoubles(arrX, lngCount)
+
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    lngPageNo As Long, dblBottom As Double, dblTop As Double, arrX() As Double, lngCount As Long
+' Returns:       ---
+' Description:   Collects the column boundaries that actually cross one band.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintCollectBandColumns( _
+    ByVal lngPageNo As Long, _
+    ByVal dblBottom As Double, _
+    ByVal dblTop As Double, _
+    ByRef arrX() As Double, _
+    ByRef lngCount As Long)
+
+    Const MIN_OVERLAP As Double = 2#
+    Dim dblHigh As Double
+    Dim dblLow As Double
+    Dim lngIndex As Long
+
+    lngCount = 0
+    ReDim arrX(0 To 1023)
+
+    For lngIndex = 0 To m_primCount - 1
+        If m_prim(lngIndex).PageNo = lngPageNo And m_prim(lngIndex).Paint <> "n" Then
+
+            If m_prim(lngIndex).Source = "m/l" And _
+               m_prim(lngIndex).Orientation = "VERTICAL" Then
+
+                dblLow = BlueprintMaxDouble( _
+                    BlueprintMinDouble(m_prim(lngIndex).Y1, m_prim(lngIndex).Y2), dblBottom)
+                dblHigh = BlueprintMinDouble( _
+                    BlueprintMaxDouble(m_prim(lngIndex).Y1, m_prim(lngIndex).Y2), dblTop)
+
+                If dblHigh - dblLow >= MIN_OVERLAP Then
+                    Call BlueprintAddDistinct(arrX, lngCount, m_prim(lngIndex).X1)
+                End If
+
+            ElseIf m_prim(lngIndex).Source = "re" Then
+                dblLow = BlueprintMaxDouble(m_prim(lngIndex).RectY, dblBottom)
+                dblHigh = BlueprintMinDouble( _
+                    m_prim(lngIndex).RectY + m_prim(lngIndex).RectH, dblTop)
+
+                If dblHigh - dblLow >= MIN_OVERLAP Then
+                    Call BlueprintAddDistinct(arrX, lngCount, m_prim(lngIndex).RectX)
+                    Call BlueprintAddDistinct(arrX, lngCount, _
+                        m_prim(lngIndex).RectX + m_prim(lngIndex).RectW)
+                End If
+            End If
+        End If
+    Next lngIndex
+
+    Call BlueprintSortDoubles(arrX, lngCount)
+
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    lngPageNo As Long, dblLeft As Double, dblRight As Double, dblBottom As Double, dblTop As Double
+' Returns:       Long
+' Description:   Returns the index of the first text run inside one cell.
+'-------------------------------------------------------------------------------
+Private Function BlueprintFindCellText( _
+    ByVal lngPageNo As Long, _
+    ByVal dblLeft As Double, _
+    ByVal dblRight As Double, _
+    ByVal dblBottom As Double, _
+    ByVal dblTop As Double) As Long
+
+    Dim lngIndex As Long
+
+    BlueprintFindCellText = -1
+
+    For lngIndex = 0 To m_textCount - 1
+        If m_text(lngIndex).PageNo = lngPageNo Then
+            If m_text(lngIndex).X >= dblLeft - 0.5 And _
+               m_text(lngIndex).X < dblRight And _
+               m_text(lngIndex).Y >= dblBottom - 0.5 And _
+               m_text(lngIndex).Y <= dblTop Then
+
+                If Len(Trim$(m_text(lngIndex).TextValue)) > 0 Then
+                    BlueprintFindCellText = lngIndex
+                    Exit Function
+                End If
+            End If
+        End If
+    Next lngIndex
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    strText As String, strFont As String, dblSize As Double
+' Returns:       Double
+' Description:   Estimates Times-Roman or Times-Bold width so that the measured
+'                cell padding can be compared with the generator constants.
+'-------------------------------------------------------------------------------
+Private Function BlueprintEstimateWidth( _
+    ByVal strText As String, _
+    ByVal strFont As String, _
+    ByVal dblSize As Double) As Double
+
+    Dim blnBold As Boolean
+    Dim dblUnits As Double
+    Dim lngIndex As Long
+    Dim strChar As String
+
+    blnBold = (UCase$(strFont) = "/F0")
+
+    For lngIndex = 1 To Len(strText)
+        strChar = Mid$(strText, lngIndex, 1)
+
+        If blnBold Then
+            Select Case strChar
+                Case " ": dblUnits = dblUnits + 250
+                Case "I": dblUnits = dblUnits + 389
+                Case "J": dblUnits = dblUnits + 500
+                Case "M": dblUnits = dblUnits + 944
+                Case "W": dblUnits = dblUnits + 1000
+                Case "A", "D", "N", "R", "X", "Y": dblUnits = dblUnits + 722
+                Case "B", "E", "L", "T", "Z": dblUnits = dblUnits + 667
+                Case "C", "G", "H", "K", "O", "Q", "U", "V": dblUnits = dblUnits + 778
+                Case "F", "P": dblUnits = dblUnits + 611
+                Case "S": dblUnits = dblUnits + 556
+                Case "i", "l": dblUnits = dblUnits + 278
+                Case "j", "f", "t": dblUnits = dblUnits + 333
+                Case "m": dblUnits = dblUnits + 833
+                Case "w": dblUnits = dblUnits + 722
+                Case "r", "z", "s", "c": dblUnits = dblUnits + 444
+                Case "a", "g", "o", "v", "x", "y": dblUnits = dblUnits + 500
+                Case "b", "d", "e", "h", "k", "n", "p", "q", "u": dblUnits = dblUnits + 556
+                Case "0" To "9": dblUnits = dblUnits + 500
+                Case ".", ",": dblUnits = dblUnits + 250
+                Case "-": dblUnits = dblUnits + 333
+                Case "/": dblUnits = dblUnits + 278
+                Case Else: dblUnits = dblUnits + 500
+            End Select
+        Else
+            Select Case strChar
+                Case " ": dblUnits = dblUnits + 250
+                Case "I": dblUnits = dblUnits + 333
+                Case "J": dblUnits = dblUnits + 389
+                Case "M": dblUnits = dblUnits + 889
+                Case "W": dblUnits = dblUnits + 944
+                Case "A", "D", "G", "H", "K", "N", "O", "Q", "U", "V", "X", "Y": dblUnits = dblUnits + 722
+                Case "B", "C", "R": dblUnits = dblUnits + 667
+                Case "E", "L", "Z", "T": dblUnits = dblUnits + 611
+                Case "F", "P", "S": dblUnits = dblUnits + 556
+                Case "i", "j", "l", "t": dblUnits = dblUnits + 278
+                Case "f", "r": dblUnits = dblUnits + 333
+                Case "m": dblUnits = dblUnits + 778
+                Case "w": dblUnits = dblUnits + 722
+                Case "s": dblUnits = dblUnits + 389
+                Case "a", "c", "z": dblUnits = dblUnits + 444
+                Case "b", "d", "e", "g", "h", "k", "n", "o", "p", "q", "u", "v", "x", "y": dblUnits = dblUnits + 500
+                Case "0" To "9": dblUnits = dblUnits + 500
+                Case ".", ",": dblUnits = dblUnits + 250
+                Case "-": dblUnits = dblUnits + 333
+                Case "/": dblUnits = dblUnits + 278
+                Case Else: dblUnits = dblUnits + 500
+            End Select
+        End If
+    Next lngIndex
+
+    BlueprintEstimateWidth = dblUnits / 1000# * dblSize
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    lngPageObjNumber As Long
+' Returns:       String
+' Description:   Returns the /MediaBox declared for one page.
+'-------------------------------------------------------------------------------
+Private Function BlueprintPageMediaBox(ByVal lngPageObjNumber As Long) As String
+
+    Dim lngObjIndex As Long
+    Dim strBox As String
+
+    BlueprintPageMediaBox = "(not declared on the page object)"
+    lngObjIndex = BlueprintIndexOfObject(lngPageObjNumber)
+
+    If lngObjIndex < 0 Then
+        Exit Function
+    End If
+
+    strBox = BlueprintExtractBracketed(BlueprintObjectDict(lngObjIndex), "/MediaBox")
+
+    If Len(Trim$(strBox)) > 0 Then
+        BlueprintPageMediaBox = Trim$(strBox)
+    End If
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    lngPageObjNumber As Long
+' Returns:       String
+' Description:   Returns every font resource of one page with the raw and the
+'                decoded /BaseFont, so #xx serialisation stays visible.
+'-------------------------------------------------------------------------------
+Private Function BlueprintFontResources(ByVal lngPageObjNumber As Long) As String
+
+    Dim arrParts As Variant
+    Dim lngFontKey As Long
+    Dim lngIndex As Long
+    Dim lngObjIndex As Long
+    Dim lngTarget As Long
+    Dim strBase As String
+    Dim strDict As String
+    Dim strFontBlock As String
+    Dim strResult As String
+
+    BlueprintFontResources = "(no /Font resource found)"
+    lngObjIndex = BlueprintIndexOfObject(lngPageObjNumber)
+
+    If lngObjIndex < 0 Then
+        Exit Function
+    End If
+
+    strDict = BlueprintObjectDict(lngObjIndex)
+    lngFontKey = InStr(strDict, "/Font")
+
+    If lngFontKey = 0 Then
+        Exit Function
+    End If
+
+    strFontBlock = Mid$(strDict, lngFontKey, 400)
+    strFontBlock = Replace(strFontBlock, vbCr, " ")
+    strFontBlock = Replace(strFontBlock, vbLf, " ")
+    strFontBlock = Replace(strFontBlock, "<<", " ")
+    strFontBlock = Replace(strFontBlock, ">>", " ")
+
+    Do While InStr(strFontBlock, "  ") > 0
+        strFontBlock = Replace(strFontBlock, "  ", " ")
+    Loop
+
+    arrParts = Split(Trim$(strFontBlock), " ")
+
+    For lngIndex = LBound(arrParts) To UBound(arrParts)
+        If UCase$(Trim$(CStr(arrParts(lngIndex)))) = "R" And lngIndex >= 3 Then
+            lngTarget = BlueprintIndexOfObject(CLng(Val(CStr(arrParts(lngIndex - 2)))))
+
+            If lngTarget >= 0 Then
+                strBase = BlueprintValueAfterKey( _
+                    BlueprintObjectDict(lngTarget), "/BaseFont")
+                strBase = Trim$(Split(Trim$(strBase) & " ", " ")(0))
+
+                strResult = strResult & CStr(arrParts(lngIndex - 3)) & _
+                    "=raw:" & strBase & _
+                    ",decoded:" & BlueprintDecodeName(strBase) & "  "
+            End If
+        End If
+    Next lngIndex
+
+    If Len(strResult) > 0 Then
+        BlueprintFontResources = Trim$(strResult)
+    End If
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    strName As String
+' Returns:       String
+' Description:   Resolves the #xx escapes used inside PDF name objects.
+'-------------------------------------------------------------------------------
+Private Function BlueprintDecodeName(ByVal strName As String) As String
+
+    Dim lngIndex As Long
+    Dim strChar As String
+    Dim strResult As String
+
+    lngIndex = 1
+
+    Do While lngIndex <= Len(strName)
+        strChar = Mid$(strName, lngIndex, 1)
+
+        If strChar = "#" And lngIndex + 2 <= Len(strName) Then
+            strResult = strResult & Chr$(CLng("&H" & Mid$(strName, lngIndex + 1, 2)))
+            lngIndex = lngIndex + 3
+        Else
+            strResult = strResult & strChar
+            lngIndex = lngIndex + 1
+        End If
+    Loop
+
+    BlueprintDecodeName = strResult
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    ---
+' Returns:       String
+' Description:   Returns the /Producer and /Creator entries of the document.
+'-------------------------------------------------------------------------------
+Private Function BlueprintInfoDictionary() As String
+
+    Dim lngIndex As Long
+    Dim strDict As String
+    Dim strResult As String
+
+    strResult = "PRODUCER=(absent)|CREATOR=(absent)"
+
+    For lngIndex = 0 To m_objCount - 1
+        strDict = BlueprintObjectDict(lngIndex)
+
+        If InStr(strDict, "/Producer") > 0 Or InStr(strDict, "/Creator") > 0 Then
+            strResult = _
+                "PRODUCER=" & BlueprintParenValue(strDict, "/Producer") & _
+                "|CREATOR=" & BlueprintParenValue(strDict, "/Creator")
+            Exit For
+        End If
+    Next lngIndex
+
+    BlueprintInfoDictionary = strResult
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    strDict As String, strKey As String
+' Returns:       String
+' Description:   Returns the parenthesised string value of one dictionary key.
+'-------------------------------------------------------------------------------
+Private Function BlueprintParenValue( _
+    ByVal strDict As String, _
+    ByVal strKey As String) As String
+
+    Dim lngClose As Long
+    Dim lngKey As Long
+    Dim lngOpen As Long
+
+    BlueprintParenValue = "(absent)"
+    lngKey = InStr(strDict, strKey)
+
+    If lngKey = 0 Then
+        Exit Function
+    End If
+
+    lngOpen = InStr(lngKey, strDict, "(")
+
+    If lngOpen = 0 Then
+        Exit Function
+    End If
+
+    lngClose = InStr(lngOpen, strDict, ")")
+
+    If lngClose = 0 Then
+        Exit Function
+    End If
+
+    BlueprintParenValue = Mid$(strDict, lngOpen + 1, lngClose - lngOpen - 1)
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    arrValues() As Double, lngCount As Long, dblValue As Double
+' Returns:       ---
+' Description:   Appends one coordinate unless an equal one is already present.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintAddDistinct( _
+    ByRef arrValues() As Double, _
+    ByRef lngCount As Long, _
+    ByVal dblValue As Double)
+
+    Dim lngIndex As Long
+
+    For lngIndex = 0 To lngCount - 1
+        If Abs(arrValues(lngIndex) - dblValue) <= COORD_TOLERANCE Then
+            Exit Sub
+        End If
+    Next lngIndex
+
+    If lngCount > UBound(arrValues) Then
+        Exit Sub
+    End If
+
+    arrValues(lngCount) = dblValue
+    lngCount = lngCount + 1
+
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    arrValues() As Double, lngCount As Long
+' Returns:       ---
+' Description:   Sorts one coordinate list ascending.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintSortDoubles( _
+    ByRef arrValues() As Double, _
+    ByVal lngCount As Long)
+
+    Dim dblSwap As Double
+    Dim lngInner As Long
+    Dim lngOuter As Long
+
+    For lngOuter = 0 To lngCount - 2
+        For lngInner = 0 To lngCount - 2 - lngOuter
+            If arrValues(lngInner) > arrValues(lngInner + 1) Then
+                dblSwap = arrValues(lngInner)
+                arrValues(lngInner) = arrValues(lngInner + 1)
+                arrValues(lngInner + 1) = dblSwap
+            End If
+        Next lngInner
+    Next lngOuter
+
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    arrValues() As Double, lngCount As Long
+' Returns:       String
+' Description:   Formats a coordinate list as a spaced, readable line.
+'-------------------------------------------------------------------------------
+Private Function BlueprintDoubleList( _
+    ByRef arrValues() As Double, _
+    ByVal lngCount As Long) As String
+
+    Dim lngIndex As Long
+    Dim strResult As String
+
+    For lngIndex = 0 To lngCount - 1
+        strResult = strResult & BlueprintNumText(arrValues(lngIndex)) & " "
+    Next lngIndex
+
+    BlueprintDoubleList = Trim$(strResult)
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    ---
+' Returns:       Long
+' Description:   Returns the highest page number seen while walking the streams.
+'-------------------------------------------------------------------------------
+Private Function BlueprintMaxPage() As Long
+
+    Dim lngIndex As Long
+
+    For lngIndex = 0 To m_primCount - 1
+        If m_prim(lngIndex).PageNo > BlueprintMaxPage Then
+            BlueprintMaxPage = m_prim(lngIndex).PageNo
+        End If
+    Next lngIndex
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    dblLeft As Double, dblRight As Double
+' Returns:       Double
+' Description:   Returns the smaller of two values.
+'-------------------------------------------------------------------------------
+Private Function BlueprintMinDouble( _
+    ByVal dblLeft As Double, _
+    ByVal dblRight As Double) As Double
+
+    If dblLeft < dblRight Then
+        BlueprintMinDouble = dblLeft
+    Else
+        BlueprintMinDouble = dblRight
+    End If
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    dblLeft As Double, dblRight As Double
+' Returns:       Double
+' Description:   Returns the larger of two values.
+'-------------------------------------------------------------------------------
+Private Function BlueprintMaxDouble( _
+    ByVal dblLeft As Double, _
+    ByVal dblRight As Double) As Double
+
+    If dblLeft > dblRight Then
+        BlueprintMaxDouble = dblLeft
+    Else
+        BlueprintMaxDouble = dblRight
+    End If
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    lngLeft As Long, lngRight As Long
+' Returns:       Long
+' Description:   Returns the larger of two values.
+'-------------------------------------------------------------------------------
+Private Function BlueprintMaxLong( _
+    ByVal lngLeft As Long, _
+    ByVal lngRight As Long) As Long
+
+    If lngLeft > lngRight Then
+        BlueprintMaxLong = lngLeft
+    Else
+        BlueprintMaxLong = lngRight
+    End If
+
+End Function
