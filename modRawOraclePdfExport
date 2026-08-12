@@ -1,7 +1,11 @@
 Option Explicit
 
 Private Const CLASS_NAME As String = "modRawOraclePdfExport"
-' FIX41 keeps FIX40 PDF serialization unchanged; only the build signature identifies the Local-code WKN fallback bundle.
+' FIX39: parser-alignment after Blueprint V3 TEXT_SHOW_AWARE.
+' - clipped blank numeric cells serialize Oracle-style whitespace Tj runs instead of empty () Tj;
+' - page-number whitespace is emitted as its own Tj operator;
+' - WKN clipping is content-dependent and activates only when the 9 pt text exceeds the OLD Oracle clip box;
+' - WKN and Wertpapierbezeichnung keep their resolved Oracle font size instead of being shrunk again by FitFontSize.
 Private Const CONFIG_RANGE_NAME As String = "cfg_OraclePdfFormat"
 Private Const PDF_HEADER As String = "%PDF-1.4"
 Private Const PDF_PAGE_WIDTH As Double = 1368#
@@ -96,7 +100,9 @@ Private Const BOTTOM_FIELD_DEVISENKURS_INDEX As Long = 12
 Private Const ORACLE_PARSER_TARGET_X_FIRST As Double = 468#
 Private Const ORACLE_PARSER_TARGET_X_SECOND As Double = 639#
 Private Const ORACLE_PARSER_TARGET_X_TOLERANCE As Double = 0.01
-Private Const RAW_ORACLE_BUILD_SIGNATURE As String = "FIX41_WKN_LOCAL_CODE_FALLBACK"
+Private Const ORACLE_TARGET_SEPARATOR_REL_BOTTOM As Double = -4.52
+Private Const ORACLE_TARGET_SEPARATOR_REL_TOP As Double = 13.48
+Private Const RAW_ORACLE_BUILD_SIGNATURE As String = "FIX43R_OLD_GOLD_SEPARATOR_GEOMETRY"
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -216,11 +222,6 @@ Public Function GenerateRawOraclePdfFromWorksheet( _
         Err.Raise 1001, METHOD_NAME, "No transaction row pairs were found in the report worksheet."
     End If
 
-    Call WriteRawOracleWknDiagnostics( _
-        wksSource, _
-        arrTopRows, _
-        lngTradeCount)
-
     blnHasLogo = PrepareLogoImage( _
         wksSource, _
         logoPath, _
@@ -316,138 +317,6 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
-
-'-------------------------------------------------------------------------------
-' Author:        Pawel Ligezka
-' Creation date: 2026-08-12
-' Parameters:    wksSource As Excel.Worksheet, ByRef arrTopRows() As Long, lngTradeCount As Long
-' Returns:       ---
-' Description:   Prints WKN occupancy and predicted Oracle overflow-clip counts before PDF serialization.
-'-------------------------------------------------------------------------------
-Private Sub WriteRawOracleWknDiagnostics( _
-    ByVal wksSource As Excel.Worksheet, _
-    ByRef arrTopRows() As Long, _
-    ByVal lngTradeCount As Long)
-
-    Const METHOD_NAME As String = "WriteRawOracleWknDiagnostics"
-    Const WKN_CELL_X As Double = 553.52
-    Const WKN_CELL_WIDTH As Double = 40.48
-    Dim dblEffectiveRightPadding As Double
-    Dim dblFontSize As Double
-    Dim dblMeasurementFontSize As Double
-    Dim dblTextWidth As Double
-    Dim dblTextX As Double
-    Dim errorManager As New ErrorManager
-    Dim errDescription As String
-    Dim errNumber As Long
-    Dim lngAlignment As Long
-    Dim lngIndex As Long
-    Dim lngNonBlankWkn As Long
-    Dim lngPredictedWknClips As Long
-    Dim rngSource As Excel.Range
-    Dim strFont As String
-    Dim strText As String
-
-    On Error GoTo ErrorHandler
-
-    If wksSource Is Nothing Or lngTradeCount <= 0 Then
-        GoTo ExitSub
-    End If
-
-    For lngIndex = 1 To lngTradeCount
-        Set rngSource = wksSource.Cells(arrTopRows(lngIndex), 10)
-        strText = GetWorksheetDisplayText(rngSource)
-        strText = NormalizeOracleFieldDisplayText( _
-            rngSource, _
-            strText, _
-            True, _
-            TOP_FIELD_WKN_INDEX)
-
-        If Len(strText) > 0 Then
-            lngNonBlankWkn = lngNonBlankWkn + 1
-            strFont = ResolveOracleDataFontResource( _
-                strText, _
-                True, _
-                TOP_FIELD_WKN_INDEX)
-            dblFontSize = ResolveOracleDataFontSize( _
-                strText, _
-                True, _
-                TOP_FIELD_WKN_INDEX)
-            lngAlignment = ResolveOracleDataAlignment( _
-                rngSource, _
-                strText, _
-                True, _
-                TOP_FIELD_WKN_INDEX)
-            strText = ApplyOracleNumericFieldPadding( _
-                rngSource, _
-                strText, _
-                lngAlignment, _
-                True, _
-                TOP_FIELD_WKN_INDEX)
-            dblEffectiveRightPadding = ResolveOracleRightPadding( _
-                strText, _
-                True, _
-                TOP_FIELD_WKN_INDEX)
-            dblMeasurementFontSize = ResolveOracleTextMeasurementFontSize( _
-                strText, _
-                True, _
-                TOP_FIELD_WKN_INDEX, _
-                dblFontSize)
-            dblTextWidth = EstimateBase14TextWidth( _
-                strText, _
-                strFont, _
-                dblMeasurementFontSize)
-
-            Select Case lngAlignment
-                Case xlCenter
-                    dblTextX = WKN_CELL_X + _
-                        ((WKN_CELL_WIDTH - dblTextWidth) / 2#)
-                Case xlRight
-                    dblTextX = WKN_CELL_X + WKN_CELL_WIDTH - _
-                        dblEffectiveRightPadding - dblTextWidth
-                Case Else
-                    dblTextX = WKN_CELL_X + TEXT_LEFT_PADDING
-            End Select
-
-            If dblTextX < WKN_CELL_X + 0.5 Then
-                dblTextX = WKN_CELL_X + 0.5
-            End If
-
-            If ShouldUseOracleWknOverflowClip( _
-                dblTextX, _
-                dblTextWidth) Then
-
-                lngPredictedWknClips = lngPredictedWknClips + 1
-            End If
-        End If
-    Next lngIndex
-
-    Debug.Print "RAW_ORACLE_FIX41_WKN" & _
-        "|build=" & RAW_ORACLE_BUILD_SIGNATURE & _
-        "|trades=" & CStr(lngTradeCount) & _
-        "|nonBlankWkn=" & CStr(lngNonBlankWkn) & _
-        "|blankWkn=" & CStr(lngTradeCount - lngNonBlankWkn) & _
-        "|predictedWknClips=" & CStr(lngPredictedWknClips)
-
-ExitSub:
-    Set rngSource = Nothing
-    Exit Sub
-
-ErrorHandler:
-    errNumber = VBA.Err.Number
-    errDescription = VBA.Err.Description
-
-    errorManager.addError _
-        CLASS_NAME, _
-        METHOD_NAME, _
-        errNumber, _
-        errDescription, _
-        "tradeCount", _
-        lngTradeCount
-
-    errorManager.save
-    Resume ExitSub
-End Sub
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -860,7 +729,6 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
-
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-05
@@ -1808,6 +1676,7 @@ Private Function BuildOracleTransactionStructure( _
         dblTopRowTopY, _
         dblTopRowBottomY, _
         dblBottomRowBottomY, _
+        dblBottomBaseline, _
         dblSeparatorBottomY, _
         blnDrawTopBoundary, _
         blnDrawSeparatorBottom)
@@ -1836,8 +1705,6 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
-
-
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-07
@@ -2481,9 +2348,9 @@ End Function
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-07
-' Parameters:    arrTopX As Variant, arrBottomX As Variant, dblTopRowTopY As Double, dblTopRowBottomY As Double, dblBottomRowBottomY As Double, dblSeparatorBottomY As Double, blnDrawTopBoundary As Boolean, blnDrawSeparatorBottom As Boolean
+' Parameters:    arrTopX As Variant, arrBottomX As Variant, dblTopRowTopY As Double, dblTopRowBottomY As Double, dblBottomRowBottomY As Double, dblBottomBaseline As Double, dblSeparatorBottomY As Double, blnDrawTopBoundary As Boolean, blnDrawSeparatorBottom As Boolean
 ' Returns:       String
-' Description:   Draws the Oracle transaction rules with each logical separator represented once.
+' Description:   Draws the Oracle transaction rules; X=468/X=639 use the OLD transaction-relative span.
 '-------------------------------------------------------------------------------
 Private Function BuildTransactionGridStrokeContent( _
     ByVal arrTopX As Variant, _
@@ -2491,6 +2358,7 @@ Private Function BuildTransactionGridStrokeContent( _
     ByVal dblTopRowTopY As Double, _
     ByVal dblTopRowBottomY As Double, _
     ByVal dblBottomRowBottomY As Double, _
+    ByVal dblBottomBaseline As Double, _
     ByVal dblSeparatorBottomY As Double, _
     ByVal blnDrawTopBoundary As Boolean, _
     ByVal blnDrawSeparatorBottom As Boolean) As String
@@ -2522,7 +2390,9 @@ Private Function BuildTransactionGridStrokeContent( _
     strContent = strContent & BuildOracleParserSensitiveBottomVerticalLines( _
         arrBottomX, _
         dblBottomRowBottomY, _
-        dblTopRowBottomY)
+        dblTopRowBottomY, _
+        True, _
+        dblBottomBaseline)
 
     BuildTransactionGridStrokeContent = strContent
 
@@ -2539,16 +2409,16 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "topRowTopY;topRowBottomY;bottomRowBottomY;separatorBottomY", _
+        "topRowTopY;topRowBottomY;bottomRowBottomY;bottomBaseline;separatorBottomY", _
         dblTopRowTopY, _
         dblTopRowBottomY, _
         dblBottomRowBottomY, _
+        dblBottomBaseline, _
         dblSeparatorBottomY
 
     errorManager.save
     Resume ExitFunction
 End Function
-
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-06
@@ -2612,18 +2482,21 @@ End Function
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-11
-' Parameters:    arrX As Variant, dblBottomY As Double, dblTopY As Double
+' Parameters:    arrX As Variant, dblBottomY As Double, dblTopY As Double, blnUseTransactionRelativeTargetSpan As Boolean, dblBottomBaseline As Double
 ' Returns:       String
-' Description:   Draws lower/header-bottom vertical rules. X=468 and X=639 are
-'                parser-sensitive and are always emitted as standalone m/l/S.
+' Description:   Draws lower/header-bottom vertical rules. For transaction rows,
+'                X=468 and X=639 use the exact OLD relative span -4.52..13.48.
 '-------------------------------------------------------------------------------
 Private Function BuildOracleParserSensitiveBottomVerticalLines( _
     ByVal arrX As Variant, _
     ByVal dblBottomY As Double, _
     ByVal dblTopY As Double, _
-    Optional ByVal dblTargetYShift As Double = 0#) As String
+    Optional ByVal blnUseTransactionRelativeTargetSpan As Boolean = False, _
+    Optional ByVal dblBottomBaseline As Double = 0#) As String
 
     Const METHOD_NAME As String = "BuildOracleParserSensitiveBottomVerticalLines"
+    Dim dblTargetBottomY As Double
+    Dim dblTargetTopY As Double
     Dim dblX As Double
     Dim errorManager As New ErrorManager
     Dim errDescription As String
@@ -2645,10 +2518,20 @@ Private Function BuildOracleParserSensitiveBottomVerticalLines( _
         dblX = CDbl(arrX(lngIndex))
 
         If IsOracleParserTargetX(dblX) Then
+            If blnUseTransactionRelativeTargetSpan Then
+                dblTargetBottomY = _
+                    dblBottomBaseline + ORACLE_TARGET_SEPARATOR_REL_BOTTOM
+                dblTargetTopY = _
+                    dblBottomBaseline + ORACLE_TARGET_SEPARATOR_REL_TOP
+            Else
+                dblTargetBottomY = dblBottomY
+                dblTargetTopY = dblTopY
+            End If
+
             strContent = strContent & BuildOracleTargetSeparatorLineCommand( _
                 dblX, _
-                dblBottomY + dblTargetYShift, _
-                dblTopY + dblTargetYShift)
+                dblTargetBottomY, _
+                dblTargetTopY)
         Else
             strContent = strContent & BuildLineCommand( _
                 dblX, _
@@ -2673,14 +2556,15 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "bottomY;topY", _
+        "bottomY;topY;useTransactionRelativeTargetSpan;bottomBaseline", _
         dblBottomY, _
-        dblTopY
+        dblTopY, _
+        blnUseTransactionRelativeTargetSpan, _
+        dblBottomBaseline
 
     errorManager.save
     Resume ExitFunction
 End Function
-
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-11
@@ -2719,7 +2603,6 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
-
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-11
@@ -2914,7 +2797,6 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
-
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-11
@@ -2958,6 +2840,7 @@ Private Function VisibleRectangleTouchesOracleTargetX( _
 
                     If Abs(dblLeftX - dblTargetX) <= ORACLE_PARSER_TARGET_X_TOLERANCE Or _
                        Abs(dblRightX - dblTargetX) <= ORACLE_PARSER_TARGET_X_TOLERANCE Then
+
                         VisibleRectangleTouchesOracleTargetX = True
                         GoTo ExitFunction
                     End If
@@ -2985,7 +2868,6 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
-
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-11
@@ -3027,7 +2909,6 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
-
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-06
@@ -3575,6 +3456,14 @@ End Function
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-10
+' Parameters:    blnTopTransactionRow As Boolean, lngFieldIndex As Long
+' Returns:       Boolean
+' Description:   Identifies fields whose integer part uses Oracle space grouping.
+'-------------------------------------------------------------------------------
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-10
 ' Parameters:    strText As String
 ' Returns:       String
 ' Description:   Removes the integer zero before a decimal separator for
@@ -3633,14 +3522,6 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
-
-'-------------------------------------------------------------------------------
-' Author:        Pawel Ligezka
-' Creation date: 2026-08-10
-' Parameters:    blnTopTransactionRow As Boolean, lngFieldIndex As Long
-' Returns:       Boolean
-' Description:   Identifies fields whose integer part uses Oracle space grouping.
-'-------------------------------------------------------------------------------
 
 Private Function IsOracleGroupedNumericDisplayField( _
     ByVal blnTopTransactionRow As Boolean, _
@@ -6751,6 +6632,5 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
-
 
 
