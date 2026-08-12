@@ -1,0 +1,19 @@
+Hi Diana,
+thank you again for your previous feedback and for testing the files on your side.
+We have prepared a new version of the PDF and would kindly ask you to test it again with your parsing process.
+Since your last feedback, we have made a number of additional improvements to the PDF structure. These changes go beyond the visual appearance of the document and include, among other things, adjustments to the table geometry, separator construction, vector elements, text positioning and the internal structure of the PDF. Our aim is to reproduce the behaviour of the original Oracle-generated PDF as closely as possible for your parsing environment.
+PDF parsing at this level can be quite sensitive to very small structural differences, even when two documents look identical visually. We are therefore testing and refining the output step by step and are doing everything we can to meet your requirements. We appreciate your patience and your continued feedback during this process.
+Please find the updated PDF attached. Could you please test this version and let us know the result?
+If the parsing is still not fully successful, it would be extremely helpful if you could provide a little more detail about what is being extracted incorrectly:
+Are only specific fields/columns affected, for example ISIN, closing date, currency, etc., or is the parser unable to extract most/all columns?
+Is the problem present for every transaction row, or only for particular values or particular rows?
+If a value is only partially extracted, is it consistently cut off at the same position?
+If possible, could you share a screenshot or sample of the values produced by the parser for the attached PDF?
+Do you know the name/version of the parsing software or the configuration/profile used for these reports?
+Is there any documentation, specification, layout definition or parsing configuration available for this PDF import? Even general information would be very useful. If this is maintained by another technical team, any information they could provide regarding the expected PDF structure would help us considerably.
+If available, it would also be very helpful to receive an example of a PDF that is currently parsed successfully together with the corresponding extracted result. This would allow us to compare not only the visual document, but also the exact structural characteristics expected by the parser.
+Regarding the foreign currency cases discussed previously: yes, the corresponding changes will also be reflected in the PDF output. At the moment, our main priority is to reach a version that can be reliably parsed by your system. Once we have confirmed this, I will provide additional test files covering a broader range of transaction scenarios, including foreign currency transactions, transactions with fees and other variations, so that we can verify the solution against a more representative set of cases.
+Any additional information about how the parser identifies fields or table areas would help us narrow down any remaining differences and deliver a fully compatible version more quickly.
+Thank you very much for your support, patience and cooperation.
+Kind regards,
+Paweł
