@@ -31,12 +31,13 @@
 Option Explicit
 
 Private Const CLASS_NAME As String = "modOracleBlueprint"
-Private Const BLUEPRINT_VERSION As String = "V2_CLIP_AWARE"
+Private Const BLUEPRINT_VERSION As String = "V3_TEXT_SHOW_AWARE"
 
 Private Const BAND_TOLERANCE As Double = 1.5
 Private Const COORD_TOLERANCE As Double = 0.05
 Private Const MAX_PRIMITIVES As Long = 60000
 Private Const MAX_TEXTS As Long = 40000
+Private Const MAX_SHOWS As Long = 50000
 Private Const RECT_MIN_SIDE As Double = 2#
 Private Const MAX_OBJECT_NUMBER_DIGITS As Long = 9
 
@@ -77,6 +78,25 @@ Private Type tTextRun
     ClipSummary As String
 End Type
 
+Private Type tTextShow
+    PageNo As Long
+    X As Double
+    Y As Double
+    FontName As String
+    FontSize As Double
+    RawValue As String
+    DecodedValue As String
+    ShowOperator As String
+    HasStringOperand As Boolean
+    StringTokenCount As Long
+    TokenIndex As Long
+    GraphicsDepth As Long
+    ClipActive As Boolean
+    ClipOperator As String
+    ClipSetToken As Long
+    ClipSummary As String
+End Type
+
 Private Type tGraphicsState
     LineWidth As Double
     FillGray As String
@@ -97,6 +117,9 @@ Private m_primCount As Long
 
 Private m_text() As tTextRun
 Private m_textCount As Long
+
+Private m_show() As tTextShow
+Private m_showCount As Long
 
 Private m_diag() As String
 Private m_diagCount As Long
@@ -197,9 +220,11 @@ Public Sub OracleBlueprintExtract( _
 
     m_primCount = 0
     m_textCount = 0
+    m_showCount = 0
     m_diagCount = 0
     ReDim m_prim(0 To MAX_PRIMITIVES - 1)
     ReDim m_text(0 To MAX_TEXTS - 1)
+    ReDim m_show(0 To MAX_SHOWS - 1)
     ReDim m_diag(0 To 1023)
 
     Call BlueprintBuildObjectIndex
@@ -309,6 +334,7 @@ Private Sub BlueprintWriteReport( _
     Call BlueprintEmit(lngFile, "pages|" & CStr(lngPageCount))
     Call BlueprintEmit(lngFile, "primitives|" & CStr(m_primCount))
     Call BlueprintEmit(lngFile, "textRuns|" & CStr(m_textCount))
+    Call BlueprintEmit(lngFile, "textShowOps|" & CStr(m_showCount))
     Call BlueprintEmit(lngFile, "units|PDF points, origin bottom-left")
     Call BlueprintEmit(lngFile, "")
 
@@ -320,6 +346,7 @@ Private Sub BlueprintWriteReport( _
     Call BlueprintWritePrimitives(lngFile)
     Call BlueprintWriteText(lngFile)
     Call BlueprintWriteClipForensics(lngFile)
+    Call BlueprintWriteTextShowForensics(lngFile)
     On Error GoTo 0
 
     Close #lngFile
@@ -376,6 +403,7 @@ Private Sub BlueprintWalkContent( _
     Dim arrKinds() As String
     Dim arrTokens() As String
     Dim blnInText As Boolean
+    Dim blnPendingStringSeen As Boolean
     Dim dblCurX As Double
     Dim dblCurY As Double
     Dim dblLineX As Double
@@ -389,6 +417,7 @@ Private Sub BlueprintWalkContent( _
     Dim gsStack() As tGraphicsState
     Dim lngIndex As Long
     Dim lngOperandCount As Long
+    Dim lngPendingStringCount As Long
     Dim lngStackTop As Long
     Dim lngTokenCount As Long
     Dim pathBuffer() As tPrimitive
@@ -429,6 +458,8 @@ Private Sub BlueprintWalkContent( _
 
             Case "STR"
                 strPendingText = strPendingText & strToken
+                blnPendingStringSeen = True
+                lngPendingStringCount = lngPendingStringCount + 1
 
             Case "NAME"
                 strFontName = strToken
@@ -533,6 +564,8 @@ Private Sub BlueprintWalkContent( _
                         dblLineX = 0#
                         dblLineY = 0#
                         strPendingText = vbNullString
+                        blnPendingStringSeen = False
+                        lngPendingStringCount = 0
 
                     Case "ET"
                         blnInText = False
@@ -555,6 +588,24 @@ Private Sub BlueprintWalkContent( _
                         End If
 
                     Case "Tj", "TJ", "'", """"
+                        ' V3 records every text-show operator, including an
+                        ' explicit empty literal () and whitespace-only strings.
+                        ' The legacy m_text collection remains unchanged so the
+                        ' existing table/field analysis keeps identical semantics.
+                        Call BlueprintAddShow( _
+                            lngPageNo, _
+                            dblLineX, _
+                            dblLineY, _
+                            strFontName, _
+                            dblFontSize, _
+                            strPendingText, _
+                            strToken, _
+                            blnPendingStringSeen, _
+                            lngPendingStringCount, _
+                            lngIndex, _
+                            lngStackTop + 1, _
+                            gsCurrent)
+
                         If Len(strPendingText) > 0 Then
                             Call BlueprintAddText( _
                                 lngPageNo, _
@@ -569,6 +620,8 @@ Private Sub BlueprintWalkContent( _
                         End If
 
                         strPendingText = vbNullString
+                        blnPendingStringSeen = False
+                        lngPendingStringCount = 0
                 End Select
 
                 lngOperandCount = 0
@@ -832,6 +885,52 @@ Private Sub BlueprintAddText( _
     m_text(m_textCount).ClipSetToken = gsCurrent.ClipSetToken
     m_text(m_textCount).ClipSummary = gsCurrent.ClipSummary
     m_textCount = m_textCount + 1
+
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    page/position/font/raw show value/operator/string presence/state
+' Returns:       ---
+' Description:   Stores every PDF text-show operator. Unlike BlueprintAddText,
+'                this deliberately preserves () Tj and whitespace-only strings.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintAddShow( _
+    ByVal lngPageNo As Long, _
+    ByVal dblX As Double, _
+    ByVal dblY As Double, _
+    ByVal strFontName As String, _
+    ByVal dblFontSize As Double, _
+    ByVal strRawValue As String, _
+    ByVal strShowOperator As String, _
+    ByVal blnHasStringOperand As Boolean, _
+    ByVal lngStringTokenCount As Long, _
+    ByVal lngTokenIndex As Long, _
+    ByVal lngGraphicsDepth As Long, _
+    ByRef gsCurrent As tGraphicsState)
+
+    If m_showCount >= MAX_SHOWS Then
+        Exit Sub
+    End If
+
+    m_show(m_showCount).PageNo = lngPageNo
+    m_show(m_showCount).X = dblX
+    m_show(m_showCount).Y = dblY
+    m_show(m_showCount).FontName = strFontName
+    m_show(m_showCount).FontSize = dblFontSize
+    m_show(m_showCount).RawValue = strRawValue
+    m_show(m_showCount).DecodedValue = BlueprintDecodeLiteralText(strRawValue)
+    m_show(m_showCount).ShowOperator = strShowOperator
+    m_show(m_showCount).HasStringOperand = blnHasStringOperand
+    m_show(m_showCount).StringTokenCount = lngStringTokenCount
+    m_show(m_showCount).TokenIndex = lngTokenIndex
+    m_show(m_showCount).GraphicsDepth = lngGraphicsDepth
+    m_show(m_showCount).ClipActive = gsCurrent.ClipActive
+    m_show(m_showCount).ClipOperator = gsCurrent.ClipOperator
+    m_show(m_showCount).ClipSetToken = gsCurrent.ClipSetToken
+    m_show(m_showCount).ClipSummary = gsCurrent.ClipSummary
+    m_showCount = m_showCount + 1
 
 End Sub
 
@@ -2199,13 +2298,16 @@ End Sub
 '-------------------------------------------------------------------------------
 Private Sub BlueprintWriteClipForensics(ByVal lngFile As Long)
 
+    Dim blnCarriesToShow As Boolean
     Dim blnCarriesToText As Boolean
+    Dim blnDirectBeforeShow As Boolean
     Dim blnDirectBeforeText As Boolean
     Dim lngAllClip As Long
     Dim lngClipOther As Long
     Dim lngClipWN As Long
     Dim lngClipWStarN As Long
     Dim lngIndex As Long
+    Dim lngNextShow As Long
     Dim lngNextText As Long
     Dim lngPlainN As Long
     Dim lngReNTotal As Long
@@ -2250,7 +2352,8 @@ Private Sub BlueprintWriteClipForensics(ByVal lngFile As Long)
         "|clip_re_Wstar_n=" & CStr(lngClipWStarN) & _
         "|clip_other_n=" & CStr(lngClipOther) & _
         "|all_clip_subpaths=" & CStr(lngAllClip) & _
-        "|texts_with_active_clip=" & CStr(lngTextClipped))
+        "|texts_with_active_clip=" & CStr(lngTextClipped) & _
+        "|shows_with_active_clip=" & CStr(BlueprintShowClipCount()))
     Call BlueprintEmit(lngFile, "classification|PLAIN_RE_N = re ... n without W/W*. " & _
         "CLIP_RE_W_N / CLIP_RE_WSTAR_N = the same rectangle also changes the clipping path.")
     Call BlueprintEmit(lngFile, "")
@@ -2260,8 +2363,20 @@ Private Sub BlueprintWriteClipForensics(ByVal lngFile As Long)
            (m_prim(lngIndex).Paint = "n" Or Len(m_prim(lngIndex).ClipOperator) > 0) Then
 
             lngNextText = BlueprintFindNextTextForPrimitive(lngIndex)
+            lngNextShow = BlueprintFindNextShowForPrimitive(lngIndex)
             blnDirectBeforeText = False
             blnCarriesToText = False
+            blnDirectBeforeShow = False
+            blnCarriesToShow = False
+
+            If lngNextShow >= 0 Then
+                blnDirectBeforeShow = BlueprintIsLastPathBeforeShow(lngIndex, lngNextShow)
+
+                If m_show(lngNextShow).ClipActive Then
+                    blnCarriesToShow = _
+                        (m_show(lngNextShow).ClipSetToken >= m_prim(lngIndex).PaintTokenIndex)
+                End If
+            End If
 
             If lngNextText >= 0 Then
                 blnDirectBeforeText = BlueprintIsLastPathBeforeText(lngIndex, lngNextText)
@@ -2306,6 +2421,24 @@ Private Sub BlueprintWriteClipForensics(ByVal lngFile As Long)
                 strLine = strLine & "|nextText=(none)"
             End If
 
+            If lngNextShow >= 0 Then
+                strLine = strLine & _
+                    "|nextShowTok=" & CStr(m_show(lngNextShow).TokenIndex) & _
+                    "|showGap=" & CStr(m_show(lngNextShow).TokenIndex - _
+                        m_prim(lngIndex).PaintTokenIndex) & _
+                    "|directBeforeShow=" & BlueprintBoolText(blnDirectBeforeShow) & _
+                    "|clipCarriesToShow=" & BlueprintBoolText(blnCarriesToShow) & _
+                    "|nextShowClass=" & BlueprintTextShowClass(m_show(lngNextShow)) & _
+                    "|nextShowOp=" & m_show(lngNextShow).ShowOperator & _
+                    "|nextShowX=" & BlueprintNumText(m_show(lngNextShow).X) & _
+                    "|nextShowY=" & BlueprintNumText(m_show(lngNextShow).Y) & _
+                    "|nextShowFont=" & m_show(lngNextShow).FontName & _
+                    "|nextShowSize=" & BlueprintNumText(m_show(lngNextShow).FontSize) & _
+                    "|nextShowMarker=" & BlueprintVisibleMarker(m_show(lngNextShow).DecodedValue)
+            Else
+                strLine = strLine & "|nextShow=(none)"
+            End If
+
             Call BlueprintEmit(lngFile, strLine)
         End If
     Next lngIndex
@@ -2313,6 +2446,180 @@ Private Sub BlueprintWriteClipForensics(ByVal lngFile As Long)
     Call BlueprintEmit(lngFile, "")
 
 End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    lngFile As Long
+' Returns:       ---
+' Description:   Writes every text-show operator, including empty and whitespace
+'                literals that the legacy text-run list intentionally omitted.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintWriteTextShowForensics(ByVal lngFile As Long)
+
+    Dim lngEmpty As Long
+    Dim lngEmptyClip As Long
+    Dim lngIndex As Long
+    Dim lngNoString As Long
+    Dim lngNoStringClip As Long
+    Dim lngVisible As Long
+    Dim lngVisibleClip As Long
+    Dim lngWhitespace As Long
+    Dim lngWhitespaceClip As Long
+    Dim strClass As String
+    Dim strLine As String
+
+    For lngIndex = 0 To m_showCount - 1
+        strClass = BlueprintTextShowClass(m_show(lngIndex))
+
+        Select Case strClass
+            Case "EMPTY_LITERAL"
+                lngEmpty = lngEmpty + 1
+
+                If m_show(lngIndex).ClipActive Then
+                    lngEmptyClip = lngEmptyClip + 1
+                End If
+
+            Case "WHITESPACE_ONLY"
+                lngWhitespace = lngWhitespace + 1
+
+                If m_show(lngIndex).ClipActive Then
+                    lngWhitespaceClip = lngWhitespaceClip + 1
+                End If
+
+            Case "VISIBLE_TEXT"
+                lngVisible = lngVisible + 1
+
+                If m_show(lngIndex).ClipActive Then
+                    lngVisibleClip = lngVisibleClip + 1
+                End If
+
+            Case Else
+                lngNoString = lngNoString + 1
+
+                If m_show(lngIndex).ClipActive Then
+                    lngNoStringClip = lngNoStringClip + 1
+                End If
+        End Select
+    Next lngIndex
+
+    Call BlueprintEmit(lngFile, "===== SECTION 8 - TEXT SHOW FORENSICS =====")
+    Call BlueprintEmit(lngFile, _
+        "purpose|Distinguish () Tj from whitespace-only and visible text shows. " & _
+        "This is parser-sensitive even when the page looks identical.")
+    Call BlueprintEmit(lngFile, _
+        "COUNTS|showOps=" & CStr(m_showCount) & _
+        "|legacyNonEmptyTextRuns=" & CStr(m_textCount) & _
+        "|emptyLiteral=" & CStr(lngEmpty) & _
+        "|whitespaceOnly=" & CStr(lngWhitespace) & _
+        "|visibleText=" & CStr(lngVisible) & _
+        "|noStringOperand=" & CStr(lngNoString))
+    Call BlueprintEmit(lngFile, _
+        "CLIPPED_COUNTS|emptyLiteral=" & CStr(lngEmptyClip) & _
+        "|whitespaceOnly=" & CStr(lngWhitespaceClip) & _
+        "|visibleText=" & CStr(lngVisibleClip) & _
+        "|noStringOperand=" & CStr(lngNoStringClip) & _
+        "|allClippedShows=" & CStr(BlueprintShowClipCount()))
+    Call BlueprintEmit(lngFile, "")
+
+    For lngIndex = 0 To m_showCount - 1
+        strClass = BlueprintTextShowClass(m_show(lngIndex))
+
+        strLine = _
+            "SHOW|page=" & CStr(m_show(lngIndex).PageNo) & _
+            "|class=" & strClass & _
+            "|op=" & m_show(lngIndex).ShowOperator & _
+            "|x=" & BlueprintNumText(m_show(lngIndex).X) & _
+            "|y=" & BlueprintNumText(m_show(lngIndex).Y) & _
+            "|font=" & m_show(lngIndex).FontName & _
+            "|size=" & BlueprintNumText(m_show(lngIndex).FontSize) & _
+            "|token=" & CStr(m_show(lngIndex).TokenIndex) & _
+            "|gsDepth=" & CStr(m_show(lngIndex).GraphicsDepth) & _
+            "|stringTokens=" & CStr(m_show(lngIndex).StringTokenCount) & _
+            "|hasString=" & BlueprintBoolText(m_show(lngIndex).HasStringOperand) & _
+            "|rawLen=" & CStr(Len(m_show(lngIndex).RawValue)) & _
+            "|decodedLen=" & CStr(Len(m_show(lngIndex).DecodedValue)) & _
+            "|wsCount=" & CStr(BlueprintWhitespaceCount(m_show(lngIndex).DecodedValue)) & _
+            "|clipActive=" & BlueprintBoolText(m_show(lngIndex).ClipActive) & _
+            "|clipOp=" & BlueprintNullLabel(m_show(lngIndex).ClipOperator) & _
+            "|clipSetTok=" & CStr(m_show(lngIndex).ClipSetToken) & _
+            "|clipSummary=" & BlueprintSanitize(m_show(lngIndex).ClipSummary) & _
+            "|raw=" & BlueprintSanitize(m_show(lngIndex).RawValue) & _
+            "|decodedMarker=" & BlueprintVisibleMarker(m_show(lngIndex).DecodedValue)
+
+        Call BlueprintEmit(lngFile, strLine)
+    Next lngIndex
+
+    Call BlueprintEmit(lngFile, "")
+
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    lngPrimitiveIndex As Long
+' Returns:       Long
+' Description:   Finds the first later text-show operator, including () Tj.
+'-------------------------------------------------------------------------------
+Private Function BlueprintFindNextShowForPrimitive( _
+    ByVal lngPrimitiveIndex As Long) As Long
+
+    Dim lngBestToken As Long
+    Dim lngIndex As Long
+    Dim lngPaintToken As Long
+    Dim lngPageNo As Long
+
+    BlueprintFindNextShowForPrimitive = -1
+    lngBestToken = 2147483647
+    lngPageNo = m_prim(lngPrimitiveIndex).PageNo
+    lngPaintToken = m_prim(lngPrimitiveIndex).PaintTokenIndex
+
+    For lngIndex = 0 To m_showCount - 1
+        If m_show(lngIndex).PageNo = lngPageNo Then
+            If m_show(lngIndex).TokenIndex > lngPaintToken And _
+               m_show(lngIndex).TokenIndex < lngBestToken Then
+
+                lngBestToken = m_show(lngIndex).TokenIndex
+                BlueprintFindNextShowForPrimitive = lngIndex
+            End If
+        End If
+    Next lngIndex
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    lngPrimitiveIndex As Long, lngShowIndex As Long
+' Returns:       Boolean
+' Description:   TRUE when no later completed path exists before the show op.
+'-------------------------------------------------------------------------------
+Private Function BlueprintIsLastPathBeforeShow( _
+    ByVal lngPrimitiveIndex As Long, _
+    ByVal lngShowIndex As Long) As Boolean
+
+    Dim lngIndex As Long
+    Dim lngPaintToken As Long
+    Dim lngPageNo As Long
+    Dim lngShowToken As Long
+
+    BlueprintIsLastPathBeforeShow = True
+    lngPageNo = m_prim(lngPrimitiveIndex).PageNo
+    lngPaintToken = m_prim(lngPrimitiveIndex).PaintTokenIndex
+    lngShowToken = m_show(lngShowIndex).TokenIndex
+
+    For lngIndex = 0 To m_primCount - 1
+        If m_prim(lngIndex).PageNo = lngPageNo Then
+            If m_prim(lngIndex).PaintTokenIndex > lngPaintToken And _
+               m_prim(lngIndex).PaintTokenIndex < lngShowToken Then
+
+                BlueprintIsLastPathBeforeShow = False
+                Exit Function
+            End If
+        End If
+    Next lngIndex
+
+End Function
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -2732,6 +3039,233 @@ Private Function BlueprintSanitize(ByVal strValue As String) As String
     strResult = Replace(strResult, vbLf, " ")
     strResult = Replace(strResult, "|", "/")
     BlueprintSanitize = Trim$(strResult)
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    strRaw As String
+' Returns:       String
+' Description:   Decodes PDF literal-string escapes sufficiently for text-show
+'                classification. Octal escapes and escaped line continuations are
+'                handled so "\040" is correctly recognised as a space.
+'-------------------------------------------------------------------------------
+Private Function BlueprintDecodeLiteralText(ByVal strRaw As String) As String
+
+    Dim intCode As Long
+    Dim intDigit As Long
+    Dim lngIndex As Long
+    Dim lngLength As Long
+    Dim lngOctalDigits As Long
+    Dim strChar As String
+    Dim strNext As String
+    Dim strResult As String
+
+    lngLength = Len(strRaw)
+    lngIndex = 1
+
+    Do While lngIndex <= lngLength
+        strChar = Mid$(strRaw, lngIndex, 1)
+
+        If strChar <> "\" Then
+            strResult = strResult & strChar
+            lngIndex = lngIndex + 1
+        ElseIf lngIndex = lngLength Then
+            strResult = strResult & "\"
+            lngIndex = lngIndex + 1
+        Else
+            strNext = Mid$(strRaw, lngIndex + 1, 1)
+
+            Select Case strNext
+                Case "n"
+                    strResult = strResult & vbLf
+                    lngIndex = lngIndex + 2
+                Case "r"
+                    strResult = strResult & vbCr
+                    lngIndex = lngIndex + 2
+                Case "t"
+                    strResult = strResult & vbTab
+                    lngIndex = lngIndex + 2
+                Case "b"
+                    strResult = strResult & Chr$(8)
+                    lngIndex = lngIndex + 2
+                Case "f"
+                    strResult = strResult & Chr$(12)
+                    lngIndex = lngIndex + 2
+                Case "(", ")", "\"
+                    strResult = strResult & strNext
+                    lngIndex = lngIndex + 2
+                Case vbCr
+                    lngIndex = lngIndex + 2
+
+                    If lngIndex <= lngLength Then
+                        If Mid$(strRaw, lngIndex, 1) = vbLf Then
+                            lngIndex = lngIndex + 1
+                        End If
+                    End If
+                Case vbLf
+                    lngIndex = lngIndex + 2
+                Case "0" To "7"
+                    intCode = 0
+                    lngOctalDigits = 0
+
+                    Do While lngIndex + 1 <= lngLength And lngOctalDigits < 3
+                        strNext = Mid$(strRaw, lngIndex + 1, 1)
+
+                        If strNext < "0" Or strNext > "7" Then
+                            Exit Do
+                        End If
+
+                        intDigit = Asc(strNext) - Asc("0")
+                        intCode = (intCode * 8) + intDigit
+                        lngOctalDigits = lngOctalDigits + 1
+                        lngIndex = lngIndex + 1
+                    Loop
+
+                    strResult = strResult & Chr$(intCode And &HFF&)
+                    lngIndex = lngIndex + 1
+                Case Else
+                    ' PDF treats a backslash before any other character as that
+                    ' character itself for practical literal-string parsing.
+                    strResult = strResult & strNext
+                    lngIndex = lngIndex + 2
+            End Select
+        End If
+    Loop
+
+    BlueprintDecodeLiteralText = strResult
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    strValue As String
+' Returns:       Boolean
+' Description:   TRUE only when every decoded character is whitespace/control
+'                used as spacing by the Oracle Reports text stream.
+'-------------------------------------------------------------------------------
+Private Function BlueprintIsWhitespaceOnly(ByVal strValue As String) As Boolean
+
+    Dim intCode As Long
+    Dim lngIndex As Long
+
+    BlueprintIsWhitespaceOnly = False
+
+    If Len(strValue) = 0 Then
+        Exit Function
+    End If
+
+    For lngIndex = 1 To Len(strValue)
+        intCode = AscW(Mid$(strValue, lngIndex, 1))
+
+        Select Case intCode
+            Case 0, 9, 10, 12, 13, 32
+                ' accepted whitespace
+            Case Else
+                Exit Function
+        End Select
+    Next lngIndex
+
+    BlueprintIsWhitespaceOnly = True
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    strValue As String
+' Returns:       Long
+' Description:   Counts decoded whitespace/control characters.
+'-------------------------------------------------------------------------------
+Private Function BlueprintWhitespaceCount(ByVal strValue As String) As Long
+
+    Dim intCode As Long
+    Dim lngIndex As Long
+
+    For lngIndex = 1 To Len(strValue)
+        intCode = AscW(Mid$(strValue, lngIndex, 1))
+
+        Select Case intCode
+            Case 0, 9, 10, 12, 13, 32
+                BlueprintWhitespaceCount = BlueprintWhitespaceCount + 1
+        End Select
+    Next lngIndex
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    showItem As tTextShow
+' Returns:       String
+' Description:   Stable semantic class for one text-show operator.
+'-------------------------------------------------------------------------------
+Private Function BlueprintTextShowClass(ByRef showItem As tTextShow) As String
+
+    If Not showItem.HasStringOperand Then
+        BlueprintTextShowClass = "NO_STRING_OPERAND"
+    ElseIf Len(showItem.DecodedValue) = 0 Then
+        BlueprintTextShowClass = "EMPTY_LITERAL"
+    ElseIf BlueprintIsWhitespaceOnly(showItem.DecodedValue) Then
+        BlueprintTextShowClass = "WHITESPACE_ONLY"
+    Else
+        BlueprintTextShowClass = "VISIBLE_TEXT"
+    End If
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    strValue As String
+' Returns:       String
+' Description:   Makes otherwise invisible whitespace explicit in the reports.
+'-------------------------------------------------------------------------------
+Private Function BlueprintVisibleMarker(ByVal strValue As String) As String
+
+    Dim intCode As Long
+    Dim lngIndex As Long
+    Dim strChar As String
+    Dim strResult As String
+
+    For lngIndex = 1 To Len(strValue)
+        strChar = Mid$(strValue, lngIndex, 1)
+        intCode = AscW(strChar)
+
+        Select Case intCode
+            Case 0
+                strResult = strResult & "[NUL]"
+            Case 9
+                strResult = strResult & "[TAB]"
+            Case 10
+                strResult = strResult & "[LF]"
+            Case 12
+                strResult = strResult & "[FF]"
+            Case 13
+                strResult = strResult & "[CR]"
+            Case 32
+                strResult = strResult & "[SP]"
+            Case Else
+                If strChar = "|" Then
+                    strResult = strResult & "/"
+                Else
+                    strResult = strResult & strChar
+                End If
+        End Select
+
+        If Len(strResult) > 160 Then
+            strResult = Left$(strResult, 160) & "..."
+            Exit For
+        End If
+    Next lngIndex
+
+    If Len(strResult) = 0 Then
+        strResult = "(empty)"
+    End If
+
+    BlueprintVisibleMarker = strResult
 
 End Function
 
@@ -3615,7 +4149,8 @@ Private Sub BlueprintWriteDigest( _
         " (lastStep=" & m_step & ")")
     Call BlueprintEmit(lngFile, "pages|" & CStr(lngPageCount) & _
         "|primitives|" & CStr(m_primCount) & _
-        "|textRuns|" & CStr(m_textCount))
+        "|textRuns|" & CStr(m_textCount) & _
+        "|textShowOps|" & CStr(m_showCount))
 
     If IsArray(varPages) Then
         If UBound(varPages) >= 0 Then
@@ -3653,13 +4188,36 @@ Private Sub BlueprintWriteDigest( _
     Call BlueprintEmit(lngFile, "  clip any source    |" & _
         CStr(BlueprintTallyAnyClip()))
     Call BlueprintEmit(lngFile, "  clip direct->text  |" & _
-        CStr(BlueprintDirectClipBeforeTextCount()))
+        CStr(BlueprintDirectClipBeforeTextCount()) & "   (legacy non-empty text only)")
     Call BlueprintEmit(lngFile, "  clip carries->text |" & _
-        CStr(BlueprintClipCarriesToTextCount()))
+        CStr(BlueprintClipCarriesToTextCount()) & "   (legacy non-empty text only)")
     Call BlueprintEmit(lngFile, "  texts active clip  |" & _
-        CStr(BlueprintTextClipCount()))
+        CStr(BlueprintTextClipCount()) & "   (legacy non-empty text only)")
+    Call BlueprintEmit(lngFile, "  show ops total     |" & CStr(m_showCount))
+    Call BlueprintEmit(lngFile, "  show empty literal |" & _
+        CStr(BlueprintShowClassCount("EMPTY_LITERAL", False)) & _
+        "   clipped=" & CStr(BlueprintShowClassCount("EMPTY_LITERAL", True)))
+    Call BlueprintEmit(lngFile, "  show whitespace    |" & _
+        CStr(BlueprintShowClassCount("WHITESPACE_ONLY", False)) & _
+        "   clipped=" & CStr(BlueprintShowClassCount("WHITESPACE_ONLY", True)))
+    Call BlueprintEmit(lngFile, "  show visible       |" & _
+        CStr(BlueprintShowClassCount("VISIBLE_TEXT", False)) & _
+        "   clipped=" & CStr(BlueprintShowClassCount("VISIBLE_TEXT", True)))
+    Call BlueprintEmit(lngFile, "  show no string     |" & _
+        CStr(BlueprintShowClassCount("NO_STRING_OPERAND", False)) & _
+        "   clipped=" & CStr(BlueprintShowClassCount("NO_STRING_OPERAND", True)))
+    Call BlueprintEmit(lngFile, "  clip direct->show  |" & _
+        CStr(BlueprintDirectClipBeforeShowCount()))
+    Call BlueprintEmit(lngFile, "  clip carries->show |" & _
+        CStr(BlueprintClipCarriesToShowCount()))
+    Call BlueprintEmit(lngFile, "  shows active clip  |" & _
+        CStr(BlueprintShowClipCount()))
     Call BlueprintEmit(lngFile, "")
     Call BlueprintWriteDigestClipPatterns(lngFile)
+    Call BlueprintEmit(lngFile, "")
+    Call BlueprintWriteDigestShowPatterns(lngFile)
+    Call BlueprintEmit(lngFile, "")
+    Call BlueprintWriteDigestClipToShowPatterns(lngFile)
     Call BlueprintEmit(lngFile, "")
 
     '--- distinct vertical rule X --------------------------------------------
@@ -3716,14 +4274,14 @@ Private Sub BlueprintWriteDigest( _
     Call BlueprintEmit(lngFile, "")
     Call BlueprintEmit(lngFile, "CHECKLIST")
     Call BlueprintEmit(lngFile, "  1|Run on OLD and on CURRENT first; BETTER is optional behavioural evidence.")
-    Call BlueprintEmit(lngFile, "  2|Compare PLAIN_RE_N / CLIP_RE_W_N / CLIP_RE_WSTAR_N. " & _
-        "Do not treat every re n as semantically identical.")
-    Call BlueprintEmit(lngFile, "  3|Compare ROW PATTERN plain_n/clip_w_n/clip_wstar_n lists. " & _
-        "This directly tests whether Oracle declares cell clipping that CURRENT lacks.")
-    Call BlueprintEmit(lngFile, "  4|If clip counts differ, open SECTION 7 of the long report. " & _
-        "Use directBeforeText, clipCarriesToText and nextText to identify the affected fields.")
-    Call BlueprintEmit(lngFile, "  5|If clip counts match too, the missing-clip theory is rejected " & _
-        "and the next investigation remains text-stream/operator grouping.")
+    Call BlueprintEmit(lngFile, "  2|Compare SHOW EMPTY / WHITESPACE / VISIBLE counts. " & _
+        "OLD whitespace-only versus CURRENT empty-literal is parser-sensitive.")
+    Call BlueprintEmit(lngFile, "  3|Compare CLIP -> NEXT SHOW PATTERNS. " & _
+        "A clip-count delta is meaningful only after its exact X/width and next show are identified.")
+    Call BlueprintEmit(lngFile, "  4|Compare PLAIN_RE_N / CLIP_RE_W_N / CLIP_RE_WSTAR_N and ROW PATTERNS. " & _
+        "Do not infer a field merely from the total clip-count difference.")
+    Call BlueprintEmit(lngFile, "  5|For any remaining mismatch, open SECTION 7 and SECTION 8. " & _
+        "SECTION 8 preserves () Tj and whitespace-only operators that V2 discarded.")
 
     Close #lngFile
 
@@ -3879,6 +4437,241 @@ Private Function BlueprintClipCarriesToTextCount() As Long
     Next lngIndex
 
 End Function
+
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    ---
+' Returns:       Long
+' Description:   Counts all text-show operators executed with an active clip.
+'-------------------------------------------------------------------------------
+Private Function BlueprintShowClipCount() As Long
+
+    Dim lngIndex As Long
+
+    For lngIndex = 0 To m_showCount - 1
+        If m_show(lngIndex).ClipActive Then
+            BlueprintShowClipCount = BlueprintShowClipCount + 1
+        End If
+    Next lngIndex
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    strClass As String, blnClipOnly As Boolean
+' Returns:       Long
+' Description:   Counts show operations by semantic class, optionally clipped.
+'-------------------------------------------------------------------------------
+Private Function BlueprintShowClassCount( _
+    ByVal strClass As String, _
+    ByVal blnClipOnly As Boolean) As Long
+
+    Dim lngIndex As Long
+
+    For lngIndex = 0 To m_showCount - 1
+        If BlueprintTextShowClass(m_show(lngIndex)) = strClass Then
+            If Not blnClipOnly Or m_show(lngIndex).ClipActive Then
+                BlueprintShowClassCount = BlueprintShowClassCount + 1
+            End If
+        End If
+    Next lngIndex
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    ---
+' Returns:       Long
+' Description:   Counts clip rectangles that are the last completed path before
+'                the next show op, including explicit empty literals.
+'-------------------------------------------------------------------------------
+Private Function BlueprintDirectClipBeforeShowCount() As Long
+
+    Dim lngIndex As Long
+    Dim lngNextShow As Long
+
+    For lngIndex = 0 To m_primCount - 1
+        If m_prim(lngIndex).Source = "re" And _
+           Len(m_prim(lngIndex).ClipOperator) > 0 Then
+
+            lngNextShow = BlueprintFindNextShowForPrimitive(lngIndex)
+
+            If lngNextShow >= 0 Then
+                If BlueprintIsLastPathBeforeShow(lngIndex, lngNextShow) Then
+                    BlueprintDirectClipBeforeShowCount = _
+                        BlueprintDirectClipBeforeShowCount + 1
+                End If
+            End If
+        End If
+    Next lngIndex
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    ---
+' Returns:       Long
+' Description:   Counts clip rectangles whose state is active at the next show.
+'-------------------------------------------------------------------------------
+Private Function BlueprintClipCarriesToShowCount() As Long
+
+    Dim lngIndex As Long
+    Dim lngNextShow As Long
+
+    For lngIndex = 0 To m_primCount - 1
+        If m_prim(lngIndex).Source = "re" And _
+           Len(m_prim(lngIndex).ClipOperator) > 0 Then
+
+            lngNextShow = BlueprintFindNextShowForPrimitive(lngIndex)
+
+            If lngNextShow >= 0 Then
+                If m_show(lngNextShow).ClipActive And _
+                   m_show(lngNextShow).ClipSetToken >= _
+                        m_prim(lngIndex).PaintTokenIndex Then
+
+                    BlueprintClipCarriesToShowCount = _
+                        BlueprintClipCarriesToShowCount + 1
+                End If
+            End If
+        End If
+    Next lngIndex
+
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    lngFile As Long
+' Returns:       ---
+' Description:   Collapses empty/whitespace show operations by X/font/clip state.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintWriteDigestShowPatterns(ByVal lngFile As Long)
+
+    Dim arrCount() As Long
+    Dim arrKey() As String
+    Dim lngIndex As Long
+    Dim lngKeyCount As Long
+    Dim strClass As String
+    Dim strKey As String
+
+    ReDim arrKey(0 To 2047)
+    ReDim arrCount(0 To 2047)
+
+    For lngIndex = 0 To m_showCount - 1
+        strClass = BlueprintTextShowClass(m_show(lngIndex))
+
+        If strClass <> "VISIBLE_TEXT" Then
+            strKey = _
+                "class=" & strClass & _
+                "|clip=" & BlueprintBoolText(m_show(lngIndex).ClipActive) & _
+                "|op=" & m_show(lngIndex).ShowOperator & _
+                "|x=" & BlueprintNumText(m_show(lngIndex).X) & _
+                "|font=" & m_show(lngIndex).FontName & _
+                "|size=" & BlueprintNumText(m_show(lngIndex).FontSize) & _
+                "|stringTokens=" & CStr(m_show(lngIndex).StringTokenCount) & _
+                "|decodedLen=" & CStr(Len(m_show(lngIndex).DecodedValue)) & _
+                "|ws=" & CStr(BlueprintWhitespaceCount(m_show(lngIndex).DecodedValue)) & _
+                "|marker=" & BlueprintVisibleMarker(m_show(lngIndex).DecodedValue)
+
+            Call BlueprintCountKey(arrKey, arrCount, lngKeyCount, strKey)
+        End If
+    Next lngIndex
+
+    Call BlueprintEmit(lngFile, "NONVISIBLE TEXT SHOW PATTERNS  (Y collapsed)")
+
+    If lngKeyCount = 0 Then
+        Call BlueprintEmit(lngFile, "  (none)")
+    Else
+        For lngIndex = 0 To lngKeyCount - 1
+            Call BlueprintEmit(lngFile, _
+                "  SHOWPATTERN|" & arrKey(lngIndex) & _
+                "|count=" & CStr(arrCount(lngIndex)))
+        Next lngIndex
+    End If
+
+End Sub
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    lngFile As Long
+' Returns:       ---
+' Description:   Collapses clip rectangles by the next show operator. This makes
+'                a 34-clip OLD/CURRENT delta traceable to an exact X/width/field.
+'-------------------------------------------------------------------------------
+Private Sub BlueprintWriteDigestClipToShowPatterns(ByVal lngFile As Long)
+
+    Dim arrCount() As Long
+    Dim arrKey() As String
+    Dim blnCarries As Boolean
+    Dim blnDirect As Boolean
+    Dim lngIndex As Long
+    Dim lngKeyCount As Long
+    Dim lngNextShow As Long
+    Dim strKey As String
+
+    ReDim arrKey(0 To 2047)
+    ReDim arrCount(0 To 2047)
+
+    For lngIndex = 0 To m_primCount - 1
+        If m_prim(lngIndex).Source = "re" And _
+           Len(m_prim(lngIndex).ClipOperator) > 0 Then
+
+            lngNextShow = BlueprintFindNextShowForPrimitive(lngIndex)
+            blnDirect = False
+            blnCarries = False
+
+            If lngNextShow >= 0 Then
+                blnDirect = BlueprintIsLastPathBeforeShow(lngIndex, lngNextShow)
+
+                If m_show(lngNextShow).ClipActive Then
+                    blnCarries = _
+                        (m_show(lngNextShow).ClipSetToken >= _
+                         m_prim(lngIndex).PaintTokenIndex)
+                End If
+
+                strKey = _
+                    "clipX=" & BlueprintNumText(m_prim(lngIndex).RectX) & _
+                    "|clipW=" & BlueprintNumText(m_prim(lngIndex).RectW) & _
+                    "|clipH=" & BlueprintNumText(m_prim(lngIndex).RectH) & _
+                    "|class=" & BlueprintPrimitiveClass(m_prim(lngIndex)) & _
+                    "|direct=" & BlueprintBoolText(blnDirect) & _
+                    "|carries=" & BlueprintBoolText(blnCarries) & _
+                    "|showClass=" & BlueprintTextShowClass(m_show(lngNextShow)) & _
+                    "|showX=" & BlueprintNumText(m_show(lngNextShow).X) & _
+                    "|font=" & m_show(lngNextShow).FontName & _
+                    "|size=" & BlueprintNumText(m_show(lngNextShow).FontSize)
+            Else
+                strKey = _
+                    "clipX=" & BlueprintNumText(m_prim(lngIndex).RectX) & _
+                    "|clipW=" & BlueprintNumText(m_prim(lngIndex).RectW) & _
+                    "|clipH=" & BlueprintNumText(m_prim(lngIndex).RectH) & _
+                    "|class=" & BlueprintPrimitiveClass(m_prim(lngIndex)) & _
+                    "|nextShow=NONE"
+            End If
+
+            Call BlueprintCountKey(arrKey, arrCount, lngKeyCount, strKey)
+        End If
+    Next lngIndex
+
+    Call BlueprintEmit(lngFile, "CLIP -> NEXT SHOW PATTERNS  (Y collapsed)")
+
+    If lngKeyCount = 0 Then
+        Call BlueprintEmit(lngFile, "  (none)")
+    Else
+        For lngIndex = 0 To lngKeyCount - 1
+            Call BlueprintEmit(lngFile, _
+                "  CLIPSHOW|" & arrKey(lngIndex) & _
+                "|count=" & CStr(arrCount(lngIndex)))
+        Next lngIndex
+    End If
+
+End Sub
 
 
 '-------------------------------------------------------------------------------
