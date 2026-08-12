@@ -1,11 +1,7 @@
 Option Explicit
 
 Private Const CLASS_NAME As String = "modRawOraclePdfExport"
-' FIX39: parser-alignment after Blueprint V3 TEXT_SHOW_AWARE.
-' - clipped blank numeric cells serialize Oracle-style whitespace Tj runs instead of empty () Tj;
-' - page-number whitespace is emitted as its own Tj operator;
-' - WKN clipping is content-dependent and activates only when the 9 pt text exceeds the OLD Oracle clip box;
-' - WKN and Wertpapierbezeichnung keep their resolved Oracle font size instead of being shrunk again by FitFontSize.
+' FIX41 keeps FIX40 PDF serialization unchanged; only the build signature identifies the Local-code WKN fallback bundle.
 Private Const CONFIG_RANGE_NAME As String = "cfg_OraclePdfFormat"
 Private Const PDF_HEADER As String = "%PDF-1.4"
 Private Const PDF_PAGE_WIDTH As Double = 1368#
@@ -100,7 +96,7 @@ Private Const BOTTOM_FIELD_DEVISENKURS_INDEX As Long = 12
 Private Const ORACLE_PARSER_TARGET_X_FIRST As Double = 468#
 Private Const ORACLE_PARSER_TARGET_X_SECOND As Double = 639#
 Private Const ORACLE_PARSER_TARGET_X_TOLERANCE As Double = 0.01
-Private Const RAW_ORACLE_BUILD_SIGNATURE As String = "FIX38_ORACLE_CLIP_EMPTY_TEXT_RUNS"
+Private Const RAW_ORACLE_BUILD_SIGNATURE As String = "FIX41_WKN_LOCAL_CODE_FALLBACK"
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -220,6 +216,11 @@ Public Function GenerateRawOraclePdfFromWorksheet( _
         Err.Raise 1001, METHOD_NAME, "No transaction row pairs were found in the report worksheet."
     End If
 
+    Call WriteRawOracleWknDiagnostics( _
+        wksSource, _
+        arrTopRows, _
+        lngTradeCount)
+
     blnHasLogo = PrepareLogoImage( _
         wksSource, _
         logoPath, _
@@ -315,6 +316,138 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    wksSource As Excel.Worksheet, ByRef arrTopRows() As Long, lngTradeCount As Long
+' Returns:       ---
+' Description:   Prints WKN occupancy and predicted Oracle overflow-clip counts before PDF serialization.
+'-------------------------------------------------------------------------------
+Private Sub WriteRawOracleWknDiagnostics( _
+    ByVal wksSource As Excel.Worksheet, _
+    ByRef arrTopRows() As Long, _
+    ByVal lngTradeCount As Long)
+
+    Const METHOD_NAME As String = "WriteRawOracleWknDiagnostics"
+    Const WKN_CELL_X As Double = 553.52
+    Const WKN_CELL_WIDTH As Double = 40.48
+    Dim dblEffectiveRightPadding As Double
+    Dim dblFontSize As Double
+    Dim dblMeasurementFontSize As Double
+    Dim dblTextWidth As Double
+    Dim dblTextX As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngAlignment As Long
+    Dim lngIndex As Long
+    Dim lngNonBlankWkn As Long
+    Dim lngPredictedWknClips As Long
+    Dim rngSource As Excel.Range
+    Dim strFont As String
+    Dim strText As String
+
+    On Error GoTo ErrorHandler
+
+    If wksSource Is Nothing Or lngTradeCount <= 0 Then
+        GoTo ExitSub
+    End If
+
+    For lngIndex = 1 To lngTradeCount
+        Set rngSource = wksSource.Cells(arrTopRows(lngIndex), 10)
+        strText = GetWorksheetDisplayText(rngSource)
+        strText = NormalizeOracleFieldDisplayText( _
+            rngSource, _
+            strText, _
+            True, _
+            TOP_FIELD_WKN_INDEX)
+
+        If Len(strText) > 0 Then
+            lngNonBlankWkn = lngNonBlankWkn + 1
+            strFont = ResolveOracleDataFontResource( _
+                strText, _
+                True, _
+                TOP_FIELD_WKN_INDEX)
+            dblFontSize = ResolveOracleDataFontSize( _
+                strText, _
+                True, _
+                TOP_FIELD_WKN_INDEX)
+            lngAlignment = ResolveOracleDataAlignment( _
+                rngSource, _
+                strText, _
+                True, _
+                TOP_FIELD_WKN_INDEX)
+            strText = ApplyOracleNumericFieldPadding( _
+                rngSource, _
+                strText, _
+                lngAlignment, _
+                True, _
+                TOP_FIELD_WKN_INDEX)
+            dblEffectiveRightPadding = ResolveOracleRightPadding( _
+                strText, _
+                True, _
+                TOP_FIELD_WKN_INDEX)
+            dblMeasurementFontSize = ResolveOracleTextMeasurementFontSize( _
+                strText, _
+                True, _
+                TOP_FIELD_WKN_INDEX, _
+                dblFontSize)
+            dblTextWidth = EstimateBase14TextWidth( _
+                strText, _
+                strFont, _
+                dblMeasurementFontSize)
+
+            Select Case lngAlignment
+                Case xlCenter
+                    dblTextX = WKN_CELL_X + _
+                        ((WKN_CELL_WIDTH - dblTextWidth) / 2#)
+                Case xlRight
+                    dblTextX = WKN_CELL_X + WKN_CELL_WIDTH - _
+                        dblEffectiveRightPadding - dblTextWidth
+                Case Else
+                    dblTextX = WKN_CELL_X + TEXT_LEFT_PADDING
+            End Select
+
+            If dblTextX < WKN_CELL_X + 0.5 Then
+                dblTextX = WKN_CELL_X + 0.5
+            End If
+
+            If ShouldUseOracleWknOverflowClip( _
+                dblTextX, _
+                dblTextWidth) Then
+
+                lngPredictedWknClips = lngPredictedWknClips + 1
+            End If
+        End If
+    Next lngIndex
+
+    Debug.Print "RAW_ORACLE_FIX41_WKN" & _
+        "|build=" & RAW_ORACLE_BUILD_SIGNATURE & _
+        "|trades=" & CStr(lngTradeCount) & _
+        "|nonBlankWkn=" & CStr(lngNonBlankWkn) & _
+        "|blankWkn=" & CStr(lngTradeCount - lngNonBlankWkn) & _
+        "|predictedWknClips=" & CStr(lngPredictedWknClips)
+
+ExitSub:
+    Set rngSource = Nothing
+    Exit Sub
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "tradeCount", _
+        lngTradeCount
+
+    errorManager.save
+    Resume ExitSub
+End Sub
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -695,11 +828,37 @@ End Sub
 Private Function GetOracleMaxTransactionsForPage( _
     ByVal blnFirstPage As Boolean) As Long
 
+    Const METHOD_NAME As String = "GetOracleMaxTransactionsForPage"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
     If blnFirstPage Then
         GetOracleMaxTransactionsForPage = FIRST_PAGE_MAX_TRANSACTIONS
     Else
         GetOracleMaxTransactionsForPage = CONTINUATION_PAGE_MAX_TRANSACTIONS
     End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    GetOracleMaxTransactionsForPage = 0
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "firstPage", _
+        blnFirstPage
+
+    errorManager.save
+    Resume ExitFunction
 End Function
 
 '-------------------------------------------------------------------------------
@@ -2530,9 +2689,35 @@ End Function
 ' Description:   Identifies the two parser-sensitive lower-grid X coordinates.
 '-------------------------------------------------------------------------------
 Private Function IsOracleParserTargetX(ByVal dblX As Double) As Boolean
+    Const METHOD_NAME As String = "IsOracleParserTargetX"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
     IsOracleParserTargetX = _
         (Abs(dblX - ORACLE_PARSER_TARGET_X_FIRST) <= ORACLE_PARSER_TARGET_X_TOLERANCE) Or _
         (Abs(dblX - ORACLE_PARSER_TARGET_X_SECOND) <= ORACLE_PARSER_TARGET_X_TOLERANCE)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    IsOracleParserTargetX = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "x", _
+        dblX
+
+    errorManager.save
+    Resume ExitFunction
 End Function
 
 '-------------------------------------------------------------------------------
@@ -2685,17 +2870,23 @@ Private Function IsOracleTargetMlLine( _
     ByVal strLine As String, _
     ByVal dblTargetX As Double) As Boolean
 
+    Const METHOD_NAME As String = "IsOracleTargetMlLine"
     Dim arrTokens As Variant
     Dim dblX1 As Double
     Dim dblX2 As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
 
     IsOracleTargetMlLine = False
     arrTokens = Split(Trim$(strLine), " ")
 
-    If UBound(arrTokens) < 6 Then Exit Function
-    If CStr(arrTokens(2)) <> "m" Then Exit Function
-    If CStr(arrTokens(5)) <> "l" Then Exit Function
-    If CStr(arrTokens(6)) <> "S" Then Exit Function
+    If UBound(arrTokens) < 6 Then GoTo ExitFunction
+    If CStr(arrTokens(2)) <> "m" Then GoTo ExitFunction
+    If CStr(arrTokens(5)) <> "l" Then GoTo ExitFunction
+    If CStr(arrTokens(6)) <> "S" Then GoTo ExitFunction
 
     dblX1 = Val(CStr(arrTokens(0)))
     dblX2 = Val(CStr(arrTokens(3)))
@@ -2703,6 +2894,25 @@ Private Function IsOracleTargetMlLine( _
     IsOracleTargetMlLine = _
         Abs(dblX1 - dblTargetX) <= ORACLE_PARSER_TARGET_X_TOLERANCE And _
         Abs(dblX2 - dblTargetX) <= ORACLE_PARSER_TARGET_X_TOLERANCE
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    IsOracleTargetMlLine = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "targetX", _
+        dblTargetX
+
+    errorManager.save
+    Resume ExitFunction
 End Function
 
 '-------------------------------------------------------------------------------
@@ -2717,16 +2927,22 @@ Private Function VisibleRectangleTouchesOracleTargetX( _
     ByVal strLine As String, _
     ByVal dblTargetX As Double) As Boolean
 
+    Const METHOD_NAME As String = "VisibleRectangleTouchesOracleTargetX"
     Dim arrTokens As Variant
     Dim dblLeftX As Double
     Dim dblRightX As Double
     Dim dblWidth As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
     Dim lngIndex As Long
     Dim strPaintOperator As String
 
+    On Error GoTo ErrorHandler
+
     VisibleRectangleTouchesOracleTargetX = False
 
-    If InStr(1, strLine, " re ", vbBinaryCompare) = 0 Then Exit Function
+    If InStr(1, strLine, " re ", vbBinaryCompare) = 0 Then GoTo ExitFunction
 
     arrTokens = Split(Trim$(strLine), " ")
 
@@ -2743,12 +2959,31 @@ Private Function VisibleRectangleTouchesOracleTargetX( _
                     If Abs(dblLeftX - dblTargetX) <= ORACLE_PARSER_TARGET_X_TOLERANCE Or _
                        Abs(dblRightX - dblTargetX) <= ORACLE_PARSER_TARGET_X_TOLERANCE Then
                         VisibleRectangleTouchesOracleTargetX = True
-                        Exit Function
+                        GoTo ExitFunction
                     End If
                 End If
             End If
         End If
     Next lngIndex
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    VisibleRectangleTouchesOracleTargetX = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "targetX", _
+        dblTargetX
+
+    errorManager.save
+    Resume ExitFunction
 End Function
 
 '-------------------------------------------------------------------------------
@@ -2759,12 +2994,38 @@ End Function
 ' Description:   Identifies visible PDF rectangle paint/stroke operators.
 '-------------------------------------------------------------------------------
 Private Function IsVisibleRectanglePaintOperator(ByVal strOperator As String) As Boolean
+    Const METHOD_NAME As String = "IsVisibleRectanglePaintOperator"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
     Select Case strOperator
         Case "S", "s", "B", "B*", "b", "b*", "f", "f*", "F"
             IsVisibleRectanglePaintOperator = True
         Case Else
             IsVisibleRectanglePaintOperator = False
     End Select
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    IsVisibleRectanglePaintOperator = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "operator", _
+        strOperator
+
+    errorManager.save
+    Resume ExitFunction
 End Function
 
 '-------------------------------------------------------------------------------
@@ -3314,14 +3575,6 @@ End Function
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-10
-' Parameters:    blnTopTransactionRow As Boolean, lngFieldIndex As Long
-' Returns:       Boolean
-' Description:   Identifies fields whose integer part uses Oracle space grouping.
-'-------------------------------------------------------------------------------
-
-'-------------------------------------------------------------------------------
-' Author:        Pawel Ligezka
-' Creation date: 2026-08-10
 ' Parameters:    strText As String
 ' Returns:       String
 ' Description:   Removes the integer zero before a decimal separator for
@@ -3380,6 +3633,14 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-10
+' Parameters:    blnTopTransactionRow As Boolean, lngFieldIndex As Long
+' Returns:       Boolean
+' Description:   Identifies fields whose integer part uses Oracle space grouping.
+'-------------------------------------------------------------------------------
 
 Private Function IsOracleGroupedNumericDisplayField( _
     ByVal blnTopTransactionRow As Boolean, _
@@ -6490,5 +6751,6 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
+
 
 
