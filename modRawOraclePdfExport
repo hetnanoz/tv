@@ -1,7 +1,9 @@
 Option Explicit
 
 Private Const CLASS_NAME As String = "modRawOraclePdfExport"
-' FIX36: keep FIX35 geometry lock, align X=468/X=639 transaction Y-span exactly to OLD/BETTER, and simplify text serialization to BETTER-like Tf/Td/Tj.
+' FIX37B-REVIEWED: complete OLD-Oracle cell-clipping topology, with the later V19 separator finding reconciled.
+' The 600 core re W n clips and four supplemental clip families remain unchanged.
+' The experimental global -0.04 pt X=468/X=639 transaction shift is removed; original Oracle Y arrays are used.
 Private Const CONFIG_RANGE_NAME As String = "cfg_OraclePdfFormat"
 Private Const PDF_HEADER As String = "%PDF-1.4"
 Private Const PDF_PAGE_WIDTH As Double = 1368#
@@ -52,12 +54,29 @@ Private Const ORACLE_HEADER_MICRO_RULE_HEIGHT As Double = 0.08
 Private Const ORACLE_HEADER_SPECIAL_X As Double = 1188#
 Private Const ORACLE_HEADER_SPECIAL_WIDTH As Double = 130.52
 Private Const ORACLE_DETAIL_HEIGHT As Double = 9#
+Private Const ORACLE_HEADER_CLIP_BASELINE_OFFSET As Double = 0.76
+Private Const ORACLE_WKN_CLIP_X As Double = 558#
+Private Const ORACLE_WKN_CLIP_WIDTH As Double = 31.52
+Private Const ORACLE_WKN_CLIP_HEIGHT As Double = 13.52
+Private Const ORACLE_WKN_CLIP_BASELINE_OFFSET As Double = 4.52
+Private Const ORACLE_TOP_NOMINALE_CLIP_X As Double = 891#
+Private Const ORACLE_TOP_NOMINALE_CLIP_WIDTH As Double = 130.52
+Private Const ORACLE_TOP_KURS_CLIP_X As Double = 1057.52
+Private Const ORACLE_TOP_KURS_CLIP_WIDTH As Double = 117#
+Private Const ORACLE_BOTTOM_WHG_SPESEN_CLIP_X As Double = 859.52
+Private Const ORACLE_BOTTOM_WHG_SPESEN_CLIP_WIDTH As Double = 27#
+Private Const ORACLE_CLIP_ROW_NONE As Long = 0
+Private Const ORACLE_CLIP_ROW_HEADER_TOP As Long = 1
+Private Const ORACLE_CLIP_ROW_HEADER_BOTTOM As Long = 2
+Private Const ORACLE_CLIP_ROW_TRANSACTION_TOP As Long = 3
+Private Const ORACLE_CLIP_ROW_TRANSACTION_BOTTOM As Long = 4
 Private Const ORACLE_WHITE_LEVEL As Double = 1#
 Private Const ORACLE_KAUF_TEXT_X As Double = 362.24
 Private Const ORACLE_VERKAUF_TEXT_X As Double = 357#
 Private Const ORACLE_STORNO_KAUF_TEXT_X As Double = 349.14
 Private Const ORACLE_STORNO_VERKAUF_TEXT_X As Double = 343.88
 Private Const TOP_FIELD_GESCHAEFTSART_INDEX As Long = 2
+Private Const TOP_FIELD_WKN_INDEX As Long = 5
 Private Const TOP_FIELD_ISIN_INDEX As Long = 6
 Private Const TOP_FIELD_SECURITY_DESCRIPTION_INDEX As Long = 7
 Private Const TOP_FIELD_NOMINALE_INDEX As Long = 8
@@ -79,11 +98,7 @@ Private Const BOTTOM_FIELD_DEVISENKURS_INDEX As Long = 12
 Private Const ORACLE_PARSER_TARGET_X_FIRST As Double = 468#
 Private Const ORACLE_PARSER_TARGET_X_SECOND As Double = 639#
 Private Const ORACLE_PARSER_TARGET_X_TOLERANCE As Double = 0.01
-' V19 audit: OLD and BETTER use relY=-4.52..13.48 while CURRENT used -4.48..13.52.
-' Shift only transaction-row X=468/X=639 target separators down by 0.04 pt;
-' header target separators remain unchanged.
-Private Const ORACLE_TRANSACTION_TARGET_SEPARATOR_Y_SHIFT As Double = -0.04
-Private Const RAW_ORACLE_BUILD_SIGNATURE As String = "FIX36_DOXIS_TEXT_STREAM_ALIGN"
+Private Const RAW_ORACLE_BUILD_SIGNATURE As String = "FIX37B_REVIEWED_CLIP_COMPLETE"
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -985,7 +1000,8 @@ Private Function BuildSinglePageContent( _
         IIf(blnFirstPage, 540.76, 594.76), _
         True, _
         arrTopHeaderTextX, _
-        arrTopHeaderLabels)
+        arrTopHeaderLabels, _
+        lngOracleClipRow:=ORACLE_CLIP_ROW_HEADER_TOP)
 
     strContent = strContent & BuildGridRowContent( _
         wksSource, _
@@ -997,7 +1013,8 @@ Private Function BuildSinglePageContent( _
         IIf(blnFirstPage, 522.76, 576.76), _
         True, _
         arrBottomHeaderTextX, _
-        arrBottomHeaderLabels)
+        arrBottomHeaderLabels, _
+        lngOracleClipRow:=ORACLE_CLIP_ROW_HEADER_BOTTOM)
 
     lngSlot = 0
 
@@ -1034,7 +1051,8 @@ Private Function BuildSinglePageContent( _
             dblTopBaseline, _
             False, _
             varFixedTextX:=arrTopDataTextX, _
-            blnTopTransactionRow:=True)
+            blnTopTransactionRow:=True, _
+            lngOracleClipRow:=ORACLE_CLIP_ROW_TRANSACTION_TOP)
 
         strContent = strContent & BuildGridRowContent( _
             wksSource, _
@@ -1045,7 +1063,8 @@ Private Function BuildSinglePageContent( _
             dblBottomRowY, _
             dblBottomBaseline, _
             False, _
-            arrBottomDataTextX)
+            arrBottomDataTextX, _
+            lngOracleClipRow:=ORACLE_CLIP_ROW_TRANSACTION_BOTTOM)
     Next lngTradeIndex
 
     dblTableBottomY = dblSeparatorY
@@ -1105,7 +1124,7 @@ End Function
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-07
-' Parameters:    wksSource As Excel.Worksheet, lngSourceRow As Long, arrSourceColumns As Variant, arrX As Variant, arrWidths As Variant, dblRowY As Double, dblBaselineY As Double, blnHeader As Boolean, varFixedTextX As Variant, varFixedTextValues As Variant, blnTopTransactionRow As Boolean
+' Parameters:    wksSource As Excel.Worksheet, lngSourceRow As Long, arrSourceColumns As Variant, arrX As Variant, arrWidths As Variant, dblRowY As Double, dblBaselineY As Double, blnHeader As Boolean, varFixedTextX As Variant, varFixedTextValues As Variant, blnTopTransactionRow As Boolean, lngOracleClipRow As Long
 ' Returns:       String
 ' Description:   Builds text for one fixed Oracle upper or lower report row.
 '-------------------------------------------------------------------------------
@@ -1120,7 +1139,8 @@ Private Function BuildGridRowContent( _
     ByVal blnHeader As Boolean, _
     Optional ByVal varFixedTextX As Variant, _
     Optional ByVal varFixedTextValues As Variant, _
-    Optional ByVal blnTopTransactionRow As Boolean = False) As String
+    Optional ByVal blnTopTransactionRow As Boolean = False, _
+    Optional ByVal lngOracleClipRow As Long = 0) As String
 
     Const METHOD_NAME As String = "BuildGridRowContent"
     Dim errorManager As New ErrorManager
@@ -1182,7 +1202,8 @@ Private Function BuildGridRowContent( _
             dblFixedTextX, _
             strOverrideText, _
             blnTopTransactionRow, _
-            lngIndex)
+            lngIndex, _
+            lngOracleClipRow)
     Next lngIndex
 
     BuildGridRowContent = strContent
@@ -1214,7 +1235,7 @@ End Function
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-07
-' Parameters:    rngSource As Excel.Range, dblX As Double, dblY As Double, dblWidth As Double, dblHeight As Double, dblBaselineY As Double, blnHeader As Boolean, dblFixedTextX As Double, strOverrideText As String, blnTopTransactionRow As Boolean, lngFieldIndex As Long
+' Parameters:    rngSource As Excel.Range, dblX As Double, dblY As Double, dblWidth As Double, dblHeight As Double, dblBaselineY As Double, blnHeader As Boolean, dblFixedTextX As Double, strOverrideText As String, blnTopTransactionRow As Boolean, lngFieldIndex As Long, lngOracleClipRow As Long
 ' Returns:       String
 ' Description:   Builds one Oracle-compatible text run from a worksheet cell or fixed header label.
 '-------------------------------------------------------------------------------
@@ -1229,7 +1250,8 @@ Private Function BuildCellContent( _
     Optional ByVal dblFixedTextX As Double = -1#, _
     Optional ByVal strOverrideText As String = vbNullString, _
     Optional ByVal blnTopTransactionRow As Boolean = False, _
-    Optional ByVal lngFieldIndex As Long = -1) As String
+    Optional ByVal lngFieldIndex As Long = -1, _
+    Optional ByVal lngOracleClipRow As Long = 0) As String
 
     Const METHOD_NAME As String = "BuildCellContent"
     Const FONT_SIZE_TOLERANCE As Double = 0.01
@@ -1241,6 +1263,10 @@ Private Function BuildCellContent( _
     Dim dblTextX As Double
     Dim dblTextY As Double
     Dim errorManager As New ErrorManager
+    Dim lngOracleClipDepth As Long
+    Dim strClipClose As String
+    Dim strClipOpen As String
+    Dim strTextCommand As String
     Dim errDescription As String
     Dim errNumber As Long
     Dim lngAlignment As Long
@@ -1298,7 +1324,25 @@ Private Function BuildCellContent( _
             lngFieldIndex)
     End If
 
+    ' FIX37A PART 1:
+    ' OLD Oracle activates rectangular clipping before the affected text runs.
+    ' Resolve the clip stack before the empty-text exit so the structural clip
+    ' rectangle is still serialized even when the worksheet value is blank.
+    strClipOpen = BuildOracleCellClipOpenContent( _
+        lngOracleClipRow, _
+        lngFieldIndex, _
+        dblBaselineY, _
+        (Len(strText) > 0), _
+        lngOracleClipDepth)
+
+    If lngOracleClipDepth > 0 Then
+        strClipClose = BuildOracleClipCloseContent(lngOracleClipDepth)
+    End If
+
     If Len(strText) = 0 Then
+        If lngOracleClipDepth > 0 Then
+            BuildCellContent = strClipOpen & strClipClose
+        End If
         GoTo ExitFunction
     End If
 
@@ -1378,12 +1422,18 @@ Private Function BuildCellContent( _
         End If
     End If
 
-    BuildCellContent = BuildAbsoluteTextCommand( _
+    strTextCommand = BuildAbsoluteTextCommand( _
         strFont, _
         dblFontSize, _
         dblTextX, _
         dblTextY, _
         strText)
+
+    If lngOracleClipDepth > 0 Then
+        BuildCellContent = strClipOpen & strTextCommand & strClipClose
+    Else
+        BuildCellContent = strTextCommand
+    End If
 
 ExitFunction:
     Exit Function
@@ -1441,11 +1491,8 @@ Private Function BuildOracleHeaderStructure( _
         dblTableTopY - dblHeaderBottomY, _
         HEADER_GRAY_LEVEL)
 
-    strContent = strContent & BuildNoPaintRectangleCommand( _
-        ORACLE_HEADER_SPECIAL_X, _
-        dblSpecialY, _
-        ORACLE_HEADER_SPECIAL_WIDTH, _
-        ORACLE_DETAIL_HEIGHT)
+    ' FIX37A: the former header re n is now emitted as re W n around
+    ' the Stueckzinsen header text so the clipping state survives through Tj.
 
     strContent = strContent & BuildHeaderGridStrokeContent( _
         arrTopX, _
@@ -1499,18 +1546,12 @@ Private Function BuildOracleTransactionStructure( _
     ByVal blnDrawSeparatorBottom As Boolean) As String
 
     Const METHOD_NAME As String = "BuildOracleTransactionStructure"
-    Dim arrBottomDetailWidths As Variant
-    Dim arrBottomDetailX As Variant
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
-    Dim lngIndex As Long
     Dim strContent As String
 
     On Error GoTo ErrorHandler
-
-    arrBottomDetailX = GetOracleBottomDetailX()
-    arrBottomDetailWidths = GetOracleBottomDetailWidths()
 
     strContent = BuildStrokedRectangleCommand( _
         TABLE_LEFT_X, _
@@ -1518,13 +1559,11 @@ Private Function BuildOracleTransactionStructure( _
         TABLE_WIDTH, _
         dblTopRowTopY - dblSeparatorBottomY)
 
-    For lngIndex = LBound(arrBottomDetailX) To UBound(arrBottomDetailX)
-        strContent = strContent & BuildNoPaintRectangleCommand( _
-            CDbl(arrBottomDetailX(lngIndex)), _
-            dblBottomBaseline, _
-            CDbl(arrBottomDetailWidths(lngIndex)), _
-            ORACLE_DETAIL_HEIGHT)
-    Next lngIndex
+    ' FIX37A PART 1:
+    ' The nine former structure-level plain re n rectangles are intentionally
+    ' not emitted here. They are now emitted later, immediately around the
+    ' corresponding lower-row text run as q -> re W n -> BT/Tj/ET -> Q.
+    ' This preserves the OLD Oracle clipping state through text extraction.
 
     ' FIX20: Oracle draws the inter-trade separator as a filled/stroked
     ' rectangle. This reproduces the OLD B*/re vector role and the slightly
@@ -1673,28 +1712,161 @@ End Function
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
-' Creation date: 2026-08-07
-' Parameters:    dblX As Double, dblY As Double, dblWidth As Double, dblHeight As Double
+' Creation date: 2026-08-11
+' Parameters:    lngOracleClipRow As Long, lngFieldIndex As Long, dblBaselineY As Double, blnHasText As Boolean, lngClipDepth As Long
 ' Returns:       String
-' Description:   Builds one Oracle Reports rectangle path terminated without painting.
+' Description:   Opens the complete OLD-Oracle clipping stack for one logical cell.
+'                FIX37A restored the 600 core clips. FIX37B adds the supplemental
+'                WKN, Nominale, Kurs and Whg-Spesen clip families from Blueprint V2.
 '-------------------------------------------------------------------------------
-Private Function BuildNoPaintRectangleCommand( _
-    ByVal dblX As Double, _
-    ByVal dblY As Double, _
-    ByVal dblWidth As Double, _
-    ByVal dblHeight As Double) As String
+Private Function BuildOracleCellClipOpenContent( _
+    ByVal lngOracleClipRow As Long, _
+    ByVal lngFieldIndex As Long, _
+    ByVal dblBaselineY As Double, _
+    ByVal blnHasText As Boolean, _
+    ByRef lngClipDepth As Long) As String
 
-    Const METHOD_NAME As String = "BuildNoPaintRectangleCommand"
+    Const METHOD_NAME As String = "BuildOracleCellClipOpenContent"
+    Dim arrDetailWidths As Variant
+    Dim arrDetailX As Variant
+    Dim dblClipHeight As Double
+    Dim dblClipWidth As Double
+    Dim dblClipX As Double
+    Dim dblClipY As Double
     Dim errorManager As New ErrorManager
     Dim errDescription As String
     Dim errNumber As Long
+    Dim lngDetailIndex As Long
+    Dim strContent As String
 
     On Error GoTo ErrorHandler
 
-    BuildNoPaintRectangleCommand = _
-        "q 1 g 0 G " & _
-        PdfNumber(dblX) & " " & PdfNumber(dblY) & " " & _
-        PdfNumber(dblWidth) & " " & PdfNumber(dblHeight) & " re n Q" & vbCrLf
+    BuildOracleCellClipOpenContent = vbNullString
+    lngClipDepth = 0
+    lngDetailIndex = -1
+
+    Select Case lngOracleClipRow
+        Case ORACLE_CLIP_ROW_HEADER_TOP
+            If lngFieldIndex = TOP_FIELD_STUECKZINSEN_INDEX Then
+                dblClipX = ORACLE_HEADER_SPECIAL_X
+                dblClipY = dblBaselineY - ORACLE_HEADER_CLIP_BASELINE_OFFSET
+                dblClipWidth = ORACLE_HEADER_SPECIAL_WIDTH
+                dblClipHeight = ORACLE_DETAIL_HEIGHT
+
+                strContent = BuildOracleClipOpenCommand( _
+                    dblClipX, _
+                    dblClipY, _
+                    dblClipWidth, _
+                    dblClipHeight)
+
+                lngClipDepth = 1
+            End If
+
+        Case ORACLE_CLIP_ROW_TRANSACTION_TOP
+            ' FIX37B PART 2:
+            ' Blueprint V2 shows three additional OLD Oracle text-scoped clip
+            ' families in the upper transaction row. They are not grid lines;
+            ' they are inner clipping boxes around the actual text run.
+            If blnHasText Then
+                Select Case lngFieldIndex
+                    Case TOP_FIELD_WKN_INDEX
+                        dblClipX = ORACLE_WKN_CLIP_X
+                        dblClipY = dblBaselineY - ORACLE_WKN_CLIP_BASELINE_OFFSET
+                        dblClipWidth = ORACLE_WKN_CLIP_WIDTH
+                        dblClipHeight = ORACLE_WKN_CLIP_HEIGHT
+
+                    Case TOP_FIELD_NOMINALE_INDEX
+                        dblClipX = ORACLE_TOP_NOMINALE_CLIP_X
+                        dblClipY = dblBaselineY
+                        dblClipWidth = ORACLE_TOP_NOMINALE_CLIP_WIDTH
+                        dblClipHeight = ORACLE_DETAIL_HEIGHT
+
+                    Case TOP_FIELD_KURS_INDEX
+                        dblClipX = ORACLE_TOP_KURS_CLIP_X
+                        dblClipY = dblBaselineY
+                        dblClipWidth = ORACLE_TOP_KURS_CLIP_WIDTH
+                        dblClipHeight = ORACLE_DETAIL_HEIGHT
+                End Select
+
+                If dblClipWidth > 0# And dblClipHeight > 0# Then
+                    strContent = BuildOracleClipOpenCommand( _
+                        dblClipX, _
+                        dblClipY, _
+                        dblClipWidth, _
+                        dblClipHeight)
+
+                    lngClipDepth = 1
+                End If
+            End If
+
+        Case ORACLE_CLIP_ROW_TRANSACTION_BOTTOM
+            ' These mappings are exactly the nine FIX36 GetOracleBottomDetailX
+            ' rectangles. FIX37A moved them from structure-level plain re n into
+            ' text-scoped re W n without altering X, width, Y, or height.
+            Select Case lngFieldIndex
+                Case BOTTOM_FIELD_MAKLERGEBUEHREN_INDEX
+                    lngDetailIndex = 0
+                Case BOTTOM_FIELD_WHG_MAKLER_INDEX
+                    lngDetailIndex = 1
+                Case BOTTOM_FIELD_STEUERN_INDEX
+                    lngDetailIndex = 2
+                Case BOTTOM_FIELD_ABWICKLUNG_INDEX
+                    lngDetailIndex = 3
+                Case BOTTOM_FIELD_SPESEN_INDEX
+                    lngDetailIndex = 4
+                Case BOTTOM_FIELD_AMOUNT_WHG_INDEX
+                    lngDetailIndex = 5
+                Case BOTTOM_FIELD_ABRECH_AMOUNT_INDEX
+                    lngDetailIndex = 6
+                Case BOTTOM_FIELD_WHG_ABRECH_INDEX
+                    lngDetailIndex = 7
+                Case BOTTOM_FIELD_DEVISENKURS_INDEX
+                    lngDetailIndex = 8
+            End Select
+
+            If lngDetailIndex >= 0 Then
+                arrDetailX = GetOracleBottomDetailX()
+                arrDetailWidths = GetOracleBottomDetailWidths()
+
+                If UBound(arrDetailX) <> UBound(arrDetailWidths) Then
+                    Err.Raise 1024, METHOD_NAME, _
+                        "The Oracle bottom clip geometry arrays do not match."
+                End If
+
+                If lngDetailIndex > UBound(arrDetailX) Then
+                    Err.Raise 1024, METHOD_NAME, _
+                        "The Oracle bottom clip geometry index is outside the configured array."
+                End If
+
+                dblClipX = CDbl(arrDetailX(lngDetailIndex))
+                dblClipY = dblBaselineY
+                dblClipWidth = CDbl(arrDetailWidths(lngDetailIndex))
+                dblClipHeight = ORACLE_DETAIL_HEIGHT
+
+                strContent = BuildOracleClipOpenCommand( _
+                    dblClipX, _
+                    dblClipY, _
+                    dblClipWidth, _
+                    dblClipHeight)
+
+                lngClipDepth = 1
+            End If
+
+            ' The OLD blueprint contains one additional lower-row clip family:
+            ' x=859.52, width=27, height=9. It sits inside Whg Spesen and appears
+            ' only when that currency field is populated.
+            If blnHasText And lngFieldIndex = BOTTOM_FIELD_WHG_SPESEN_INDEX Then
+                strContent = strContent & BuildOracleClipOpenCommand( _
+                    ORACLE_BOTTOM_WHG_SPESEN_CLIP_X, _
+                    dblBaselineY, _
+                    ORACLE_BOTTOM_WHG_SPESEN_CLIP_WIDTH, _
+                    ORACLE_DETAIL_HEIGHT)
+
+                lngClipDepth = lngClipDepth + 1
+            End If
+    End Select
+
+    BuildOracleCellClipOpenContent = strContent
 
 ExitFunction:
     Exit Function
@@ -1702,7 +1874,63 @@ ExitFunction:
 ErrorHandler:
     errNumber = VBA.Err.Number
     errDescription = VBA.Err.Description
-    BuildNoPaintRectangleCommand = vbNullString
+    BuildOracleCellClipOpenContent = vbNullString
+    lngClipDepth = 0
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "clipRow;fieldIndex;baselineY;hasText", _
+        lngOracleClipRow, _
+        lngFieldIndex, _
+        dblBaselineY, _
+        blnHasText
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    dblX As Double, dblY As Double, dblWidth As Double, dblHeight As Double
+' Returns:       String
+' Description:   Opens one Oracle graphics-state scope and activates a
+'                non-painting rectangular clipping path with the W n operators.
+'                The caller must later close the scope with Q.
+'-------------------------------------------------------------------------------
+Private Function BuildOracleClipOpenCommand( _
+    ByVal dblX As Double, _
+    ByVal dblY As Double, _
+    ByVal dblWidth As Double, _
+    ByVal dblHeight As Double) As String
+
+    Const METHOD_NAME As String = "BuildOracleClipOpenCommand"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If dblWidth <= 0# Or dblHeight <= 0# Then
+        Err.Raise 1024, METHOD_NAME, "The Oracle clip rectangle must have a positive width and height."
+    End If
+
+    BuildOracleClipOpenCommand = _
+        "q" & vbCrLf & _
+        PdfNumber(dblX) & " " & PdfNumber(dblY) & " " & _
+        PdfNumber(dblWidth) & " " & PdfNumber(dblHeight) & _
+        " re W n" & vbCrLf
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildOracleClipOpenCommand = vbNullString
 
     errorManager.addError _
         CLASS_NAME, _
@@ -1718,6 +1946,57 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-11
+' Parameters:    lngClipDepth As Long
+' Returns:       String
+' Description:   Closes the Oracle graphics-state scopes opened for a cell.
+'                Multiple scopes remain supported for OLD-compatible nested clips.
+'-------------------------------------------------------------------------------
+Private Function BuildOracleClipCloseContent( _
+    ByVal lngClipDepth As Long) As String
+
+    Const METHOD_NAME As String = "BuildOracleClipCloseContent"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngIndex As Long
+    Dim strContent As String
+
+    On Error GoTo ErrorHandler
+
+    If lngClipDepth < 0 Then
+        Err.Raise 1024, METHOD_NAME, "The Oracle clip depth cannot be negative."
+    End If
+
+    For lngIndex = 1 To lngClipDepth
+        strContent = strContent & "Q" & vbCrLf
+    Next lngIndex
+
+    BuildOracleClipCloseContent = strContent
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    BuildOracleClipCloseContent = vbNullString
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "clipDepth", _
+        lngClipDepth
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -1859,8 +2138,7 @@ Private Function BuildTransactionGridStrokeContent( _
     strContent = strContent & BuildOracleParserSensitiveBottomVerticalLines( _
         arrBottomX, _
         dblBottomRowBottomY, _
-        dblTopRowBottomY, _
-        ORACLE_TRANSACTION_TARGET_SEPARATOR_Y_SHIFT)
+        dblTopRowBottomY)
 
     BuildTransactionGridStrokeContent = strContent
 
@@ -5983,4 +6261,5 @@ ErrorHandler:
     errorManager.save
     Resume ExitFunction
 End Function
+
 
