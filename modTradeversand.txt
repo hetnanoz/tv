@@ -531,7 +531,7 @@ Public Sub processFundZeroTemplate(fundId As String, ByRef inputArr As Variant, 
         strWknHeader = safeString(inputArr(LBound(inputArr, 1), lngWknInputColumn))
     End If
 
-    Debug.Print "TRADEVERSAND_FIX40_WKN_SOURCE" & _
+    Debug.Print "TRADEVERSAND_FIX41_WKN_SOURCE" & _
         "|fund=" & fundId & _
         "|rawOracle=" & CStr(blnRawOraclePdfEnabled) & _
         "|column=" & CStr(lngWknInputColumn) & _
@@ -539,7 +539,7 @@ Public Sub processFundZeroTemplate(fundId As String, ByRef inputArr As Variant, 
 
     If blnRawOraclePdfEnabled And lngWknInputColumn <= 0 Then
         Err.Raise 1001, METHOD_NAME, _
-            "FIX40 could not resolve the WKN source column. Input headers: " & _
+            "FIX41 could not resolve an explicit WKN or Local code source column. Input headers: " & _
             BuildInputHeaderDiagnostic(inputArr)
     End If
 
@@ -583,7 +583,7 @@ nextRow:
         GoTo ExitSub
     End If
 
-    Debug.Print "TRADEVERSAND_FIX40_WKN_POPULATION" & _
+    Debug.Print "TRADEVERSAND_FIX41_WKN_POPULATION" & _
         "|fund=" & fundId & _
         "|trades=" & CStr(tradeCount) & _
         "|nonBlankWkn=" & CStr(lngWknPopulatedCount) & _
@@ -591,7 +591,7 @@ nextRow:
 
     If blnRawOraclePdfEnabled And lngWknPopulatedCount = 0 Then
         Err.Raise 1001, METHOD_NAME, _
-            "FIX40 resolved a WKN source column but no WKN values reached worksheet column 10."
+            "FIX41 resolved a WKN/Local code source column but no values reached worksheet column 10."
     End If
 
     If ActiveWindow.View <> originalView Then ActiveWindow.View = originalView
@@ -720,7 +720,7 @@ End Sub
 ' Parameters:    ByRef inputArr As Variant
 ' Returns:       Long
 ' Description:   Resolves the WKN source column from the input header row.
-'                This avoids hard-coding a column index across input variants.
+'                Uses Local code as the controlled fallback when no explicit WKN field exists.
 '-------------------------------------------------------------------------------
 Private Function ResolveInputWknColumn(ByRef inputArr As Variant) As Long
     Const METHOD_NAME As String = "ResolveInputWknColumn"
@@ -755,6 +755,8 @@ Private Function ResolveInputWknColumn(ByRef inputArr As Variant) As Long
             lngScore = 90
         ElseIf InStr(1, strHeaderKey, "WKN", vbTextCompare) > 0 Then
             lngScore = 80
+        ElseIf strHeaderKey = "LOCALCODE" Then
+            lngScore = 70
         End If
 
         If lngScore > lngBestScore Then
