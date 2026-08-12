@@ -501,9 +501,6 @@ Public Sub processFundZeroTemplate(fundId As String, ByRef inputArr As Variant, 
     Dim suffixStr As String
     Dim maxFriendly As Long
     Dim fullPdfPath As String
-    Dim lngWknInputColumn As Long
-    Dim lngWknPopulatedCount As Long
-    Dim strWknHeader As String
 
     On Error GoTo ErrorHandler
 
@@ -523,26 +520,6 @@ Public Sub processFundZeroTemplate(fundId As String, ByRef inputArr As Variant, 
     outRow = 7
     tradeCount = 0
 
-    Set wksMacro = ThisWorkbook.Worksheets("Tradeversand")
-    blnRawOraclePdfEnabled = IsRawOraclePdfEnabled(wksMacro)
-    lngWknInputColumn = ResolveInputWknColumn(inputArr)
-
-    If lngWknInputColumn > 0 Then
-        strWknHeader = safeString(inputArr(LBound(inputArr, 1), lngWknInputColumn))
-    End If
-
-    Debug.Print "TRADEVERSAND_FIX41_WKN_SOURCE" & _
-        "|fund=" & fundId & _
-        "|rawOracle=" & CStr(blnRawOraclePdfEnabled) & _
-        "|column=" & CStr(lngWknInputColumn) & _
-        "|header=" & strWknHeader
-
-    If blnRawOraclePdfEnabled And lngWknInputColumn <= 0 Then
-        Err.Raise 1001, METHOD_NAME, _
-            "FIX41 could not resolve an explicit WKN or Local code source column. Input headers: " & _
-            BuildInputHeaderDiagnostic(inputArr)
-    End If
-
     originalView = ActiveWindow.View
     If originalView <> xlNormalView Then ActiveWindow.View = xlNormalView
 
@@ -561,18 +538,7 @@ Public Sub processFundZeroTemplate(fundId As String, ByRef inputArr As Variant, 
                 outRow = outRow + 1
             End If
 
-            Call fillTradeData( _
-                inputArr, _
-                r, _
-                wsOut, _
-                outRow, _
-                dictFondsbez, _
-                lngWknInputColumn)
-
-            If Len(Trim$(CStr(wsOut.Cells(outRow, 10).Text))) > 0 Then
-                lngWknPopulatedCount = lngWknPopulatedCount + 1
-            End If
-
+            Call fillTradeData(inputArr, r, wsOut, outRow, dictFondsbez)
             outRow = outRow + 2
 
         End If
@@ -581,17 +547,6 @@ nextRow:
 
     If tradeCount = 0 Then
         GoTo ExitSub
-    End If
-
-    Debug.Print "TRADEVERSAND_FIX41_WKN_POPULATION" & _
-        "|fund=" & fundId & _
-        "|trades=" & CStr(tradeCount) & _
-        "|nonBlankWkn=" & CStr(lngWknPopulatedCount) & _
-        "|blankWkn=" & CStr(tradeCount - lngWknPopulatedCount)
-
-    If blnRawOraclePdfEnabled And lngWknPopulatedCount = 0 Then
-        Err.Raise 1001, METHOD_NAME, _
-            "FIX41 resolved a WKN/Local code source column but no values reached worksheet column 10."
     End If
 
     If ActiveWindow.View <> originalView Then ActiveWindow.View = originalView
@@ -659,6 +614,8 @@ nextRow:
     End If
 
     fullPdfPath = pPdf & pdfName & ".pdf"
+    Set wksMacro = ThisWorkbook.Worksheets("Tradeversand")
+    blnRawOraclePdfEnabled = IsRawOraclePdfEnabled(wksMacro)
 
     If blnRawOraclePdfEnabled Then
         If Not GenerateRawOraclePdfFromWorksheet(fullPdfPath, wsOut, logoPath) Then
@@ -701,216 +658,24 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "fundId;pXlsx;pPdf;rawOraclePdfEnabled;wknInputColumn;wknHeader;wknPopulatedCount;tradeCount", _
+        "fundId;pXlsx;pPdf;rawOraclePdfEnabled", _
         fundId, _
         pXlsx, _
         pPdf, _
-        blnRawOraclePdfEnabled, _
-        lngWknInputColumn, _
-        strWknHeader, _
-        lngWknPopulatedCount, _
-        tradeCount
+        blnRawOraclePdfEnabled
     errorManager.save
     Resume ExitSub
 End Sub
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
-' Creation date: 2026-08-12
-' Parameters:    ByRef inputArr As Variant
-' Returns:       Long
-' Description:   Resolves the WKN source column from the input header row.
-'                Uses Local code as the controlled fallback when no explicit WKN field exists.
-'-------------------------------------------------------------------------------
-Private Function ResolveInputWknColumn(ByRef inputArr As Variant) As Long
-    Const METHOD_NAME As String = "ResolveInputWknColumn"
-    Dim errorManager As New ErrorManager
-    Dim errDescription As String
-    Dim errNumber As Long
-    Dim lngBestScore As Long
-    Dim lngColumn As Long
-    Dim lngHeaderRow As Long
-    Dim lngScore As Long
-    Dim strHeaderKey As String
-
-    On Error GoTo ErrorHandler
-
-    ResolveInputWknColumn = 0
-
-    If Not IsArray(inputArr) Then GoTo ExitFunction
-
-    lngHeaderRow = LBound(inputArr, 1)
-
-    For lngColumn = LBound(inputArr, 2) To UBound(inputArr, 2)
-        strHeaderKey = NormalizeInputHeaderKey( _
-            safeString(inputArr(lngHeaderRow, lngColumn)))
-        lngScore = 0
-
-        If strHeaderKey = "WKN" Then
-            lngScore = 100
-        ElseIf strHeaderKey = "WKNNR" Or _
-               strHeaderKey = "WKNNUMMER" Then
-            lngScore = 95
-        ElseIf InStr(1, strHeaderKey, "WERTPAPIERKENN", vbTextCompare) > 0 Then
-            lngScore = 90
-        ElseIf InStr(1, strHeaderKey, "WKN", vbTextCompare) > 0 Then
-            lngScore = 80
-        ElseIf strHeaderKey = "LOCALCODE" Then
-            lngScore = 70
-        End If
-
-        If lngScore > lngBestScore Then
-            lngBestScore = lngScore
-            ResolveInputWknColumn = lngColumn
-        End If
-    Next lngColumn
-
-ExitFunction:
-    Exit Function
-
-ErrorHandler:
-    errNumber = VBA.Err.Number
-    errDescription = VBA.Err.Description
-    ResolveInputWknColumn = 0
-
-    errorManager.addError _
-        CLASS_NAME, _
-        METHOD_NAME, _
-        errNumber, _
-        errDescription
-
-    errorManager.save
-    Resume ExitFunction
-End Function
-
-'-------------------------------------------------------------------------------
-' Author:        Pawel Ligezka
-' Creation date: 2026-08-12
-' Parameters:    ByRef inputArr As Variant
-' Returns:       String
-' Description:   Builds a compact non-sensitive header list for WKN diagnostics.
-'-------------------------------------------------------------------------------
-Private Function BuildInputHeaderDiagnostic(ByRef inputArr As Variant) As String
-    Const METHOD_NAME As String = "BuildInputHeaderDiagnostic"
-    Const MAX_DIAGNOSTIC_LENGTH As Long = 1800
-    Dim errorManager As New ErrorManager
-    Dim errDescription As String
-    Dim errNumber As Long
-    Dim lngColumn As Long
-    Dim lngHeaderRow As Long
-    Dim strDiagnostic As String
-    Dim strHeader As String
-
-    On Error GoTo ErrorHandler
-
-    BuildInputHeaderDiagnostic = vbNullString
-
-    If Not IsArray(inputArr) Then
-        BuildInputHeaderDiagnostic = "<input is not an array>"
-        GoTo ExitFunction
-    End If
-
-    lngHeaderRow = LBound(inputArr, 1)
-
-    For lngColumn = LBound(inputArr, 2) To UBound(inputArr, 2)
-        strHeader = safeString(inputArr(lngHeaderRow, lngColumn))
-
-        If Len(strDiagnostic) > 0 Then
-            strDiagnostic = strDiagnostic & ";"
-        End If
-
-        strDiagnostic = strDiagnostic & _
-            CStr(lngColumn) & "=" & strHeader
-
-        If Len(strDiagnostic) >= MAX_DIAGNOSTIC_LENGTH Then
-            strDiagnostic = Left$(strDiagnostic, MAX_DIAGNOSTIC_LENGTH) & "..."
-            Exit For
-        End If
-    Next lngColumn
-
-    BuildInputHeaderDiagnostic = strDiagnostic
-
-ExitFunction:
-    Exit Function
-
-ErrorHandler:
-    errNumber = VBA.Err.Number
-    errDescription = VBA.Err.Description
-    BuildInputHeaderDiagnostic = "<header diagnostic unavailable>"
-
-    errorManager.addError _
-        CLASS_NAME, _
-        METHOD_NAME, _
-        errNumber, _
-        errDescription
-
-    errorManager.save
-    Resume ExitFunction
-End Function
-
-'-------------------------------------------------------------------------------
-' Author:        Pawel Ligezka
-' Creation date: 2026-08-12
-' Parameters:    strHeader As String
-' Returns:       String
-' Description:   Normalizes an input header for robust WKN-column detection.
-'-------------------------------------------------------------------------------
-Private Function NormalizeInputHeaderKey(ByVal strHeader As String) As String
-    Const METHOD_NAME As String = "NormalizeInputHeaderKey"
-    Dim errorManager As New ErrorManager
-    Dim errDescription As String
-    Dim errNumber As Long
-    Dim strKey As String
-
-    On Error GoTo ErrorHandler
-
-    strKey = UCase$(Trim$(strHeader))
-    strKey = Replace(strKey, " ", vbNullString)
-    strKey = Replace(strKey, vbTab, vbNullString)
-    strKey = Replace(strKey, "-", vbNullString)
-    strKey = Replace(strKey, "_", vbNullString)
-    strKey = Replace(strKey, ".", vbNullString)
-    strKey = Replace(strKey, "/", vbNullString)
-    strKey = Replace(strKey, "\", vbNullString)
-    strKey = Replace(strKey, "(", vbNullString)
-    strKey = Replace(strKey, ")", vbNullString)
-
-    NormalizeInputHeaderKey = strKey
-
-ExitFunction:
-    Exit Function
-
-ErrorHandler:
-    errNumber = VBA.Err.Number
-    errDescription = VBA.Err.Description
-    NormalizeInputHeaderKey = UCase$(Trim$(strHeader))
-
-    errorManager.addError _
-        CLASS_NAME, _
-        METHOD_NAME, _
-        errNumber, _
-        errDescription, _
-        "header", _
-        strHeader
-
-    errorManager.save
-    Resume ExitFunction
-End Function
-
-'-------------------------------------------------------------------------------
-' Author:        Pawel Ligezka
 ' Creation date: 2026-08-04
-' Parameters:    ByRef inputArr As Variant, inR As Long, wsOut As Excel.Worksheet, outR As Long, ByRef dictFondsbez As Object, Optional lngResolvedWknInputColumn As Long = 0
+' Parameters:    ByRef inputArr As Variant, inR As Long, wsOut As Excel.Worksheet, outR As Long, ByRef dictFondsbez As Object
 ' Returns:       ---
 ' Description:   Writes one transaction block to the fund report worksheet.
 '-------------------------------------------------------------------------------
-Public Sub fillTradeData( _
-    ByRef inputArr As Variant, _
-    inR As Long, _
-    wsOut As Excel.Worksheet, _
-    outR As Long, _
-    ByRef dictFondsbez As Object, _
-    Optional ByVal lngResolvedWknInputColumn As Long = 0)
+
+Public Sub fillTradeData(ByRef inputArr As Variant, inR As Long, wsOut As Excel.Worksheet, outR As Long, ByRef dictFondsbez As Object)
     Const METHOD_NAME As String = "fillTradeData"
     Dim errorManager As New ErrorManager
     Dim errDescription As String
@@ -933,8 +698,6 @@ Public Sub fillTradeData( _
     Dim depotnrKey As String
     Dim steuernVal As Double
     Dim steuernWhg As String
-    Dim lngWknInputColumn As Long
-    Dim wknStr As String
 
     On Error GoTo ErrorHandler
 
@@ -1015,25 +778,7 @@ Public Sub fillTradeData( _
     wsOut.Cells(outR, 9).NumberFormat = "dd-mm-yy"
     wsOut.Cells(outR, 9).HorizontalAlignment = xlCenter
 
-    lngWknInputColumn = lngResolvedWknInputColumn
-
-    If lngWknInputColumn <= 0 Then
-        lngWknInputColumn = ResolveInputWknColumn(inputArr)
-    End If
-
-    wknStr = vbNullString
-
-    If lngWknInputColumn > 0 Then
-        wknStr = Trim$(safeString(inputArr(inR, lngWknInputColumn)))
-
-        If Left$(wknStr, 1) = "'" Then
-            wknStr = Mid$(wknStr, 2)
-        End If
-    End If
-
-    wsOut.Cells(outR, 10).NumberFormat = "@"
-    wsOut.Cells(outR, 10).Value = wknStr
-    wsOut.Cells(outR, 10).ShrinkToFit = False
+    wsOut.Cells(outR, 10).Value = ""
 
     wsOut.Cells(outR, 11).Value = "'" & safeString(inputArr(inR, 11))
     wsOut.Cells(outR, 11).ShrinkToFit = False
@@ -1281,10 +1026,9 @@ ErrorHandler:
         METHOD_NAME, _
         errNumber, _
         errDescription, _
-        "inR;outR;wknInputColumn", _
+        "inR;outR", _
         inR, _
-        outR, _
-        lngWknInputColumn
+        outR
     errorManager.save
     Resume ExitSub
 End Sub
@@ -3418,5 +3162,4 @@ ErrorHandler:
     errorManager.save
     Resume ExitSub
 End Sub
-
 
