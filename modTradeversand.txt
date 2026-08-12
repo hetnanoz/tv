@@ -674,6 +674,111 @@ End Sub
 ' Returns:       ---
 ' Description:   Writes one transaction block to the fund report worksheet.
 '-------------------------------------------------------------------------------
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    ByRef inputArr As Variant
+' Returns:       Long
+' Description:   Resolves the WKN source column from the input header row.
+'                This avoids hard-coding a column index across input variants.
+'-------------------------------------------------------------------------------
+Private Function ResolveInputWknColumn(ByRef inputArr As Variant) As Long
+    Const METHOD_NAME As String = "ResolveInputWknColumn"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim lngColumn As Long
+    Dim lngHeaderRow As Long
+    Dim strHeaderKey As String
+
+    On Error GoTo ErrorHandler
+
+    ResolveInputWknColumn = 0
+
+    If Not IsArray(inputArr) Then GoTo ExitFunction
+
+    lngHeaderRow = LBound(inputArr, 1)
+
+    For lngColumn = LBound(inputArr, 2) To UBound(inputArr, 2)
+        strHeaderKey = NormalizeInputHeaderKey( _
+            safeString(inputArr(lngHeaderRow, lngColumn)))
+
+        If strHeaderKey = "WKN" Or _
+           InStr(1, strHeaderKey, "WERTPAPIERKENN", vbTextCompare) > 0 Then
+
+            ResolveInputWknColumn = lngColumn
+            Exit For
+        End If
+    Next lngColumn
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ResolveInputWknColumn = 0
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    strHeader As String
+' Returns:       String
+' Description:   Normalizes an input header for robust WKN-column detection.
+'-------------------------------------------------------------------------------
+Private Function NormalizeInputHeaderKey(ByVal strHeader As String) As String
+    Const METHOD_NAME As String = "NormalizeInputHeaderKey"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+    Dim strKey As String
+
+    On Error GoTo ErrorHandler
+
+    strKey = UCase$(Trim$(strHeader))
+    strKey = Replace(strKey, " ", vbNullString)
+    strKey = Replace(strKey, vbTab, vbNullString)
+    strKey = Replace(strKey, "-", vbNullString)
+    strKey = Replace(strKey, "_", vbNullString)
+    strKey = Replace(strKey, ".", vbNullString)
+    strKey = Replace(strKey, "/", vbNullString)
+    strKey = Replace(strKey, "\", vbNullString)
+    strKey = Replace(strKey, "(", vbNullString)
+    strKey = Replace(strKey, ")", vbNullString)
+
+    NormalizeInputHeaderKey = strKey
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    NormalizeInputHeaderKey = UCase$(Trim$(strHeader))
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "header", _
+        strHeader
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
 Public Sub fillTradeData(ByRef inputArr As Variant, inR As Long, wsOut As Excel.Worksheet, outR As Long, ByRef dictFondsbez As Object)
     Const METHOD_NAME As String = "fillTradeData"
     Dim errorManager As New ErrorManager
@@ -697,6 +802,8 @@ Public Sub fillTradeData(ByRef inputArr As Variant, inR As Long, wsOut As Excel.
     Dim depotnrKey As String
     Dim steuernVal As Double
     Dim steuernWhg As String
+    Dim lngWknInputColumn As Long
+    Dim wknStr As String
 
     On Error GoTo ErrorHandler
 
@@ -777,7 +884,26 @@ Public Sub fillTradeData(ByRef inputArr As Variant, inR As Long, wsOut As Excel.
     wsOut.Cells(outR, 9).NumberFormat = "dd-mm-yy"
     wsOut.Cells(outR, 9).HorizontalAlignment = xlCenter
 
-    wsOut.Cells(outR, 10).Value = ""
+    ' FIX39:
+    ' The previous generator hard-blanked WKN, which explains the exact
+    ' Blueprint V3 deficit of 66 visible text-show operations and the missing
+    ' 34 content-dependent WKN clips. Resolve WKN from the input header instead
+    ' of guessing a fixed column number; if no WKN-like header exists, preserve
+    ' the former blank behavior.
+    lngWknInputColumn = ResolveInputWknColumn(inputArr)
+    wknStr = vbNullString
+
+    If lngWknInputColumn > 0 Then
+        wknStr = safeString(inputArr(inR, lngWknInputColumn))
+    End If
+
+    wsOut.Cells(outR, 10).NumberFormat = "@"
+    If Len(wknStr) > 0 Then
+        wsOut.Cells(outR, 10).Value = "'" & wknStr
+    Else
+        wsOut.Cells(outR, 10).Value = ""
+    End If
+    wsOut.Cells(outR, 10).ShrinkToFit = False
 
     wsOut.Cells(outR, 11).Value = "'" & safeString(inputArr(inR, 11))
     wsOut.Cells(outR, 11).ShrinkToFit = False
