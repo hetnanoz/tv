@@ -1,9 +1,9 @@
 Option Explicit
 
 Private Const CLASS_NAME As String = "modRawOraclePdfExport"
-' FIX37B-REVIEWED: complete OLD-Oracle cell-clipping topology, with the later V19 separator finding reconciled.
-' The 600 core re W n clips and four supplemental clip families remain unchanged.
-' The experimental global -0.04 pt X=468/X=639 transaction shift is removed; original Oracle Y arrays are used.
+' FIX38: preserve FIX37B-reviewed geometry and restore Oracle text-run occupancy inside active cell clips.
+' Empty values in already-declared Oracle clip cells now serialize an empty BT/Tf/Td/()Tj/ET run before Q.
+' WKN remains content-dependent: no synthetic WKN clip/text is emitted when the redesigned input leaves WKN blank.
 Private Const CONFIG_RANGE_NAME As String = "cfg_OraclePdfFormat"
 Private Const PDF_HEADER As String = "%PDF-1.4"
 Private Const PDF_PAGE_WIDTH As Double = 1368#
@@ -98,7 +98,7 @@ Private Const BOTTOM_FIELD_DEVISENKURS_INDEX As Long = 12
 Private Const ORACLE_PARSER_TARGET_X_FIRST As Double = 468#
 Private Const ORACLE_PARSER_TARGET_X_SECOND As Double = 639#
 Private Const ORACLE_PARSER_TARGET_X_TOLERANCE As Double = 0.01
-Private Const RAW_ORACLE_BUILD_SIGNATURE As String = "FIX37B_REVIEWED_CLIP_COMPLETE"
+Private Const RAW_ORACLE_BUILD_SIGNATURE As String = "FIX38_ORACLE_CLIP_EMPTY_TEXT_RUNS"
 
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
@@ -1339,10 +1339,19 @@ Private Function BuildCellContent( _
         strClipClose = BuildOracleClipCloseContent(lngOracleClipDepth)
     End If
 
-    If Len(strText) = 0 Then
-        If lngOracleClipDepth > 0 Then
-            BuildCellContent = strClipOpen & strClipClose
-        End If
+    ' FIX38:
+    ' OLD Oracle keeps a text-show operation directly inside every active
+    ' text-scoped clip, even when the logical field is blank.  FIX37B emitted
+    ' q -> re W n -> Q for such cells, which made Blueprint V2 report
+    ' clipDirectToText/textsActiveClip deficits while the page still looked
+    ' identical.  Keep truly unclipped blank cells silent, but let blank
+    ' clipped cells continue through the normal text-placement path so they
+    ' serialize as BT ... Td () Tj ET immediately before Q.
+    '
+    ' WKN is deliberately not synthesized here.  Its supplemental clip remains
+    ' content-dependent in BuildOracleCellClipOpenContent, matching the project
+    ' policy that redesigned input files do not populate WKN.
+    If Len(strText) = 0 And lngOracleClipDepth = 0 Then
         GoTo ExitFunction
     End If
 
