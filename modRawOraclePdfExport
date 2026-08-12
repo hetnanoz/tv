@@ -1,9 +1,11 @@
 Option Explicit
 
 Private Const CLASS_NAME As String = "modRawOraclePdfExport"
-' FIX38: preserve FIX37B-reviewed geometry and restore Oracle text-run occupancy inside active cell clips.
-' Empty values in already-declared Oracle clip cells now serialize an empty BT/Tf/Td/()Tj/ET run before Q.
-' WKN remains content-dependent: no synthetic WKN clip/text is emitted when the redesigned input leaves WKN blank.
+' FIX39: parser-alignment after Blueprint V3 TEXT_SHOW_AWARE.
+' - clipped blank numeric cells serialize Oracle-style whitespace Tj runs instead of empty () Tj;
+' - page-number whitespace is emitted as its own Tj operator;
+' - WKN clipping is content-dependent and activates only when the 9 pt text exceeds the OLD Oracle clip box;
+' - WKN and Wertpapierbezeichnung keep their resolved Oracle font size instead of being shrunk again by FitFontSize.
 Private Const CONFIG_RANGE_NAME As String = "cfg_OraclePdfFormat"
 Private Const PDF_HEADER As String = "%PDF-1.4"
 Private Const PDF_PAGE_WIDTH As Double = 1368#
@@ -1335,24 +1337,24 @@ Private Function BuildCellContent( _
         (Len(strText) > 0), _
         lngOracleClipDepth)
 
-    If lngOracleClipDepth > 0 Then
-        strClipClose = BuildOracleClipCloseContent(lngOracleClipDepth)
-    End If
-
-    ' FIX38:
-    ' OLD Oracle keeps a text-show operation directly inside every active
-    ' text-scoped clip, even when the logical field is blank.  FIX37B emitted
-    ' q -> re W n -> Q for such cells, which made Blueprint V2 report
-    ' clipDirectToText/textsActiveClip deficits while the page still looked
-    ' identical.  Keep truly unclipped blank cells silent, but let blank
-    ' clipped cells continue through the normal text-placement path so they
-    ' serialize as BT ... Td () Tj ET immediately before Q.
+    ' FIX39:
+    ' Blueprint V3 proved that OLD Oracle does not use empty literals for the
+    ' blank numeric fields that sit inside active cell clips. It emits a
+    ' whitespace-only Tj run (five spaces at 9 pt), which is parser-visible
+    ' even though the page looks blank. Preserve that occupancy exactly.
     '
-    ' WKN is deliberately not synthesized here.  Its supplemental clip remains
-    ' content-dependent in BuildOracleCellClipOpenContent, matching the project
-    ' policy that redesigned input files do not populate WKN.
+    ' Truly unclipped blank cells remain silent. WKN is not synthesized here;
+    ' it is restored in modTradeversand from the input header and its clip is
+    ' decided later from the actual rendered width.
     If Len(strText) = 0 And lngOracleClipDepth = 0 Then
         GoTo ExitFunction
+    End If
+
+    If Len(strText) = 0 And lngOracleClipDepth > 0 Then
+        strText = ResolveOracleBlankClipText( _
+            blnHeader, _
+            blnTopTransactionRow, _
+            lngFieldIndex)
     End If
 
     dblTextY = dblBaselineY
@@ -1423,6 +1425,63 @@ Private Function BuildCellContent( _
         If dblTextX < dblX + 0.5 Then
             dblTextX = dblX + 0.5
         End If
+    End If
+
+    ' FIX39 WKN overflow rule:
+    ' OLD Blueprint V3 shows the WKN clip x=558..589.52 only for a subset of
+    ' populated WKNs (34/66 in the reference report), not for every WKN cell.
+    ' This is consistent with overflow-driven clipping: keep 9 pt text and
+    ' activate the OLD Oracle WKN clip only when the rendered glyph run crosses
+    ' the clip box. This also reproduces examples such as A2PTUX being cut by
+    ' the right edge instead of being dynamically shrunk.
+    If Not blnHeader And _
+       blnTopTransactionRow And _
+       lngFieldIndex = TOP_FIELD_WKN_INDEX And _
+       Len(strText) > 0 And _
+       lngOracleClipDepth = 0 Then
+
+        If ShouldUseOracleWknOverflowClip( _
+            dblTextX, _
+            dblTextWidth) Then
+
+            strClipOpen = BuildOracleClipOpenCommand( _
+                ORACLE_WKN_CLIP_X, _
+                dblBaselineY - ORACLE_WKN_CLIP_BASELINE_OFFSET, _
+                ORACLE_WKN_CLIP_WIDTH, _
+                ORACLE_WKN_CLIP_HEIGHT)
+
+            lngOracleClipDepth = 1
+        End If
+    End If
+
+    ' FIX39 general overflow guard for Wertpapierbezeichnung:
+    ' the resolved Oracle font size is kept fixed. Only when the actual text
+    ' would cross the logical cell interior do we activate a local clip. Short
+    ' descriptions are byte-for-byte unaffected by this branch.
+    If Not blnHeader And _
+       blnTopTransactionRow And _
+       lngFieldIndex = TOP_FIELD_SECURITY_DESCRIPTION_INDEX And _
+       Len(strText) > 0 And _
+       lngOracleClipDepth = 0 Then
+
+        If ShouldUseOracleCellOverflowClip( _
+            dblTextX, _
+            dblTextWidth, _
+            dblX, _
+            dblWidth) Then
+
+            strClipOpen = BuildOracleClipOpenCommand( _
+                dblX + TEXT_LEFT_PADDING, _
+                dblBaselineY - ORACLE_WKN_CLIP_BASELINE_OFFSET, _
+                dblWidth - TEXT_LEFT_PADDING - TEXT_RIGHT_PADDING, _
+                ORACLE_WKN_CLIP_HEIGHT)
+
+            lngOracleClipDepth = 1
+        End If
+    End If
+
+    If lngOracleClipDepth > 0 Then
+        strClipClose = BuildOracleClipCloseContent(lngOracleClipDepth)
     End If
 
     If Not blnHeader Then
@@ -1719,6 +1778,165 @@ ErrorHandler:
     Resume ExitFunction
 End Function
 
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    blnHeader As Boolean, blnTopTransactionRow As Boolean, lngFieldIndex As Long
+' Returns:       String
+' Description:   Returns the OLD Oracle non-visible placeholder used inside an
+'                active text clip when the logical value is blank.
+'-------------------------------------------------------------------------------
+Private Function ResolveOracleBlankClipText( _
+    ByVal blnHeader As Boolean, _
+    ByVal blnTopTransactionRow As Boolean, _
+    ByVal lngFieldIndex As Long) As String
+
+    Const METHOD_NAME As String = "ResolveOracleBlankClipText"
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    If blnHeader Then
+        ResolveOracleBlankClipText = Space$(1)
+    Else
+        ' Blueprint V3 OLD: the blank numeric shows decode to five spaces.
+        ' Use the same marker for any already-active data clip so the operator
+        ' remains non-visible while preserving Oracle text-show occupancy.
+        ResolveOracleBlankClipText = Space$(5)
+    End If
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ResolveOracleBlankClipText = Space$(5)
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "header;topTransactionRow;fieldIndex", _
+        blnHeader, _
+        blnTopTransactionRow, _
+        lngFieldIndex
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    dblTextX As Double, dblTextWidth As Double
+' Returns:       Boolean
+' Description:   Decides whether a populated WKN needs the OLD Oracle
+'                x=558..589.52 overflow clip. Short WKN values stay unclipped.
+'-------------------------------------------------------------------------------
+Private Function ShouldUseOracleWknOverflowClip( _
+    ByVal dblTextX As Double, _
+    ByVal dblTextWidth As Double) As Boolean
+
+    Const METHOD_NAME As String = "ShouldUseOracleWknOverflowClip"
+    Const CLIP_TOLERANCE As Double = 0.01
+    Dim dblClipRight As Double
+    Dim dblTextRight As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    dblClipRight = ORACLE_WKN_CLIP_X + ORACLE_WKN_CLIP_WIDTH
+    dblTextRight = dblTextX + dblTextWidth
+
+    ShouldUseOracleWknOverflowClip = _
+        (dblTextX < ORACLE_WKN_CLIP_X - CLIP_TOLERANCE) Or _
+        (dblTextRight > dblClipRight + CLIP_TOLERANCE)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ShouldUseOracleWknOverflowClip = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "textX;textWidth", _
+        dblTextX, _
+        dblTextWidth
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
+
+'-------------------------------------------------------------------------------
+' Author:        Pawel Ligezka
+' Creation date: 2026-08-12
+' Parameters:    dblTextX As Double, dblTextWidth As Double, dblCellX As Double, dblCellWidth As Double
+' Returns:       Boolean
+' Description:   Detects horizontal overflow beyond the normal Oracle cell
+'                text interior without changing the resolved font size.
+'-------------------------------------------------------------------------------
+Private Function ShouldUseOracleCellOverflowClip( _
+    ByVal dblTextX As Double, _
+    ByVal dblTextWidth As Double, _
+    ByVal dblCellX As Double, _
+    ByVal dblCellWidth As Double) As Boolean
+
+    Const METHOD_NAME As String = "ShouldUseOracleCellOverflowClip"
+    Const CLIP_TOLERANCE As Double = 0.01
+    Dim dblAllowedLeft As Double
+    Dim dblAllowedRight As Double
+    Dim dblTextRight As Double
+    Dim errorManager As New ErrorManager
+    Dim errDescription As String
+    Dim errNumber As Long
+
+    On Error GoTo ErrorHandler
+
+    dblAllowedLeft = dblCellX + TEXT_LEFT_PADDING
+    dblAllowedRight = dblCellX + dblCellWidth - TEXT_RIGHT_PADDING
+    dblTextRight = dblTextX + dblTextWidth
+
+    ShouldUseOracleCellOverflowClip = _
+        (dblTextX < dblAllowedLeft - CLIP_TOLERANCE) Or _
+        (dblTextRight > dblAllowedRight + CLIP_TOLERANCE)
+
+ExitFunction:
+    Exit Function
+
+ErrorHandler:
+    errNumber = VBA.Err.Number
+    errDescription = VBA.Err.Description
+    ShouldUseOracleCellOverflowClip = False
+
+    errorManager.addError _
+        CLASS_NAME, _
+        METHOD_NAME, _
+        errNumber, _
+        errDescription, _
+        "textX;textWidth;cellX;cellWidth", _
+        dblTextX, _
+        dblTextWidth, _
+        dblCellX, _
+        dblCellWidth
+
+    errorManager.save
+    Resume ExitFunction
+End Function
+
 '-------------------------------------------------------------------------------
 ' Author:        Pawel Ligezka
 ' Creation date: 2026-08-11
@@ -1772,18 +1990,16 @@ Private Function BuildOracleCellClipOpenContent( _
             End If
 
         Case ORACLE_CLIP_ROW_TRANSACTION_TOP
-            ' FIX37B PART 2:
-            ' Blueprint V2 shows three additional OLD Oracle text-scoped clip
-            ' families in the upper transaction row. They are not grid lines;
-            ' they are inner clipping boxes around the actual text run.
+            ' FIX37B/FIX39:
+            ' Nominale and Kurs keep their OLD Oracle text-scoped clips here.
+            ' WKN is resolved later from actual text width because Blueprint V3
+            ' proves its clip is content-dependent rather than merely nonblank.
             If blnHasText Then
                 Select Case lngFieldIndex
-                    Case TOP_FIELD_WKN_INDEX
-                        dblClipX = ORACLE_WKN_CLIP_X
-                        dblClipY = dblBaselineY - ORACLE_WKN_CLIP_BASELINE_OFFSET
-                        dblClipWidth = ORACLE_WKN_CLIP_WIDTH
-                        dblClipHeight = ORACLE_WKN_CLIP_HEIGHT
-
+                    ' WKN is intentionally handled later in BuildCellContent.
+                    ' OLD clips only the WKN values that actually overflow the
+                    ' x=558..589.52 text box; clipping every populated WKN would
+                    ' contradict the 34/66 OLD Blueprint V3 count.
                     Case TOP_FIELD_NOMINALE_INDEX
                         dblClipX = ORACLE_TOP_NOMINALE_CLIP_X
                         dblClipY = dblBaselineY
@@ -3498,7 +3714,9 @@ Private Function ShouldPreserveOracleDataFontSize( _
     ShouldPreserveOracleDataFontSize = _
         (Not blnHeader) And _
         blnTopTransactionRow And _
-        lngFieldIndex = TOP_FIELD_ISIN_INDEX
+        (lngFieldIndex = TOP_FIELD_ISIN_INDEX Or _
+         lngFieldIndex = TOP_FIELD_WKN_INDEX Or _
+         lngFieldIndex = TOP_FIELD_SECURITY_DESCRIPTION_INDEX)
 
 ExitFunction:
     Exit Function
@@ -4443,11 +4661,13 @@ Private Function BuildPageNumberCommand( _
 
     On Error GoTo ErrorHandler
 
-    ' FIX36: same compact BETTER-like Tf/Td/Tj stream as normal page text.
+    ' FIX39: OLD Blueprint V3 contains one whitespace-only /F0 8 pt Tj per
+    ' page at the page-number anchor. Keep the same visible text, but serialize
+    ' the separating blank as its own text-show operation.
     BuildPageNumberCommand = _
         "BT /F0 " & PdfNumber(PAGE_NUMBER_FONT_SIZE) & " Tf " & _
         PdfNumber(PAGE_NUMBER_X) & " " & PdfNumber(PAGE_NUMBER_Y) & " Td (" & _
-        EncodePdfText(CStr(lngPage)) & ") Tj ( / ) Tj (" & _
+        EncodePdfText(CStr(lngPage)) & ") Tj ( ) Tj (/) Tj (" & _
         EncodePdfText(CStr(lngPageCount)) & ") Tj ET" & vbCrLf
 
 ExitFunction:
